@@ -52,9 +52,14 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment.estimation._spillover_mixture"
+layer = "core"
+depends_on = []
+
+[[modules]]
 path = "increment.estimation.spillover"
 layer = "core"
-depends_on = ["increment._spillover_design", "increment.errors"]
+depends_on = ["increment._spillover_design", "increment.errors", "increment.estimation._spillover_mixture"]
 
 [[modules]]
 path = "increment.power._spillover"

@@ -1,10 +1,8 @@
-"""An actual two-stage trial keeps its point estimate when it cannot qualify an interval."""
+"""Public planning, registration and fixed-horizon untreated outcome comparisons."""
 
 from __future__ import annotations
 
 from dataclasses import replace
-from math import sqrt
-from statistics import NormalDist
 from typing import Any, cast
 
 import pandas as pd
@@ -48,7 +46,7 @@ def _trial(groups=4, size=4, low=1, high=2, baseline=None):
     return roster, counts, design, pd.DataFrame({"group_id": names, "policy": policies}), offered
 
 
-def test_unassessed_trial_keeps_point_and_distinguishes_observed_scarcity():
+def test_no_history_keeps_wide_intervals_even_if_all_outcomes_are_zero():
     roster, counts, design, policies, offered = _trial()
     events = offered.loc[~offered.offered, ["person_id"]].copy()
     events["outcome"] = events.person_id.isin({"0:2", "1:2", "1:3", "3:1"})
@@ -64,9 +62,11 @@ def test_unassessed_trial_keeps_point_and_distinguishes_observed_scarcity():
         (result,) = run(experiment, reader).comparisons
     assert (result.policy, result.reference, result.family_size) == ("high", "low", 1)
     assert result.estimate == pytest.approx(7 / 12)
-    assert result.lower is None and result.upper is None
-    assert result.qualification_reason == experiment.planning[0].reason == "missing_baseline_rate"
-    assert result.observed_reason is None
+    assert result.lower is not None and result.upper is not None
+    assert result.lower < 0 < result.upper
+    assert result.direction == "inconclusive" and result.unavailable_reason is None
+    assert experiment.planning[0].status == "not_assessed"
+    assert experiment.planning[0].reason == "missing_baseline_rate"
     assert (result.outcome, result.horizon) == ("ordered", "one week")
     experiment, reader = from_frame(
         roster,
@@ -79,12 +79,47 @@ def test_unassessed_trial_keeps_point_and_distinguishes_observed_scarcity():
     )
     with reader:
         (zero,) = run(experiment, reader).comparisons
-    assert zero.estimate == 0 and zero.observed_reason == "no_outcome_variation"
-    assert zero.qualification_reason == result.qualification_reason
+    assert zero.estimate == 0 and zero.direction == "inconclusive"
+    # Two zero groups in each arm. The complement solves the average of
+    # (1 - t + t/m)^2 for t=.95,.475 at 4/.05; both arms have the same width.
+    assert (zero.lower, zero.upper) == pytest.approx((-0.914078742665, 0.914078742665), abs=1e-10)
+    assert zero.unavailable_reason is None
+
+
+def test_direction_requires_a_present_interval_strictly_on_one_side_of_zero():
+    roster, counts, design, policies, offered = _trial()
+    experiment, reader = from_frame(
+        roster,
+        offer_counts=counts,
+        design=design,
+        group_policy=policies,
+        offered=offered,
+        outcomes=offered.loc[~offered.offered, ["person_id"]].assign(outcome=0),
+    )
+    with reader:
+        (row,) = run(experiment, reader).comparisons
+    for lower, upper, label in (
+        (0.1, 0.4, "increase"),
+        (-0.4, -0.1, "decrease"),
+        (-0.1, 0.4, "inconclusive"),
+        (0.0, 0.4, "inconclusive"),
+        (-0.4, 0.0, "inconclusive"),
+        (0.0, 0.0, "inconclusive"),
+        (None, None, "unavailable"),
+    ):
+        assert replace(row, lower=lower, upper=upper).direction == label
+    failed = replace(row, lower=float("nan"), upper=float("nan"))
+    assert failed.lower is failed.upper is None
+    assert (failed.direction, failed.unavailable_reason) == ("unavailable", "nonfinite_interval")
+    assert (failed.policy, failed.reference, failed.estimate) == (
+        row.policy,
+        row.reference,
+        row.estimate,
+    )
 
 
 @pytest.mark.slow
-def test_underpowered_trial_reports_qualified_interval_unless_observed_outcomes_are_constant():
+def test_underpowered_trial_still_reports_observed_interval():
     roster, counts, design, policies, offered = _trial(240, 20, 5, 10, 0.25)
     events = offered.loc[~offered.offered, ["person_id"]].copy()
     group_index = events.person_id.str.split(":").str[0].astype(int)
@@ -100,20 +135,21 @@ def test_underpowered_trial_reports_qualified_interval_unless_observed_outcomes_
     assert experiment.planning[0].status == "underpowered"
     with reader:
         (result,) = run(experiment, reader).comparisons
-        events["outcome"] = False
-        (zero,) = run(experiment, reader).comparisons
-    # Office rates are 0 or 1. The two arms have 45/120 and 15/120 successes.
-    margin = NormalDist().inv_cdf(0.975) * sqrt((0.375 * 0.625 + 0.125 * 0.875) / 119)
+    # With binary group rates the moment bound is the exact product: each of
+    # the 120 factors is 1-t or 1-t+t/m. Average over t=.95/2^j for
+    # j=0,...,7, using 45 and 15 successes and both tails.
     assert result.estimate == pytest.approx(0.25)
-    assert (result.lower, result.upper) == pytest.approx((0.25 - margin, 0.25 + margin))
+    assert (result.lower, result.upper) == pytest.approx(
+        (-0.025936740094, 0.494200502288), abs=1e-10
+    )
+    assert result.direction == "inconclusive"
     assert result.unavailable_reason is None
-    assert zero.estimate == 0 and zero.lower is None and zero.upper is None
-    assert zero.observed_reason == "no_outcome_variation" and zero.qualification_reason is None
 
 
 def test_registration_reopen_and_reader_lifecycle_before_observation():
     roster, counts, design, _, _ = _trial()
     experiment, reader = from_frame(roster, offer_counts=counts, design=design)
+    assert experiment.protocol_version == "spillover-fixed-count-v2"
     with reader:
         reopened, other = from_frame(
             roster.iloc[::-1],
@@ -153,6 +189,7 @@ def test_registration_binds_comparison_and_group_specific_offer_counts():
         for declaration, schedule in (
             (replace(design, outcome="clicked"), counts),
             (replace(design, comparisons=(reverse,)), counts),
+            (replace(design, alpha=0.01), counts),
             (design, counts.assign(offers=counts.offers.where(counts.index != 0, 0))),
         ):
             with pytest.raises(CodedError) as stale:
@@ -180,6 +217,7 @@ def test_unsupported_run_options_refuse_before_missing_logs():
             {"prior": None},
             {"coherence": "live"},
             {"decision_method": object()},
+            {"alpha": 0.01},
             {"sensitivity_methods": []},
             {"metrics": []},
             {"estimands": []},
@@ -236,3 +274,11 @@ def test_spillover_yaml_is_strict_and_selects_named_experiment_before_reads(tmp_
     with pytest.raises(CodedError) as unknown:
         cast(Any, from_definitions)(path, object(), family="spillover", experiment_name="not-there")
     assert unknown.value.code == "facade.analysis.unknown_experiment"
+    invalid = {**base, "design": {**base["design"], "alpha": True}}
+    path.write_text(yaml.safe_dump({"spillovers": [invalid]}))
+    with pytest.raises(CodedError) as bad_alpha:
+        cast(Any, from_definitions)(path, object(), family="spillover")
+    assert (bad_alpha.value.code, bad_alpha.value.context["field"]) == (
+        "spillover.design.invalid",
+        "alpha",
+    )

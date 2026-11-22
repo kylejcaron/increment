@@ -3,10 +3,9 @@
 With N eligible people, model round-half-up(N * rate) reference events and
 round-half-up(N * abs(effect)) changes. Only unequal policy quotas permit a
 change. Condition on each stratum's exact group allocation, then draw untreated
-events without replacement within each selected group. For m frozen contrasts
-count misses against the Normal interval at two-sided error .05/m, including
-draws with no interval. Probability bounds use one-sided error .05/(24*m)
-across the declared scenarios and contrasts, not across successful fits.
+events without replacement within each selected group. Count misses and signed
+detections using the registered interval. Probability bounds use one-sided
+error .05/(24*m) across all scenarios and the m registered comparisons.
 """
 
 from __future__ import annotations
@@ -21,18 +20,12 @@ from typing import Literal
 
 import numpy as np
 from scipy.special import betainccinv, betaincinv
-from scipy.stats import binom
 
-from increment._spillover_design import SpilloverComparison, SpilloverPopulation
-from increment.estimation.spillover import (
-    BatchCell,
-    SpilloverBatch,
-    critical_value,
-    summarize_cells,
-    summarize_counts,
-)
+from increment._spillover_design import GroupProfile, SpilloverComparison, SpilloverPopulation
+from increment.estimation.spillover import BatchCell, SpilloverInterval
 
-_ATTEMPT_UNIT = 65_536
+_ATTEMPTS = 4096
+_MAX_GROUP_ATTEMPTS = 2**25
 _PROFILES = ("spread", "largest_first", "smallest_first")
 _SCHEDULES = ("unchanged", "cancelling", "spread", "concentrated")
 _BLOCK_CELLS = 262_144
@@ -40,7 +33,7 @@ _NUMPY_URN_LIMIT = 1_000_000_000  # Exclusive for each color, not for total grou
 _MAX_DIRECT_DRAWS = 64
 
 _Counts = tuple[int, ...]
-_Status = Literal["supported", "underpowered", "inconclusive", "not_calibrated"]
+_Status = Literal["supported", "underpowered", "inconclusive", "not_assessed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,10 +61,9 @@ class ScenarioEvidence:
 
 @dataclass(frozen=True, slots=True)
 class PlanningEvidence:
-    """Model-conditional calibration and ability to detect the prespecified change."""
+    """Model-conditional ability to detect the prespecified change."""
 
     scenarios: tuple[ScenarioEvidence, ...]
-    calibration_passed: bool
     status: _Status
     reason: str | None
 
@@ -259,11 +251,16 @@ def _states(
     comparison: SpilloverComparison,
     models: Sequence[_Scenario],
     attempts: int,
+    *,
+    order: Sequence[int] | None = None,
 ) -> Iterator[tuple[int, np.ndarray, np.ndarray]]:
+    """Sample in model order; return counts in registered group order."""
     r, p = _indices(population, comparison)
-    sizes = np.array([g.size for g in population.groups])
-    low_draws = sizes - np.array([g.offers[r] for g in population.groups])
-    high_draws = sizes - np.array([g.offers[p] for g in population.groups])
+    groups = population.groups if order is None else tuple(population.groups[i] for i in order)
+    restore = None if order is None else np.argsort(order)
+    sizes = np.array([g.size for g in groups])
+    low_draws = sizes - np.array([g.offers[r] for g in groups])
+    high_draws = sizes - np.array([g.offers[p] for g in groups])
     lows = {
         counts: _Population(sizes, counts, low_draws)
         for counts in dict.fromkeys(m.low for m in models)
@@ -284,6 +281,7 @@ def _states(
             target = assignment[:, cols]
             rng.permuted(np.broadcast_to(allocation, target.shape), axis=1, out=target)
         reference, policy = assignment == 0, assignment == 1
+        registered = assignment if restore is None else assignment[:, restore]
         shared: dict[_Population, np.ndarray] = {}
         for i, (low_law, high_law) in enumerate(laws):
             for law in (low_law, high_law):
@@ -291,7 +289,8 @@ def _states(
                     shared[law] = law.sample(rng, rows)
             low = shared[low_law] if low_law in shared else low_law.sample(rng, rows)
             upper = shared[high_law] if high_law in shared else high_law.sample(rng, rows)
-            yield i, assignment, np.where(reference, low, np.where(policy, upper, 0))
+            counts = np.where(reference, low, np.where(policy, upper, 0))
+            yield i, registered, counts if restore is None else counts[:, restore]
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,12 +330,9 @@ class _Urn:
 _Classes = dict[str, Counter[tuple[_Urn, _Urn]]]
 
 
-def _classes(
-    population: SpilloverPopulation, comparison: SpilloverComparison, model: _Scenario
-) -> _Classes:
-    r, p = _indices(population, comparison)
+def _classes(groups: tuple[GroupProfile, ...], r: int, p: int, model: _Scenario) -> _Classes:
     classes: _Classes = {}
-    for g, low, high in zip(population.groups, model.low, model.high, strict=True):
+    for g, low, high in zip(groups, model.low, model.high, strict=True):
         pair = (_Urn(g.size, g.size - g.offers[r], low), _Urn(g.size, g.size - g.offers[p], high))
         if g.stratum not in classes:
             classes[g.stratum] = Counter()
@@ -427,12 +423,12 @@ class _WeightedTotals:
         )
 
 
-def _frequency_batches(
+def _frequency_cells(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
     classes: _Classes,
     attempts: int,
-) -> Iterator[SpilloverBatch]:
+) -> Iterator[dict[tuple[str, str], BatchCell]]:
     rng = np.random.Generator(np.random.PCG64(9501))
     urns = {urn for types in classes.values() for pair in types for urn in pair}
     bins = {urn: urn.bins() for urn in urns}
@@ -449,7 +445,7 @@ def _frequency_batches(
                 pol.sample(rng, p, pu, bins[pu])
             cells[s, comparison.reference] = ref.cell()
             cells[s, comparison.policy] = pol.cell()
-        yield summarize_cells(population, comparison, cells)
+        yield cells
 
 
 def _lower(hits: int, attempts: int, tail: float) -> float:
@@ -468,14 +464,11 @@ class _Tally:
     positive: int = 0
     negative: int = 0
 
-    def observe(
-        self, point: np.ndarray, se: np.ndarray, available: np.ndarray, truth: float, z: float
-    ) -> None:
-        radius = z * se
-        lo, hi = point - radius, point + radius
-        self.attempts += len(point)
-        self.unavailable += len(point) - int(np.count_nonzero(available))
-        self.misses += len(point) - int(np.count_nonzero(available & (lo <= truth) & (truth <= hi)))
+    def observe(self, lo: np.ndarray, hi: np.ndarray, truth: float) -> None:
+        available = np.isfinite(lo) & np.isfinite(hi)
+        self.attempts += len(lo)
+        self.unavailable += len(lo) - int(np.count_nonzero(available))
+        self.misses += len(lo) - int(np.count_nonzero(available & (lo <= truth) & (truth <= hi)))
         self.positive += int(np.count_nonzero(available & (lo > 0)))
         self.negative += int(np.count_nonzero(available & (hi < 0)))
 
@@ -504,69 +497,51 @@ def _measure(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
     models: tuple[_Scenario, ...],
-    attempts: int,
+    groups: tuple[GroupProfile, ...],
+    order: Sequence[int] | None,
 ) -> tuple[ScenarioEvidence, ...]:
-    m = len(population.design.comparisons)
-    tail, z = 0.05 / (24 * m), critical_value(m)
+    rule = SpilloverInterval(population)
+    tail = 0.05 / (24 * len(population.design.comparisons))
+    r, p = _indices(population, comparison)
     # Equal potential schedules can share draws across labels. Dependence across
     # schedules does not affect the simultaneous Bonferroni probability bounds.
     unique = {(model.low, model.high): model for model in models}
     tallies = {key: _Tally() for key in unique}
     dense = []
     for key, model in unique.items():
-        classes = _classes(population, comparison, model)
+        classes = _classes(groups, r, p, model)
         if not _compact(classes, len(population.groups)):
             dense.append(model)
             continue
-        for batch in _frequency_batches(population, comparison, classes, attempts):
-            tallies[key].observe(
-                batch.estimate, batch.standard_error, batch.available, model.true_effect, z
-            )
+        for cells in _frequency_cells(population, comparison, classes, _ATTEMPTS):
+            lo, hi = rule.bounds(comparison, cells)
+            tallies[key].observe(lo, hi, model.true_effect)
     if dense:
-        for i, assignment, counts in _states(population, comparison, dense, attempts):
+        for i, assignment, counts in _states(population, comparison, dense, _ATTEMPTS, order=order):
             model = dense[i]
-            batch = summarize_counts(population, comparison, assignment, counts)
-            tallies[model.low, model.high].observe(
-                batch.estimate, batch.standard_error, batch.available, model.true_effect, z
-            )
+            lo, hi = rule.bounds_from_counts(comparison, assignment, counts)
+            tallies[model.low, model.high].observe(lo, hi, model.true_effect)
     return tuple(tallies[m.low, m.high].evidence(m, tail) for m in models)
 
 
-def _conclude(rows: tuple[ScenarioEvidence, ...], family_size: int) -> PlanningEvidence:
+def _conclude(rows: tuple[ScenarioEvidence, ...]) -> PlanningEvidence:
     expected = {(p, s) for p in _PROFILES for s in _SCHEDULES}
     if len(rows) != len(expected) or {(s.baseline_profile, s.schedule) for s in rows} != expected:
-        return PlanningEvidence(rows, False, "not_calibrated", "incomplete_bounds")
-    if any(not (0 <= s.miss_upper <= 0.055 / family_size) for s in rows):
-        return PlanningEvidence(rows, False, "not_calibrated", "miss_bound_exceeded")
+        return PlanningEvidence(rows, "not_assessed", "incomplete_bounds")
     adequate, underpowered = True, False
     for s in rows:
         if s.schedule in ("unchanged", "cancelling"):
             continue
         lo, hi = s.detection_lower, s.detection_upper
         if lo is None or hi is None or not 0 <= lo <= hi <= 1:
-            return PlanningEvidence(rows, False, "not_calibrated", "incomplete_bounds")
+            return PlanningEvidence(rows, "not_assessed", "incomplete_bounds")
         adequate &= lo >= 0.8
         underpowered |= hi < 0.8
     if adequate:
-        return PlanningEvidence(rows, True, "supported", None)
+        return PlanningEvidence(rows, "supported", None)
     if underpowered:
-        return PlanningEvidence(rows, True, "underpowered", "detection_below_target")
-    return PlanningEvidence(rows, True, "inconclusive", "detection_bounds_overlap_target")
-
-
-def _attempts(groups: int, family_size: int) -> int | None:
-    if family_size == 1:
-        return _ATTEMPT_UNIT if groups <= 2048 else None
-    limit = min(2**29 // groups, 2**31 // (groups * family_size))
-    tail, cap = 0.05 / (24 * family_size), 0.055 / family_size
-    for b in range(_ATTEMPT_UNIT, limit + 1, _ATTEMPT_UNIT):
-        # U_CP(k) <= cap iff Pr_cap[X <= k] <= tail. The discrete quantile
-        # brackets k and the forward CDF resolves equality at its boundary.
-        k = int(binom.ppf(tail, b, cap))
-        k -= int(binom.cdf(k, b, cap) > tail)
-        if binom.logsf(k, b, 0.05 / family_size) <= math.log(0.05 / (12 * family_size)):
-            return b
-    return None
+        return PlanningEvidence(rows, "underpowered", "detection_below_target")
+    return PlanningEvidence(rows, "inconclusive", "detection_bounds_overlap_target")
 
 
 def _indices(population: SpilloverPopulation, comparison: SpilloverComparison) -> tuple[int, int]:
@@ -577,25 +552,27 @@ def _indices(population: SpilloverPopulation, comparison: SpilloverComparison) -
 def evaluate_design(
     population: SpilloverPopulation, comparison: SpilloverComparison
 ) -> PlanningEvidence:
-    """Check calibration and directional detection before the trial is assigned."""
+    """Assess directional detection before the trial is assigned."""
     if comparison.baseline_rate is None:
-        return PlanningEvidence((), False, "not_calibrated", "missing_baseline_rate")
-    family_size = len(population.design.comparisons)
-    attempts = _attempts(len(population.groups), family_size)
-    if attempts is None:
-        return PlanningEvidence((), False, "not_calibrated", "simulation_budget_exceeded")
-    if any(
-        min(q[comparison.policy], q[comparison.reference]) < 2
-        for q in population.design.groups_per_policy.values()
-    ):
-        return PlanningEvidence((), False, "not_calibrated", "too_few_groups")
+        return PlanningEvidence((), "not_assessed", "missing_baseline_rate")
+    work = len(population.groups) * len(population.design.comparisons) * _ATTEMPTS
+    if work > _MAX_GROUP_ATTEMPTS:
+        return PlanningEvidence((), "not_assessed", "simulation_budget_exceeded")
+    # Tie-break allocations and sample in structural order, independent of group IDs.
+    registered = population.groups
+    order = sorted(
+        range(len(registered)),
+        key=lambda i: (registered[i].stratum, registered[i].size, registered[i].offers),
+    )
+    reordered = any(i != j for i, j in enumerate(order))
+    groups = tuple(registered[i] for i in order) if reordered else registered
     r, p = _indices(population, comparison)
-    sizes = tuple(g.size for g in population.groups)
-    movable = tuple(g.offers[r] != g.offers[p] for g in population.groups)
+    sizes = tuple(g.size for g in groups)
+    movable = tuple(g.offers[r] != g.offers[p] for g in groups)
     grid = _model_grid(sizes, comparison.baseline_rate, comparison.meaningful_effect, movable)
     if isinstance(grid, str):
-        return PlanningEvidence((), False, "not_calibrated", grid)
-    for i, group in enumerate(population.groups):
+        return PlanningEvidence((), "not_assessed", grid)
+    for i, group in enumerate(groups):
         if group.size <= _NUMPY_URN_LIMIT:
             continue
         for policy, events in ((r, (s.low[i] for s in grid)), (p, (s.high[i] for s in grid))):
@@ -605,7 +582,5 @@ def evaluate_design(
                 and max(k, group.size - k) >= _NUMPY_URN_LIMIT
                 for k in events
             ):
-                return PlanningEvidence(
-                    (), False, "not_calibrated", "group_draw_exceeds_planning_limit"
-                )
-    return _conclude(_measure(population, comparison, grid, attempts), family_size)
+                return PlanningEvidence((), "not_assessed", "group_draw_exceeds_planning_limit")
+    return _conclude(_measure(population, comparison, grid, groups, order if reordered else None))

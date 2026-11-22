@@ -80,6 +80,28 @@ def test_freezes_declared_order_and_snapshots_all_nested_values():
         cast(Any, design.comparisons[0]).reference = "c"
 
 
+def test_alpha_is_a_preassignment_decision_not_a_readout_option():
+    frames = _frames()
+    default, reader = _register(frames)
+    with reader:
+        strict, other = _register(frames, _design(alpha=0.01))
+        with other:
+            assert strict.registration_id != default.registration_id
+            assert strict.design.declaration()["alpha"] == 0.01
+        with pytest.raises(InvalidRequestError) as stale:
+            from_frame(
+                frames["roster"],
+                offer_counts=frames["offer_counts"],
+                design=strict.design,
+                expected_registration=default.registration_id,
+            )
+        assert stale.value.code == "spillover.roster.changed"
+    for invalid in (0, 1, -0.1, True, np.bool_(False), float("nan"), float("inf"), "0.05"):
+        with pytest.raises(InvalidRequestError) as error:
+            _design(alpha=invalid)
+        assert error.value.context["field"] == "alpha"
+
+
 @pytest.mark.parametrize(
     ("changes", "code"),
     [
@@ -129,9 +151,9 @@ def test_frame_summary_uses_equal_group_weights_and_only_unoffered_outcomes():
     zero = (0 + 2) / 2
     assert (row.policy, row.reference) == ("half", "zero")
     assert row.estimate == (half - zero) * 6 / 24
-    assert row.observed_reason is None
-    assert row.lower is row.upper is None
-    assert row.qualification_reason == "missing_baseline_rate"
+    # Exact moments of the two compared policies: [2, 6] and [0, 2], B=6, N=24.
+    assert (row.lower, row.upper) == pytest.approx((-0.964962853, 0.999070650), abs=1e-9)
+    assert row.direction == "inconclusive" and row.unavailable_reason is None
 
     offered_only = frames["offered"].loc[lambda t: t.offered, ["person_id"]].copy()
     offered_only["outcome"] = pd.array([1, *([None] * (len(offered_only) - 1))], dtype="Int64")

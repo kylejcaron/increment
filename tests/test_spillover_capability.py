@@ -1,8 +1,5 @@
 """A two-stage offer design needs both assignment logs, not an ordinary arm label."""
 
-from math import sqrt
-from statistics import NormalDist
-
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -32,26 +29,29 @@ def test_ordinary_and_two_stage_assignments_are_not_interchangeable():
 
 
 @pytest.mark.integration
-def test_named_spillover_comparisons_match_through_frame_and_definitions(con, tmp_path):
+@pytest.mark.parametrize("alpha", [0.01, 0.05])
+def test_named_spillover_comparisons_match_through_frame_and_definitions(con, tmp_path, alpha):
     from increment.spillover import from_frame
 
-    design, frames = three_policy_trial()
+    design, frames = three_policy_trial(alpha=alpha)
     exp, reader = from_frame(**frames, design=frame_design(design))
     with reader:
         local = run(exp, reader)
-    warehouse = run_three_policy_probe(con, tmp_path)
+    warehouse = run_three_policy_probe(con, tmp_path, alpha=alpha)
     assert_support("spillover_family_boundary", "dataframe_supported", local)
     assert_support("spillover_family_boundary", "warehouse_supported", warehouse)
     for frame, db in zip(local.comparisons, warehouse.comparisons, strict=True):
         assert (frame.policy, frame.reference) == (db.policy, db.reference)
         assert frame.estimate == pytest.approx(db.estimate, abs=1e-14, rel=0)
-        assert (frame.lower, frame.upper, frame.observed_reason) == (
-            db.lower,
-            db.upper,
-            db.observed_reason,
+        assert (frame.lower, frame.upper) == pytest.approx((db.lower, db.upper), abs=1e-10, rel=0)
+        assert frame.direction == db.direction
+        assert frame.unavailable_reason == db.unavailable_reason
+        assert frame.method == exp.method == db.method
+        assert (frame.family_size, frame.policy_count, frame.alpha) == (
+            db.family_size,
+            db.policy_count,
+            db.alpha,
         )
-        assert frame.qualification_reason == db.qualification_reason
-        assert frame.family_size == db.family_size == 2
 
 
 @pytest.mark.integration
@@ -73,7 +73,7 @@ def test_both_public_paths_reject_a_missing_untreated_outcome(con, tmp_path):
 @pytest.mark.slow
 @pytest.mark.numerical_certification
 @pytest.mark.parametrize("source", ["frame", "warehouse"])
-def test_qualified_family_interval_keeps_its_missing_sibling(source, con, tmp_path):
+def test_family_reports_direction_and_interval_for_constant_sibling(source, con, tmp_path):
     from calibration.spillover import three_levels
     from increment.spillover import from_frame
 
@@ -84,12 +84,16 @@ def test_qualified_family_interval_keeps_its_missing_sibling(source, con, tmp_pa
             middle, upper = run(experiment, reader).comparisons
     else:
         middle, upper = warehouse_run(con, tmp_path, design.declaration(), frames).comparisons
-    # 139 of 300 middle-rate groups have all successes, other groups all failures.
-    # Equal-size groups make the person-weighted variance s²/G = p(1-p)/(G-1).
-    p = 139 / 300
-    radius = NormalDist().inv_cdf(0.9875) * sqrt(p * (1.0 - p) / 299)
-    assert middle.estimate == pytest.approx(p)
-    assert (middle.lower, middle.upper) == pytest.approx((p - radius, p + radius))
-    assert upper.estimate == 0 and upper.observed_reason == "no_outcome_variation"
-    assert upper.lower is upper.upper is None
+    # Middle has 139 successes among 300 binary group rates, upper has none
+    # of 300 and base none of 400. The tail product is (1-t)^(n-s) *
+    # (1-t+t/m)^s for s successes; average over dyadic bets and invert
+    # at 6/.05 for each arm and its complement.
+    assert middle.estimate == pytest.approx(139 / 300)
+    assert (middle.lower, middle.upper) == pytest.approx(
+        (0.338377423607, 0.571194044052), abs=1e-10
+    )
+    assert middle.direction == "increase"
+    assert upper.estimate == 0
+    assert (upper.lower, upper.upper) == pytest.approx((-0.018367258454, 0.024410113044), abs=1e-10)
+    assert upper.direction == "inconclusive"
     assert middle.family_size == upper.family_size == 2

@@ -14,7 +14,7 @@ from increment import from_definitions, run
 POLICIES = ("base", "middle", "upper")
 
 
-def three_policy_trial():
+def three_policy_trial(*, alpha=0.01):
     sizes = (6, 8, 5, 7, 9, 10)
     events = (0, 2, 2, 3, 1, 4)
     groups = [f"store-{j}" for j in range(len(sizes))]
@@ -32,6 +32,7 @@ def three_policy_trial():
             if not offered:
                 outcomes.append({"person_id": person, "outcome": i < policy + 1 + event_count})
     design = {
+        "alpha": alpha,
         "outcome": "bought",
         "horizon": "within seven days",
         "groups_per_policy": {"all": dict.fromkeys(POLICIES, 2)},
@@ -58,6 +59,7 @@ def frame_design(fields):
         comparisons=tuple(SpilloverComparison(**c) for c in fields["comparisons"]),
         outcome=fields["outcome"],
         horizon=fields["horizon"],
+        alpha=fields["alpha"],
     )
 
 
@@ -95,8 +97,8 @@ def warehouse_run(con, tmp_path, design, frames, *, reader_con=None):
         return run(experiment, reader)
 
 
-def run_three_policy_probe(con, tmp_path, *, reader_con=None):
-    result = warehouse_run(con, tmp_path, *three_policy_trial(), reader_con=reader_con)
+def run_three_policy_probe(con, tmp_path, *, alpha=0.01, reader_con=None):
+    result = warehouse_run(con, tmp_path, *three_policy_trial(alpha=alpha), reader_con=reader_con)
     assert [(row.policy, row.reference) for row in result.comparisons] == [
         ("middle", "base"),
         ("upper", "base"),
@@ -105,7 +107,16 @@ def run_three_policy_probe(con, tmp_path, *, reader_con=None):
     assert [row.estimate for row in result.comparisons] == pytest.approx(
         (0.030158730158730190, 0.480952380952380909), abs=1e-14, rel=0
     )
-    for row in result.comparisons:
-        assert row.lower is row.upper is row.observed_reason is None
-        assert row.qualification_reason == "missing_baseline_rate"
+    # Policy X values: (0, 7/20), (4/15, 9/70), (1/2, 4/7).
+    # Invert two-point moments for X and 1-X at bets .95/.475 and threshold 6/alpha.
+    # Scale policy bounds by 60/45 and clip before differencing.
+    ranges = {
+        0.01: ((-0.995417077848, 0.999884521847), (-0.978388379672, 0.999884521847)),
+        0.05: ((-0.988590287657, 0.999422073323), (-0.950994224644, 0.999422073323)),
+    }
+    for row, expected in zip(result.comparisons, ranges[alpha], strict=True):
+        assert (row.lower, row.upper) == pytest.approx(expected, rel=0, abs=1e-10)
+        assert (row.alpha, row.family_size, row.policy_count) == (alpha, 2, 3)
+        assert row.method == "two-stage-fixed-bet-v1"
+        assert row.direction == "inconclusive" and row.unavailable_reason is None
     return result

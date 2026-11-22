@@ -9,7 +9,9 @@ import hashlib
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
+from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from increment._optional import require_warehouse
 
@@ -18,6 +20,7 @@ require_warehouse("increment.query.spillover")
 import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.rules as rlz
+import ibis.expr.types as ir
 import sqlglot as sg
 from ibis import Table
 from ibis.backends.sql import SQLBackend
@@ -32,6 +35,7 @@ from increment._spillover_design import (
     SpilloverPopulation,
     refuse_input,
 )
+from increment._spillover_design import _raise as _refuse_design
 from increment.query.artifact_ports import SQL_DIGEST_FORMAT
 from increment.query.session import (
     WarehouseSession,
@@ -57,6 +61,69 @@ _LABEL_WHITESPACE = (
     + "\u2028\u2029\u202f\u205f\u3000"
 )
 _Locator = tuple[str, str, str]
+_DUCKDB_HANDLES: WeakKeyDictionary[Any, str] = WeakKeyDictionary()
+
+
+def _duckdb_catalogs(con: SQLBackend, catalogs: set[str]) -> Table:
+    """Identify a catalog by its file location, never by hashing its contents."""
+    # A relative path reported by older DuckDB versions is ambiguous outside
+    # this attachment, just like an unnamed in-memory database.
+    metadata = con.sql(
+        r"""
+        SELECT lower(database_name) COLLATE "binary" AS catalog, database_oid,
+               CASE WHEN regexp_matches(
+                   path, '^(/|[A-Za-z]:[/\\]|\\\\|[A-Za-z][-+.A-Za-z0-9]*://)'
+               ) THEN sha256(path) END AS file_digest
+        FROM system.main.duckdb_databases() WHERE NOT internal
+        """,
+        schema={"catalog": "string", "database_oid": "int64", "file_digest": "string"},
+    )
+    connection = cast(Any, con).con
+    # A statement logger may wrap execute() without changing the underlying DB-API session.
+    handle = getattr(connection.cursor, "__self__", connection)
+    token = _DUCKDB_HANDLES.get(handle)
+    if token is None:
+        token = _DUCKDB_HANDLES.setdefault(handle, uuid4().hex)
+    selected = metadata.filter(metadata.catalog.isin(tuple(sorted(catalogs))))
+    return selected.select(
+        selected.catalog,
+        location=selected.file_digest.fill_null(token + ":" + selected.database_oid.cast("string")),
+    )
+
+
+def _source_checks(
+    con: SQLBackend, names: Mapping[str, _Locator], locations: Mapping[str, str]
+) -> Table | None:
+    """One status row to capture in the same statement as the named inputs."""
+    if con.name == "duckdb":
+        catalogs = {role: locator[0].lower() for role, locator in names.items()}
+        metadata = _duckdb_catalogs(con, set(catalogs.values()))
+        flags = []
+        for role, catalog in catalogs.items():
+            matches = metadata.count(
+                where=(metadata.catalog == catalog) & (metadata.location == locations[catalog])
+            )
+            flags.append(cast(ir.BooleanScalar, matches == 1).name(role))
+        return metadata.aggregate(flags)
+    if con.name != "snowflake":
+        return None
+    checks = []
+    for role, (catalog, schema, name) in names.items():
+        tables = sg.table("TABLES", db="INFORMATION_SCHEMA", catalog=catalog, quoted=True)
+        # Quoted identifiers can resolve exactly or in upper case, depending
+        # on session settings. Accept only one visible, non-temporary object.
+        query = (
+            sg.select("COUNT(*) = 1 AND MIN(IS_TEMPORARY) = 'NO'")
+            .from_(tables)
+            .where(
+                sg.column("TABLE_SCHEMA").isin(schema, schema.upper()),
+                sg.column("TABLE_NAME").isin(name, name.upper()),
+            )
+        )
+        checks.append(query.subquery().as_(role, quoted=True))
+    return con.sql(
+        sg.select(*checks).sql(dialect=con.dialect), schema=dict.fromkeys(names, "boolean")
+    )
 
 
 class _SpilloverExactText(ops.Value):
@@ -94,8 +161,17 @@ def _exact_keys(table: Table) -> Table:
 class _Snapshot:
     session: WarehouseSession
     tables: Mapping[str, Table]
+    unbound: frozenset[str]
 
     def table(self, role: str) -> Table:
+        if role in self.unbound:
+            if self.session.con.name == "duckdb":
+                refuse_input("spillover.roster.changed", "roster")
+            _refuse_design(
+                "spillover.design.invalid",
+                field=role,
+                requirement="use an unambiguous, non-temporary table or view in this session",
+            )
         if role not in self.tables:
             code = "spillover.design.invalid" if role in _DESIGN_ROLES else "spillover.log.keys"
             refuse_input(code, role)
@@ -107,7 +183,10 @@ class _Snapshot:
 
 @contextmanager
 def _capture(
-    con: SQLBackend, names: Mapping[str, _Locator], roles: tuple[str, ...]
+    con: SQLBackend,
+    names: Mapping[str, _Locator],
+    roles: tuple[str, ...],
+    locations: Mapping[str, str],
 ) -> Iterator[_Snapshot]:
     live = WarehouseSession(con, Definitions())
     inputs = {}
@@ -121,12 +200,26 @@ def _capture(
         if not set(columns).issubset(table.columns):
             break
         inputs[role] = table.select(*columns)
+    # A detached DuckDB catalog matters even when its table cannot be opened.
+    # Missing tables themselves retain the ordinary missing-role refusal.
+    checked = roles if con.name == "duckdb" else tuple(inputs)
+    checks = _source_checks(con, {r: names[r] for r in checked}, locations) if checked else None
+    streams = dict(inputs)
+    if checks is not None:
+        for role, table in inputs.items():
+            streams[role] = table.filter(cast(ir.BooleanScalar, checks[role].as_scalar()))
+        streams["source_checks"] = checks
     # One CTAS captures every available stream, before validating even the first row.
     # A missing projection is reported only after earlier roles have been checked.
     with translating_compile_gaps():
-        pinned = live.pin_sources((), extra_relations=inputs)
+        pinned = live.pin_sources((), extra_relations=streams)
         try:
-            yield _Snapshot(pinned, {role: _exact_keys(pinned.source_sql(role)) for role in inputs})
+            unbound = frozenset()
+            if checks is not None:
+                flags = pinned.fetch_arrow(pinned.source_sql("source_checks")).to_pylist()[0]
+                unbound = frozenset(role for role, valid in flags.items() if not valid)
+            tables = {role: _exact_keys(pinned.source_sql(role)) for role in inputs}
+            yield _Snapshot(pinned, tables, unbound)
         finally:
             pinned.drop_materialized()
 
@@ -366,12 +459,16 @@ def _observed_cells(
     compared = assigned.filter(assigned.policy.isin(tuple(sorted(design.compared_policies))))
     groups = compared.join(by_group, "group_id")
     groups = groups.mutate(total=groups.size.cast("float64") * groups.events / groups.unoffered)
-    cells = groups.group_by("stratum", "policy").aggregate(
-        groups=groups.count(),
-        mean_total=groups.total.mean(),
-        ss=groups.total.var(how="pop") * groups.count(),
-        unoffered=groups.unoffered.sum(),
-        events=groups.events.sum(),
+    # Recenter before averaging: even a repeated fractional total can drift
+    # when summed thousands of times without subtracting a shared origin.
+    centered = groups.group_by("stratum", "policy").mutate(origin=groups.total.mean())
+    delta = centered.total - centered.origin
+    cells = centered.group_by("stratum", "policy").aggregate(
+        groups=centered.count(),
+        mean_total=centered.origin.max() + delta.mean(),
+        ss=delta.var(how="pop") * centered.count(),
+        unoffered=centered.unoffered.sum(),
+        events=centered.events.sum(),
     )
     rows = snapshot.session.fetch_arrow(cells).to_pylist()
     # Match the frame's label order regardless of the connection's collation.
@@ -408,18 +505,30 @@ class WarehouseSpilloverSource:
             self._names[role] = (project, database, path[-1])
             quoted = sg.table(path[-1], db=database, catalog=project, quoted=True)
             rows.append((role, quoted.sql(dialect=con.dialect)))
+        self._locations: dict[str, str] = {}
+        if con.name == "duckdb":
+            catalogs = {name[0].lower() for name in self._names.values()}
+            locations = con.to_pyarrow(_duckdb_catalogs(con, catalogs)).to_pylist()
+            self._locations = {row["catalog"]: row["location"] for row in locations}
+            if self._locations.keys() != catalogs:
+                _refuse_design(
+                    "spillover.design.invalid",
+                    field="relations",
+                    requirement="attach each named database before registering its tables",
+                )
+            rows.extend((f"catalog:{k}", v) for k, v in sorted(self._locations.items()))
         self.recipe = tuple(rows)
 
     def freeze(self, design: SpilloverDesign) -> SpilloverPopulation:
         if not isinstance(design, SpilloverDesign):
             refuse_input("spillover.design.required", "design")
-        with _capture(self._con, self._names, _DESIGN_ROLES) as snapshot:
+        with _capture(self._con, self._names, _DESIGN_ROLES, self._locations) as snapshot:
             frozen = _checked_design(snapshot, design)
             groups = _profiles(snapshot, frozen.schedule, design.policies)
             return SpilloverPopulation(design=design, groups=groups, roster_digest=frozen.digest)
 
     def observe(self, population: SpilloverPopulation) -> tuple[PolicyCell, ...]:
-        with _capture(self._con, self._names, tuple(_PROJECTIONS)) as snapshot:
+        with _capture(self._con, self._names, tuple(_PROJECTIONS), self._locations) as snapshot:
             frozen = _checked_design(snapshot, population.design)
             if frozen.digest != population.roster_digest:
                 refuse_input("spillover.roster.changed", "roster")

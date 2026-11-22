@@ -62,16 +62,21 @@ def _trial(raw: object) -> _Trial:
     name = fields["name"]
     if not isinstance(name, str) or not name.strip():
         refuse_input("spillover.design.invalid", "experiment_id")
-    design = _fields(
-        fields["design"], "design", {"groups_per_policy", "comparisons", "outcome", "horizon"}
+    design = dict(
+        _fields(
+            fields["design"],
+            "design",
+            {"groups_per_policy", "comparisons", "outcome", "horizon"},
+            frozenset({"alpha"}),
+        )
     )
-    comparisons = design["comparisons"]
+    comparisons = design.pop("comparisons")
     if not isinstance(comparisons, list):
         refuse_input("spillover.design.invalid", "comparisons")
     return _Trial(
         name=name,
         design=SpilloverDesign(
-            groups_per_policy=design["groups_per_policy"],
+            **design,
             comparisons=tuple(
                 SpilloverComparison(
                     **_fields(
@@ -83,8 +88,6 @@ def _trial(raw: object) -> _Trial:
                 )
                 for c in comparisons
             ),
-            outcome=design["outcome"],
-            horizon=design["horizon"],
         ),
         relations=relation_names(fields["relations"]),
     )

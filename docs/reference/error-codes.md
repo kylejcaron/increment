@@ -25452,7 +25452,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-<p>Use a pre-assignment event rate between 0 and 1, or omit it for a point estimate only.</p>
+<p>Use a pre-assignment event rate between 0 and 1, or omit it to skip the power check.</p>
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 

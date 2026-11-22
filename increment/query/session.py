@@ -1683,6 +1683,9 @@ def _create_session_temp(
         target = sqlglot.table(name, db=locator.schema, catalog=locator.catalog, quoted=True)
         options["database"] = locator.schema
         return con.create_table(target.sql(dialect="bigquery"), expression, **options)
+    if con.name == "duckdb":
+        # Ibis 10.1 sets the temp catalog but otherwise uses the current schema.
+        options["database"] = "main"
     return con.create_table(name, expression, temp=True, **options)
 
 

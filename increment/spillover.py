@@ -6,7 +6,8 @@ import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import InitVar, dataclass, field
-from typing import TYPE_CHECKING, Never, Self
+from math import isfinite
+from typing import TYPE_CHECKING, Literal, Never, Self
 
 from increment._canonical import canonical_digest_bytes
 from increment._evidence_loaders import SpilloverSource, freeze_spillover, observe_spillover
@@ -17,7 +18,7 @@ from increment._spillover_design import (
     refuse_input,
 )
 from increment.errors import CodedError
-from increment.estimation.spillover import critical_value, estimate_comparison
+from increment.estimation.spillover import SpilloverInterval, estimate_comparison
 from increment.kernel.contracts import _refuse
 from increment.power._spillover import PlanningEvidence, evaluate_design
 
@@ -33,7 +34,8 @@ __all__ = [
     "from_frame",
 ]
 
-_PROTOCOL = "spillover-fixed-count-v1"
+_PROTOCOL = "spillover-fixed-count-v2"
+_METHOD = "two-stage-fixed-bet-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,27 +43,43 @@ class _ComparisonResult:
     policy: str
     reference: str
     family_size: int
+    policy_count: int
+    alpha: float
+    method: str
     outcome: str
     horizon: str
     estimate: float
     lower: float | None
     upper: float | None
-    observed_reason: str | None
-    qualification_reason: str | None
-    planning_status: str
+    unavailable_reason: str | None = None
+    direction: Literal["increase", "decrease", "inconclusive", "unavailable"] = field(init=False)
 
-    @property
-    def unavailable_reason(self) -> str | None:
-        """Why the approximate interval was withheld, if it was."""
-        return self.observed_reason or self.qualification_reason
+    def __post_init__(self) -> None:
+        if self.lower is None or self.upper is None:
+            direction = "unavailable"
+        elif not (isfinite(self.lower) and isfinite(self.upper)):
+            # Inversion can fail numerically for one comparison without
+            # invalidating its estimate or the other registered comparisons.
+            object.__setattr__(self, "lower", None)
+            object.__setattr__(self, "upper", None)
+            object.__setattr__(self, "unavailable_reason", "nonfinite_interval")
+            direction = "unavailable"
+        elif self.lower > 0:
+            direction = "increase"
+        elif self.upper < 0:
+            direction = "decrease"
+        else:
+            direction = "inconclusive"
+        object.__setattr__(self, "direction", direction)
 
     @property
     def multiplicity(self) -> str:
         """How to interpret the interval alongside the other declared comparisons."""
         return (
-            f"Approximate 95% intervals adjusted for all {self.family_size} declared comparison(s) "
-            "using Bonferroni. Planning checks cover only the populations modeled for each "
-            "comparison, not every possible real population."
+            f"Under the registered draws, the chance that any of the {self.family_size} ranges "
+            f"excludes its true effect is at most {self.alpha} in exact arithmetic. The reported "
+            f"endpoints approximate this rule, which splits that budget over both tails of "
+            f"the {self.policy_count} compared policies."
         )
 
 
@@ -90,7 +108,7 @@ class _ComparisonPlan:
     @property
     def message(self) -> str:
         """A pre-launch interpretation for the signed change the analyst chose."""
-        if self.evidence.calibration_passed:
+        if self.status != "not_assessed":
             effect = next(s.true_effect for s in self.evidence.scenarios if s.true_effect != 0)
             change = f"{100 * effect:+.6g} percentage points"
             if self.evidence.status == "supported":
@@ -103,22 +121,28 @@ class _ComparisonPlan:
                     "Not detecting the change would not rule it out."
                 )
             return f"The simulations could not establish 80% detection for a change of {change}."
-        if self.evidence.reason == "missing_baseline_rate":
-            return "Precision was not assessed. Supply a comparable pre-experiment event rate to check it."
-        if self.reason == "simulation_budget_exceeded":
-            return (
-                "This design exceeds the planning limit. Before assignment, select a smaller "
-                "set of decision-relevant comparisons or report estimates without intervals."
-            )
-        if self.reason == "group_draw_exceeds_planning_limit":
-            return (
-                "A single group's simulated draw is too large to assess this comparison's "
-                "precision. Its estimate is still available after the experiment."
-            )
-        return (
-            "This plan did not establish reliable uncertainty across the modeled scenarios. "
-            "Report an estimate only; do not use detection rates to size the experiment."
-        )
+        match self.reason:
+            case "missing_baseline_rate":
+                why = "Supply a comparable pre-experiment event rate to check power."
+            case "simulation_budget_exceeded":
+                why = "This design exceeds the planning simulation limit."
+            case "group_draw_exceeds_planning_limit":
+                why = "A group's simulated draw exceeds the planning limit."
+            case "effect_rounds_to_zero":
+                why = "On this roster the chosen change rounds to zero people changing outcome."
+            case "effect_exceeds_capacity":
+                why = (
+                    "In a modeled scenario, too few outcomes can change in the requested "
+                    "direction among groups where the two policies offer different counts."
+                )
+            case "degenerate_cancellation":
+                why = (
+                    "The simulation cannot place offsetting gains and losses in separate "
+                    "groups where the two policies offer different counts."
+                )
+            case _:
+                why = "The planning simulations did not establish detection probabilities."
+        return f"Power was not assessed. {why} The experiment can still report an effect range."
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +156,12 @@ class SpilloverExperiment:
     registration_id: str = field(init=False)
     planning: tuple[_ComparisonPlan, ...] = field(init=False)
     protocol_version: str = field(default=_PROTOCOL, init=False)
+    method: str = field(default=_METHOD, init=False)
 
     def __post_init__(self, expected_registration: str | None) -> None:
         receipt = {
             "protocol": self.protocol_version,
+            "method": self.method,
             "experiment_id": self.experiment_id,
             "source": self.source_recipe,
             "design": self.design.declaration(),
@@ -203,30 +229,25 @@ class SpilloverReader:
             )
         cells = observe_spillover(self._source, experiment.population)
         design = experiment.design
-        m = len(design.comparisons)
-        z = critical_value(m)
+        rule = SpilloverInterval(experiment.population)
+        policy_count = len(design.compared_policies)
         rows = []
-        for comparison, plan in zip(design.comparisons, experiment.planning, strict=True):
-            point, se, observed_reason = estimate_comparison(
-                experiment.population, comparison, cells
-            )
-            qualified = plan.evidence.calibration_passed
-            lower = upper = None
-            if qualified and se is not None and observed_reason is None:
-                lower, upper = point - z * se, point + z * se
+        for comparison in design.comparisons:
+            point = estimate_comparison(experiment.population, comparison, cells)[0]
+            lower, upper = rule.bounds(comparison, cells)
             rows.append(
                 _ComparisonResult(
                     policy=comparison.policy,
                     reference=comparison.reference,
-                    family_size=m,
+                    family_size=len(design.comparisons),
+                    policy_count=policy_count,
+                    alpha=design.alpha,
+                    method=experiment.method,
                     outcome=design.outcome,
                     horizon=design.horizon,
                     estimate=point,
-                    lower=lower,
-                    upper=upper,
-                    observed_reason=observed_reason,
-                    qualification_reason=None if qualified else plan.reason,
-                    planning_status=plan.status,
+                    lower=float(lower[0]),
+                    upper=float(upper[0]),
                 )
             )
         return SpilloverResult(experiment.registration_id, tuple(rows))

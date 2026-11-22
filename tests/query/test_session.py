@@ -1189,7 +1189,7 @@ def test_cleanup_preserves_other_namespace_data(monkeypatch, physical_name, remo
     con.create_table(physical_name, ibis.memtable(sentinel))
     create_table = con.create_table
 
-    def create_in_physical_namespace(name, expr, *, temp):
+    def create_in_physical_namespace(name, expr, *, temp, database=None):
         return create_table(physical_name, expr, database="materialized")
 
     monkeypatch.setattr(con, "create_table", create_in_physical_namespace)

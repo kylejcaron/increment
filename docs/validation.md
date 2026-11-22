@@ -171,11 +171,12 @@ gates, not observed results.
 - **Switchbacks:** carryover is assumed away, not tested, and the default t
   reference is approximate ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
   [reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
-- **Two-stage spillover:** two- and three-policy points and variances match the
-  published R implementation. That checks the calculation, not coverage.
-  Planning tests 12 modeled scenarios per registered pair. It cannot establish
-  coverage when groups influence each other, peer identity matters, or real
-  outcomes differ from those scenarios. See the [evidence record](reference/validation-evidence.md#ev-spillover-rct2).
+- **Two-stage spillover:** two- and three-policy point estimates match the
+  published R calculation. The family interval has a separate finite-sample
+  derivation under the registered draws. Simulations estimate how often it
+  would detect a chosen change; they do not license the interval or establish
+  that a real population will behave like the simulation.
+  [Published comparisons, counterexample and proof](reference/validation-evidence.md#ev-spillover-rct2).
 - **Adaptive logged policies:** refused. Historical coverage figures predate the
   gate and cannot be reproduced from the retained estimator
   ([measurements](reference/validation-evidence.md#adaptive-logger-measurements),

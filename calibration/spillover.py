@@ -12,11 +12,11 @@ from time import monotonic
 
 import numpy as np
 import pyarrow as pa
-from scipy.stats import binom, norm
+from scipy.stats import binom
 
 from increment import run
 from increment._spillover_design import GroupProfile, SpilloverPopulation
-from increment.estimation.spillover import summarize_counts
+from increment.estimation.spillover import summarize_cells, summarize_counts
 from increment.power import _spillover
 from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
 
@@ -100,10 +100,18 @@ def _report(design, frames):
                     "planning": planning.status,
                     "reason": planning.reason,
                     "attempts_per_scenario": None if not scenarios else scenarios[0].attempts,
+                    "worst_detection_lower": min(
+                        (s.detection_lower for s in scenarios if s.detection_lower is not None),
+                        default=None,
+                    ),
+                    "worst_detection_upper": min(
+                        (s.detection_upper for s in scenarios if s.detection_upper is not None),
+                        default=None,
+                    ),
                     "worst_miss_upper": max((s.miss_upper for s in scenarios), default=None),
                     "estimate": row.estimate,
                     "interval": [row.lower, row.upper],
-                    "observed_reason": row.observed_reason,
+                    "unavailable_reason": row.unavailable_reason,
                 },
                 allow_nan=False,
             ),
@@ -325,10 +333,10 @@ def _marginal_errors(nuisance):
             quota_errors += np.count_nonzero(mask.sum(axis=1) != 2)
             marginal_error = max(marginal_error, float(np.max(abs(mask.mean(axis=0) - 1 / 3))))
         quota_errors += np.count_nonzero(counts[assignment == 2])
+    classes = _spillover._classes(pop.groups, 0, len(pop.design.policies) - 1, case)
     batches = tuple(
-        _spillover._frequency_batches(
-            pop, comparison, _spillover._classes(pop, comparison, case), attempts
-        )
+        summarize_cells(pop, comparison, cells)
+        for cells in _spillover._frequency_cells(pop, comparison, classes, attempts)
     )
     points = np.concatenate([b.estimate for b in batches])
     errors = np.concatenate([b.standard_error for b in batches])
@@ -367,7 +375,7 @@ def _large_group_errors():
     wide = replace(pop, groups=(*pop.groups[:-1], replace(pop.groups[-1], offers=(0, n // 2))))
     plan = _spillover.evaluate_design(wide, comparison)
     correct = (
-        not plan.calibration_passed
+        plan.status == "not_assessed"
         and not plan.scenarios
         and plan.reason == "group_draw_exceeds_planning_limit"
     )
@@ -397,13 +405,7 @@ def _tail_error():
     for family, hits in product((1, 3), (0, 7, 37)):
         tail = 0.05 / (24 * family)
         tally = _spillover._Tally()
-        tally.observe(
-            (np.arange(37) < hits).astype(float),
-            np.full(37, 0.01),
-            np.ones(37, dtype=bool),
-            1.0,
-            norm.isf(0.025 / family),
-        )
+        tally.observe((np.arange(37) < hits).astype(float), np.ones(37), 1.0)
         row = tally.evidence(_spillover._Scenario("spread", "spread", (0,), (1,), 1.0, None), tail)
         lower, upper = row.detection_lower, row.detection_upper
         if lower is None or upper is None:
@@ -416,15 +418,15 @@ def _tail_error():
 
 
 def _direction_error():
-    z = norm.isf(0.025)
+    # Correct sign, wrong sign, tiny null, missing, point interval, and a range
+    # that covers the truth but touches zero. Reflect the whole set for decreases.
+    lower = np.array([0.15, -0.25, -0.01, np.nan, 0.2, 0.0])
+    upper = np.array([0.25, -0.15, 0.01, np.nan, 0.2, 0.2])
     mistakes = 0
     for truth in (-0.2, 0.2):
-        # Last interval touches zero, so it covers truth but is not a detection.
-        points = np.array([truth, -truth, 0.0, truth, truth, np.copysign(z * 0.1, truth)])
+        lo, hi = (lower, upper) if truth > 0 else (-upper, -lower)
         tally = _spillover._Tally()
-        tally.observe(
-            points, np.array([0.01, 0.01, 0.01, 0, 0.01, 0.1]), np.arange(6) != 3, truth, z
-        )
+        tally.observe(lo, hi, truth)
         case = _spillover._Scenario("spread", "spread", (1,), (2 if truth > 0 else 0,), truth, None)
         row = tally.evidence(case, 0.05 / 24)
         mistakes += (row.attempts, row.misses, row.unavailable) != (6, 3, 1)
@@ -439,9 +441,9 @@ def _direction_error():
     return CalibrationCheck("signed interval endpoint classification errors", float(mistakes), 0)
 
 
-def _joint_decision_errors(family, attempts, last_pass):
-    # A single adverse scenario vetoes calibration, even when its sibling is
-    # scarce. For power, equality passes on a lower bound, not on an upper bound.
+def _joint_decision_errors(family):
+    # Power depends on all six signed alternatives, not on a miss-rate gate.
+    attempts = 4096
     tail = 0.05 / (24 * family)
     rows = []
     for profile, schedule in product(
@@ -452,16 +454,13 @@ def _joint_decision_errors(family, attempts, last_pass):
         case = _spillover._Scenario(
             profile, schedule, (1,), (int(alt) + 1,), 0.1 if alt else 0.0, None
         )
-        tally = _spillover._Tally(
-            attempts=attempts, misses=last_pass, positive=attempts if alt else last_pass
-        )
+        tally = _spillover._Tally(attempts=attempts, positive=attempts if alt else 0)
         rows.append(tally.evidence(case, tail))
     last = rows[-1]
-    over = replace(tally, misses=last_pass + 1).evidence(case, tail)
     below = float(np.nextafter(0.8, 0))
     witnesses = [
         (rows, "supported", None),
-        ([*rows[:-1], over], "not_calibrated", "miss_bound_exceeded"),
+        ([*rows[:-1], replace(last, misses=attempts, miss_upper=1.0)], "supported", None),
         ([*rows[:-1], replace(last, detection_lower=0.8)], "supported", None),
         (
             [*rows[:-1], replace(last, detection_lower=below, detection_upper=0.8)],
@@ -473,20 +472,14 @@ def _joint_decision_errors(family, attempts, last_pass):
             "underpowered",
             "detection_below_target",
         ),
-        ([*rows[:-1], replace(last, detection_lower=None)], "not_calibrated", "incomplete_bounds"),
-        (rows[:-1], "not_calibrated", "incomplete_bounds"),
+        ([*rows[:-1], replace(last, detection_lower=None)], "not_assessed", "incomplete_bounds"),
+        (rows[:-1], "not_assessed", "incomplete_bounds"),
     ]
     mistakes = 0
     for evidence, status, reason in witnesses:
-        result = _spillover._conclude(tuple(evidence), family)
-        mistakes += (result.status, result.reason, result.calibration_passed) != (
-            status,
-            reason,
-            status != "not_calibrated",
-        )
-    return CalibrationCheck(
-        f"{family}-comparison calibration and power decision errors", float(mistakes), 0
-    )
+        result = _spillover._conclude(tuple(evidence))
+        mistakes += (result.status, result.reason) != (status, reason)
+    return CalibrationCheck(f"{family}-comparison power decision errors", float(mistakes), 0)
 
 
 def certify_decisions() -> tuple[CalibrationCheck, ...]:
@@ -494,8 +487,8 @@ def certify_decisions() -> tuple[CalibrationCheck, ...]:
     return (
         _tail_error(),
         _direction_error(),
-        _joint_decision_errors(1, 65_536, 3437),
-        _joint_decision_errors(2, 196_608, 5184),
+        _joint_decision_errors(1),
+        _joint_decision_errors(2),
     )
 
 
@@ -503,7 +496,7 @@ def main() -> None:
     """Run a planning example or the numerical certification campaign."""
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--two-policy", action="store_true", help="repeat the six two-policy plans")
+    mode.add_argument("--two-policy", action="store_true", help="compare two-policy planning cases")
     mode.add_argument("--certify", action="store_true", help="measure sampler and decision errors")
     args = parser.parse_args()
     if args.certify:
@@ -516,7 +509,8 @@ def main() -> None:
             raise SystemExit(1)
     elif args.two_policy:
         for n in (240, 500, 1000):
-            for change in (0.10, 0.01):
+            changes = (0.01, 0.03, 0.10, 0.25) if n == 1000 else (0.01, 0.10)
+            for change in changes:
                 _report(
                     *offer_trial(
                         {"base": n // 2, "upper": n // 2}, {"base": 5, "upper": 10}, (change,)

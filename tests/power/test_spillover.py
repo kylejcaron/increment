@@ -1,17 +1,20 @@
 """Operating characteristics for the prospective two-stage binary model."""
 
 from dataclasses import FrozenInstanceError
+from functools import cache
 from itertools import combinations, product
-from math import comb, prod, sqrt
-from statistics import mean, variance
+from math import ceil, comb, log2, prod
 
 import numpy as np
 import pyarrow as pa
 import pytest
-from scipy.stats import beta, binom, norm
+from scipy.optimize import brentq
+from scipy.special import logsumexp
+from scipy.stats import binom
 
 from calibration.spillover import certify_decisions, certify_sampling, three_levels
 from increment.errors import CodedError
+from increment.power._spillover import _model_grid
 from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
 
 
@@ -21,14 +24,16 @@ def _comparison(rate=0.4, effect=0.1, policy="upper"):
     )
 
 
-def _plan(sizes=(10,) * 4, *, comparisons=None, quotas=None, offers=None):
-    groups = range(len(sizes))
+def _plan(sizes=(10,) * 4, *, comparisons=None, quotas=None, offers=None, alpha=0.05, groups=None):
+    if groups is None:
+        groups = range(len(sizes))
     quotas = quotas or {"base": len(sizes) - len(sizes) // 2, "upper": len(sizes) // 2}
     design = SpilloverDesign(
         groups_per_policy={"all": quotas},
         comparisons=comparisons or (_comparison(),),
         outcome="renewed",
         horizon="90 days",
+        alpha=alpha,
     )
     if offers is None:
         offers = [(1, n - 2) for n in sizes]
@@ -51,13 +56,38 @@ def _plan(sizes=(10,) * 4, *, comparisons=None, quotas=None, offers=None):
         return tuple(plan.evidence for plan in experiment.planning)
 
 
+@cache
+def _lower_limit(n, mean, second, alpha=0.05):
+    # Independent single-stratum inversion: the moment-matching law puts mass
+    # mean²/second at second/mean, and its remaining mass at zero.
+    if mean == 0:
+        return 0.0
+    p, value = mean**2 / second, second / mean
+    bets = 0.95 * 0.5 ** np.arange(ceil(log2(n)) + 1)
+
+    def objective(m):
+        if m == 0:
+            return np.inf
+        at_zero = np.log1p(-bets)
+        at_value = np.log1p(bets * (value / m - 1))
+        return logsumexp(n * (at_zero + p * (at_value - at_zero))) - np.log(len(bets) * 4 / alpha)
+
+    return brentq(objective, 0, 1)
+
+
 def _exact_rates(sizes, offers, low, high):
     """Enumerate both fixed-count draws; compare public tallies, not simulated assignments."""
     groups = len(sizes)
     per_arm = groups // 2
-    weight = groups / sum(sizes)
+    scale = groups * max(sizes) / sum(sizes)
     truth = (sum(high) - sum(low)) / sum(sizes)
-    z = norm.isf(0.025)
+
+    def limits(totals):
+        n = len(totals)
+        x = np.array(totals) / max(sizes)
+        lo, comp = (_lower_limit(n, v.mean(), np.mean(v**2)) for v in (x, 1 - x))
+        return min(1, scale * lo), min(1, scale * (1 - comp))
+
     rates = np.zeros(4)  # unavailable, missed truth, positive interval, negative interval
     for policy in combinations(range(groups), per_arm):
         draws = [
@@ -77,19 +107,18 @@ def _exact_rates(sizes, offers, low, high):
             totals = [n * c / u for n, c, u in zip(sizes, y, draws, strict=True)]
             p = [t for j, t in enumerate(totals) if j in policy]
             r = [t for j, t in enumerate(totals) if j not in policy]
-            point = weight * (mean(p) - mean(r))
-            se = weight * sqrt((variance(p) + variance(r)) / per_arm)
-            available = se > 0 and 0 < sum(y) < sum(draws)
-            lower, upper = point - z * se, point + z * se
+            p_lo, p_hi = limits(p)
+            r_lo, r_hi = limits(r)
+            lower, upper = p_lo - r_hi, p_hi - r_lo
             rates += (
                 prod(masses)
                 / comb(groups, per_arm)
                 * np.array(
                     [
-                        not available,
-                        not (available and lower <= truth <= upper),
-                        available and lower > 0,
-                        available and upper < 0,
+                        False,
+                        not lower <= truth <= upper,
+                        lower > 0,
+                        upper < 0,
                     ]
                 )
             )
@@ -142,6 +171,9 @@ def _check_bounds(row, family):
 def test_whole_roster_rounding_and_profile_schedules_predict_interval_frequencies(effect):
     # On this roster both the baseline and |change| round from 14.5 to 15 people.
     sizes, offers = (10, 20, 30, 40), ((0, 1), (0, 2), (0, 1), (0, 2))
+    grid = _model_grid(sizes, 0.145, effect, (True,) * len(sizes))
+    assert not isinstance(grid, str)
+    policies = {(s.baseline_profile, s.schedule): (s.low, s.high) for s in grid}
     (plan,) = _plan(sizes, offers=offers, comparisons=(_comparison(0.145, effect),))
     # Baseline, cancellation, proportional gains, concentrated gains. Raising
     # the least affected groups uses event FRACTIONS, not raw event counts.
@@ -163,6 +195,7 @@ def test_whole_roster_rounding_and_profile_schedules_predict_interval_frequencie
             "spread": spread,
             "concentrated": concentrated,
         }
+        assert policies[row.baseline_profile, row.schedule] == (low, high[row.schedule])
         _check_rates(row, sizes, offers, low, high[row.schedule])
         if row.schedule == "cancelling":
             assert row.cancelling_pairs == sum(
@@ -175,7 +208,10 @@ def test_whole_roster_rounding_and_profile_schedules_predict_interval_frequencie
 @pytest.mark.parametrize("effect", [-0.1, 0.1])
 def test_signed_changes_and_cancellation_leave_equal_offer_groups_unchanged(effect):
     sizes = (10,) * 4
-    offers = ((0, 0), (0, 1), (0, 2), (0, 0))
+    offers = ((0, 0), (0, 1), (0, 2), (1, 1))
+    grid = _model_grid(sizes, 0.5, effect, tuple(r != p for r, p in offers))
+    assert not isinstance(grid, str)
+    spread = {s.schedule: (s.low, s.high) for s in grid if s.baseline_profile == "spread"}
     (plan,) = _plan(sizes, offers=offers, comparisons=(_comparison(0.5, effect),))
     sign = 1 if effect > 0 else -1
     low = (5,) * 4
@@ -187,6 +223,7 @@ def test_signed_changes_and_cancellation_leave_equal_offer_groups_unchanged(effe
     rows = {s.schedule: s for s in plan.scenarios if s.baseline_profile == "spread"}
     assert rows["cancelling"].cancelling_pairs == 5
     for schedule, high in expected.items():
+        assert spread[schedule] == (low, high)
         _check_rates(rows[schedule], sizes, offers, low, high)
 
 
@@ -204,14 +241,15 @@ def test_rare_baseline_does_not_cap_a_feasible_meaningful_increase():
     # makes fifty more all-event groups; stage two cannot change their rates.
     # Count the high-policy allocations by their hits in each of these two sets.
     miss = power = 0.0
-    allocations, z = comb(1000, 500), norm.isf(0.025)
+    allocations = comb(1000, 500)
     for a, b in product(range(11), range(51)):
         mass = comb(10, a) * comb(50, b) * comb(940, 500 - a - b) / allocations
         p, r = (a + b) / 500, (10 - a) / 500
-        se = sqrt((p * (1 - p) + r * (1 - r)) / 499)
-        lower, upper = p - r - z * se, p - r + z * se
-        miss += mass * (se == 0 or not lower <= 0.05 <= upper)
-        power += mass * (se > 0 and lower > 0)
+        # X is binary so its first and second raw moments agree, on either tail.
+        lower = _lower_limit(500, p, p) + _lower_limit(500, 1 - r, 1 - r) - 1
+        upper = 1 - _lower_limit(500, 1 - p, 1 - p) - _lower_limit(500, r, r)
+        miss += mass * (not lower <= 0.05 <= upper)
+        power += mass * (lower > 0)
     row = next(s for s in plan.scenarios if s.name == "largest_first/concentrated")
     assert row.misses / row.attempts == pytest.approx(miss, abs=0.025)
     assert row.correct_detections / row.attempts == pytest.approx(power, abs=0.025)
@@ -243,27 +281,26 @@ def test_invalid_planning_inputs_refuse_even_without_history(rate, effect, field
         (0.1, -0.3, (True,) * 4, "effect_exceeds_capacity"),
         (1, 0.1, (True,) * 4, "effect_exceeds_capacity"),
         (0, 0.05, (True,) * 4, "degenerate_cancellation"),
-        (0.5, 0.2, (True, True, False, False), "effect_exceeds_capacity"),
+        (0.5, 0.2, (True, True, False, False), "degenerate_cancellation"),
         (0.5, -0.2, (False, False, True, True), "effect_exceeds_capacity"),
-        (0.25, -0.025, (True, False, False, False), "degenerate_cancellation"),
+        (0.25, 0.025, (True, False, False, False), "degenerate_cancellation"),
     ],
 )
-def test_unassessable_models_keep_the_point_only_decision(rate, effect, movable, reason):
+def test_unassessable_power_keeps_its_specific_reason(rate, effect, movable, reason):
     (plan,) = _plan(
         comparisons=(_comparison(rate, effect),), offers=[(1, 1 + int(move)) for move in movable]
     )
-    assert not plan.calibration_passed
-    assert (plan.status, plan.reason, plan.scenarios) == ("not_calibrated", reason, ())
+    assert (plan.status, plan.reason, plan.scenarios) == ("not_assessed", reason, ())
 
 
 @pytest.mark.slow
 @pytest.mark.numerical_certification
 def test_sparse_design_keeps_all_labelled_schedules_and_all_attempts():
     (plan,) = _plan(comparisons=(_comparison(rate=0.025),))
-    assert (plan.status, plan.reason) == ("not_calibrated", "miss_bound_exceeded")
+    assert (plan.status, plan.reason) == ("underpowered", "detection_below_target")
     assert len({row.name for row in plan.scenarios}) == 12
     for row in plan.scenarios:
-        assert row.attempts == 65_536
+        assert row.attempts == 4096
         _check_bounds(row, 1)
         if row.true_effect == 0:
             assert row.misses == row.unavailable + row.false_calls
@@ -276,109 +313,123 @@ def test_sparse_design_keeps_all_labelled_schedules_and_all_attempts():
 
 @pytest.mark.slow
 @pytest.mark.numerical_certification
-def test_unavailable_draws_count_as_misses_but_not_false_alarms():
-    (plan,) = _plan((4,) * 5, comparisons=(_comparison(0.6),))
-    row = next(s for s in plan.scenarios if s.name == "largest_first/unchanged")
-    # Of ten allocations, one gives two all-zero groups high (zero SE), and
-    # three give two all-success groups high (point = 2/3, SE = 1/3).
-    assert row.unavailable / row.attempts == pytest.approx(1 / 10, abs=0.025)
-    assert row.false_calls / row.attempts == pytest.approx(3 / 10, abs=0.025)
-    assert row.misses == row.false_calls + row.unavailable
-
-    (plan,) = _plan(comparisons=(_comparison(0.5, -0.5),), offers=((0, 1),) * 4)
-    # Each reference group sees all five events, each policy group none:
-    # the contrast is nonzero but neither cell has between-group variation.
-    row = next(s for s in plan.scenarios if s.name == "spread/concentrated")
-    assert row.misses == row.unavailable == row.attempts
-    assert row.correct_detections == row.wrong_direction_detections == 0
-    _check_bounds(row, 1)
+@pytest.mark.parametrize("sign,dense", [(-1, False), (1, True)])
+def test_registered_alpha_crosses_a_signed_detection_boundary(sign, dense):
+    # With the policy arm all successes (all failures for a decrease), the
+    # reference is a census mean of 1/2. For constant observations the lower
+    # limit is c*x, so separation requires (1 + 1/2)*c > 1. Directly evaluate
+    # the five registered bets at c=2/3.
+    e = sum((1 + 0.5 * 0.95 / 2**j) ** 16 for j in range(5)) / 5
+    assert 4 / 0.05 < e < 4 / 0.01
+    sizes = (20,) * 32
+    offers = tuple((0, (i % 16) + 1 if dense else 19) for i in range(32))
+    effect = 0.5 if sign > 0 else -0.45
+    for alpha in (0.05, 0.01):
+        (plan,) = _plan(sizes, offers=offers, comparisons=(_comparison(0.5, effect),), alpha=alpha)
+        row = next(s for s in plan.scenarios if s.name == "spread/spread")
+        if sign > 0:
+            # The policy arm is deterministically all successes.
+            assert row.correct_detections == (4096 if alpha == 0.05 else 0)
+            assert row.misses == 0
+        else:
+            # Each policy group has one event and one unoffered person among 20.
+            # Enumerate all 17 possible successes across the 16 sampled groups.
+            r_lo = _lower_limit(16, 0.5, 0.25, alpha)
+            power = miss = 0.0
+            for k in range(17):
+                p = k / 16
+                lo = _lower_limit(16, p, p, alpha) + r_lo - 1
+                hi = 1 - _lower_limit(16, 1 - p, 1 - p, alpha) - r_lo
+                mass = binom.pmf(k, 16, 0.05)
+                power += mass * (hi < 0)
+                miss += mass * (not lo <= effect <= hi)
+            assert power == pytest.approx(0.95**16 if alpha == 0.05 else 0)
+            assert row.correct_detections / row.attempts == pytest.approx(power, abs=0.025)
+            assert row.misses / row.attempts == pytest.approx(miss, abs=0.025)
+        assert row.unavailable == row.wrong_direction_detections == 0
+        _check_bounds(row, 1)
 
 
 @pytest.mark.slow
 @pytest.mark.numerical_certification
-def test_scarce_sibling_does_not_relax_nominal_or_simulation_tails():
+def test_scarce_sibling_keeps_family_and_simulation_tails():
+    # For n=16 and constant group means (1/2, 1), the separation boundary
+    # is crossed at 2*2/.05 but not at 2*3/.05 for a three-policy family.
+    e = sum((1 + 0.5 * 0.95 / 2**j) ** 16 for j in range(5)) / 5
+    assert 4 / 0.05 < e < 6 / 0.05
     first, scarce = _plan(
-        (6,) * 6,
-        quotas={"base": 2, "middle": 3, "upper": 1},
-        comparisons=(_comparison(0.5, policy="middle"), _comparison()),
-        offers=((1, 0, 4),) * 6,
+        (10,) * 33,
+        quotas={"base": 16, "middle": 16, "upper": 1},
+        comparisons=(_comparison(0.5, 0.5, policy="middle"), _comparison(0.5, 0.5)),
+        offers=((0, 1, 2),) * 33,
     )
-    assert (scarce.reason, scarce.scenarios) == ("too_few_groups", ())
-    # Three all-success and three all-zero groups. Available allocations
-    # can reach |t|=2, enough for one comparison but not for two.
-    border = next(s for s in first.scenarios if s.name == "largest_first/unchanged")
-    assert border.false_calls == 0
-    assert 0 < border.misses == border.unavailable < border.attempts
-    for row in first.scenarios:
-        assert row.attempts == 196_608
+    for plan in (first, scarce):
+        assert len(plan.scenarios) == 12
+        row = next(s for s in plan.scenarios if s.name == "spread/spread")
+        assert row.correct_detections == row.unavailable == 0
         _check_bounds(row, 2)
 
 
 @pytest.mark.slow
 @pytest.mark.numerical_certification
-def test_three_policy_plans_clear_the_miss_limit_but_not_the_detection_target():
+def test_three_policy_plans_assess_detection_with_simultaneous_bounds():
     design, frames = three_levels()
     experiment, reader = from_frame(
         frames["roster"], offer_counts=frames["offer_counts"], design=design
     )
-    # Forward binomial tests at the two decision thresholds, independent of
-    # the planner's reported inverse-beta bounds and statuses.
+    # Forward binomial tests, independent of the reported inverse-beta bounds.
     with reader:
         assert len(experiment.planning) == 2
         for plan in experiment.planning:
             rows = plan.evidence.scenarios
-            assert len(rows) == 12 and {s.attempts for s in rows} == {196_608}
-            for s in rows:
-                assert binom.cdf(s.misses, s.attempts, 0.055 / 2) <= 0.05 / 48
+            assert len(rows) == 12 and {s.attempts for s in rows} == {4096}
+            for row in rows:
+                _check_bounds(row, 2)
             alternatives = [s for s in rows if s.true_effect != 0]
             assert len(alternatives) == 6
             assert any(
                 binom.cdf(s.correct_detections, s.attempts, 0.8) < 0.05 / 48 for s in alternatives
             )
-            assert plan.evidence.calibration_passed and plan.status == "underpowered"
-
-
-def _attempt_count(family):
-    # At true miss probability .05/m, all 12m scenarios must clear their
-    # CP upper miss limit except with family probability at most .05.
-    for attempts in range(65_536, 2**31 + 1, 65_536):
-        lo, hi = -1, attempts
-        while hi - lo > 1:
-            k = (hi + lo) // 2
-            if beta.isf(0.05 / (24 * family), k + 1, attempts - k) <= 0.055 / family:
-                lo = k
-            else:
-                hi = k
-        if 12 * family * binom.sf(lo, attempts, 0.05 / family) <= 0.05:
-            return attempts
-    raise AssertionError("no feasible assignment count")
+            assert plan.status == "underpowered"
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("family", [1, 2, 3, 5])
-def test_attempt_schedule_is_minimal_and_respects_both_work_bounds(family):
-    draws = _attempt_count(family)
+def test_family_work_limit_is_monotone_through_2100_groups(family):
     labels = [f"p{i}" for i in range(family)]
     siblings = tuple(_comparison(None, policy=p) for p in labels[1:])
 
-    def plan(groups, effect):
-        quotas = {"base": groups - 2 * family, **dict.fromkeys(labels, 2)}
+    def reason(groups):
+        quotas = {"base": groups - family, **dict.fromkeys(labels, 1)}
         return _plan(
-            (4,) * groups,
+            (2,) * groups,
             quotas=quotas,
-            comparisons=(_comparison(0.25, effect, labels[0]), *siblings),
+            comparisons=(_comparison(0.25, 1e-8, labels[0]), *siblings),
             offers=((0, *(1,) * family),) * groups,
-        )[0]
+        )[0].reason
 
-    maximum = 2048 if family == 1 else min(2**29 // draws, 2**31 // (family * draws))
-    observed = plan(min(1000, maximum), 0.1)
-    assert {r.attempts for r in observed.scenarios} == {draws}
-    for row in observed.scenarios:
-        _check_bounds(row, family)
-    # A sub-person change is rejected after budgeting, without doing a
-    # half-billion-draw simulation just to see which input was out of bounds.
-    assert plan(maximum, 1e-8).reason == "effect_rounds_to_zero"
-    assert plan(maximum + 1, 1e-8).reason == "simulation_budget_exceeded"
+    # One family-wide ceiling of 2**25 group-attempts, even when history is
+    # missing for siblings. Rounding a tiny effect avoids running the simulation.
+    maximum = 2**25 // (4096 * family)
+    assert reason(maximum) == "effect_rounds_to_zero"
+    assert reason(maximum + 1) == "simulation_budget_exceeded"
+    assert reason(2100) == (
+        "effect_rounds_to_zero" if 2100 <= maximum else "simulation_budget_exceeded"
+    )
+
+
+@pytest.mark.slow
+def test_group_renaming_preserves_models_and_sampling_with_structural_ties():
+    # The middle 20 groups permit changes. Under an ID-dependent model the
+    # rename fills all of them with baseline events, leaving no capacity to gain.
+    sizes = (10,) * 40
+    offers = ((0, 0),) * 10 + ((0, 1),) * 20 + ((1, 1),) * 10
+    rename = (*range(20, 30), *range(20), *range(30, 40))
+    comparisons = (_comparison(0.5, 0.2),)
+    (original,) = _plan(sizes, offers=offers, comparisons=comparisons)
+    (renamed,) = _plan(sizes, offers=offers, comparisons=comparisons, groups=rename)
+    assert len(original.scenarios) == 12
+    assert renamed == original
 
 
 @pytest.mark.slow

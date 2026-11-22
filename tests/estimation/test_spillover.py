@@ -1,9 +1,10 @@
 """Binary untreated outcomes under fixed group-policy and within-group treatment counts."""
 
-from collections import defaultdict
+from collections import Counter, defaultdict
+from decimal import Decimal, localcontext
 from fractions import Fraction
-from itertools import combinations, product
-from math import sqrt
+from itertools import combinations, permutations, product
+from math import prod, sqrt
 from statistics import mean, variance
 from types import SimpleNamespace
 from typing import Any
@@ -11,12 +12,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-from scipy.special import ndtr
 
+from increment._spillover_design import GroupProfile, SpilloverPopulation
 from increment.errors import InvalidRequestError
+from increment.estimation import spillover
 from increment.estimation.spillover import (
     BatchCell,
-    critical_value,
     estimate_comparison,
     reason_text,
     summarize_cells,
@@ -33,7 +34,7 @@ def _group(i, size=4, offers=(1, 2), stratum="all"):
     return f"g{i:03d}", stratum, size, offers
 
 
-def _population(groups, quotas=None, comparisons=None):
+def _population(groups, quotas=None, comparisons=None, *, alpha=None):
     design = SpilloverDesign(
         groups_per_policy=(
             {"all": {"base": len(groups) // 2, "upper": len(groups) // 2}}
@@ -43,6 +44,7 @@ def _population(groups, quotas=None, comparisons=None):
         comparisons=(_comparison(),) if comparisons is None else comparisons,
         outcome="visit",
         horizon="7d",
+        **({} if alpha is None else {"alpha": alpha}),
     )
     roster = pd.DataFrame(
         [(f"{g}/{j}", g, s) for g, s, n, _ in groups for j in range(n)],
@@ -143,11 +145,14 @@ def test_stratified_weights_include_both_saturated_nuisance_levels(reverse):
     _check_rct2(pop, labels, events, comparison, float(-point if reverse else point), float(var))
 
 
-@pytest.mark.parametrize("family_size", [1, 2, 3, 10**18])
-def test_critical_value_inverts_the_family_upper_tail(family_size):
-    assert ndtr(-critical_value(family_size)) == pytest.approx(
-        0.025 / family_size, rel=2e-14, abs=0
-    )
+def test_subnormal_family_alpha_has_a_finite_nontrivial_limit():
+    pop = _population(tuple(_group(i) for i in range(240)), alpha=np.nextafter(0.0, 1.0))
+    labels = ["base"] * 120 + ["upper"] * 120
+    cells = _cells(pop, labels, [0] * 120 + [2] * 120)
+    lo, hi = spillover.SpilloverInterval(pop).bounds(_comparison(), cells)
+    # Decimal inversion of mean_j(1-eta_j+eta_j/m)^120 = 4/alpha.
+    assert lo[0] == pytest.approx(-0.9962671986146618, rel=0, abs=1e-12)
+    assert hi[0] == 1
 
 
 def test_enumerated_heterogeneous_null_has_twelve_false_calls_in_sixty_assignments():
@@ -186,7 +191,7 @@ def test_enumerated_heterogeneous_null_has_twelve_false_calls_in_sixty_assignmen
     np.testing.assert_allclose(result.estimate, points, atol=1e-15)
     np.testing.assert_allclose(result.standard_error**2, variances, atol=1e-15)
     np.testing.assert_array_equal(
-        result.available & (abs(result.estimate) > critical_value(1) * result.standard_error),
+        result.available & (abs(result.estimate) > 1.959963984540054 * result.standard_error),
         false_calls,
     )
 
@@ -350,3 +355,341 @@ def test_projected_assignments_require_local_quotas_and_zero_other_successes():
         with pytest.raises(InvalidRequestError) as exc:
             summarize_counts(pop, _comparison(), np.array([assignment]), np.array([counts]))
         assert exc.value.code == "spillover.counts.invalid"
+
+
+@pytest.mark.parametrize(
+    ("alpha", "expected"),
+    [
+        (None, (-0.066319975405384, 0.120703247780779)),
+        (0.01, (-0.083351528408934, 0.137919690345054)),
+    ],
+)
+def test_fixed_mixture_240_store_counterexample(alpha, expected):
+    """Four always-positive stores all land in the higher-offer policy under a true null."""
+    pop = _population(tuple(_group(i, 59, (0, 1)) for i in range(240)), alpha=alpha)
+    events = [14] * 120 + [58] * 4 + [13] * 28 + [14] * 88
+    cells = _cells(pop, ["base"] * 120 + ["upper"] * 120, events)
+    rule = spillover.SpilloverInterval(pop)
+    lo, hi = rule.bounds(_comparison(), cells)
+    assert lo.shape == hi.shape == (1,)
+    assert (lo[0], hi[0]) == pytest.approx(expected, abs=1e-10, rel=0)
+    # Label order and repeated planner assignments do not change the compressed law.
+    codes = np.tile([0] * 120 + [1] * 120, (7, 1))
+    dense = rule.bounds_from_counts(_comparison(), codes, np.tile(events, (7, 1)))
+    np.testing.assert_allclose(dense, np.tile(np.array(expected)[:, None], 7), rtol=0, atol=1e-10)
+
+
+def _decimal_tail(strata, weights, threshold):
+    """Direct products from normalized group observations, not floating cell summaries."""
+    counts = [len(xs) for xs in strata]
+    rates = [w / n for w, n in zip(weights, counts, strict=True)]
+    if not any(any(xs) for xs in strata):
+        return Decimal(0)
+    atoms = []
+    for xs in strata:
+        a, q = mean(xs), mean(x * x for x in xs)
+        atoms.append((q / a, len(xs) * a**2 / q) if a else (Decimal(0), Decimal(0)))
+    bets = [Decimal(".95") / 2**j for j in range(1 + (max(counts) - 1).bit_length())]
+    etas = [[t * r / max(rates) for r in rates] for t in bets]
+
+    def wealth(m, *, verify_compression=False):
+        terms = []
+        for eta in etas:
+            term = Decimal(1)
+            for e, xs, (b, count) in zip(eta, strata, atoms, strict=True):
+                compressed = (1 - e) ** (len(xs) - count) * (1 - e + e * b / m) ** count
+                if verify_compression:
+                    raw = prod(1 - e + e * x / m for x in xs)
+                    assert compressed <= raw * (1 + Decimal("1e-45"))
+                term *= compressed
+            terms.append(term)
+        return mean(terms)
+
+    wealth(Decimal(".31"), verify_compression=True)
+    lo, hi = Decimal(0), Decimal(1)
+    for _ in range(82):
+        mid = (lo + hi) / 2
+        if wealth(mid) >= threshold:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def _decimal_policy(pop, labels, events, policy, k):
+    expanded, xs = [], []
+    for stratum in pop.design.groups_per_policy:
+        groups = [
+            (g, p, y)
+            for g, p, y in zip(pop.groups, labels, events, strict=True)
+            if g.stratum == stratum
+        ]
+        b = max(g.size for g, _, _ in groups)
+        expanded.append(len(groups) * b)
+        idx = pop.design.policies.index(policy)
+        xs.append(
+            [
+                Decimal(g.size * y) / ((g.size - g.offers[idx]) * b)
+                for g, p, y in groups
+                if p == policy
+            ]
+        )
+    weights = [Decimal(e) / sum(expanded) for e in expanded]
+    scale = Decimal(sum(expanded)) / sum(g.size for g in pop.groups)
+    threshold = 2 * k / Decimal.from_float(pop.design.alpha)
+    lower = scale * _decimal_tail(xs, weights, threshold)
+    upper = scale * (1 - _decimal_tail([[1 - x for x in row] for row in xs], weights, threshold))
+    return min(lower, 1), min(upper, 1)
+
+
+def test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisance():
+    labels = (
+        ["base", "medium", "spare", "upper"] * 6
+        + ["base", "base", "spare", "medium"] * 2
+        + ["upper", "medium", "base"] * 8
+        + ["upper", "upper", "medium", "spare"] * 3
+    )
+    sizes = [7 + (i * 5) % (7 if i < 32 else 10) for i in range(len(labels))]
+    groups = tuple(_group(i, n, (0, 2, 1, 4), "a" if i < 32 else "b") for i, n in enumerate(sizes))
+    comparisons = (_comparison("medium"), _comparison("upper"))
+    quotas = {"a": dict(Counter(labels[:32])), "b": dict(Counter(labels[32:]))}
+    pop = _population(groups, quotas, comparisons, alpha=0.13)
+    events = [
+        (i * 7 + 3) % (n - (0, 2, 1, 4)[pop.design.policies.index(p)] + 1)
+        for i, (n, p) in enumerate(zip(sizes, labels, strict=True))
+    ]
+    cells = _cells(pop, labels, events)
+    rule = spillover.SpilloverInterval(pop)
+    with localcontext() as ctx:
+        ctx.prec = 58
+        # Two pairs, three compared policies, four registered policy levels.
+        expected = {
+            p: _decimal_policy(pop, labels, events, p, 3) for p in ("base", "medium", "upper")
+        }
+        for c in comparisons:
+            p, r = expected[c.policy], expected[c.reference]
+            want = (p[0] - r[1], p[1] - r[0])
+            codes = np.array([[{c.policy: 1, c.reference: 0}.get(label, 2) for label in labels]])
+            projected = np.where(codes == 2, 0, events)
+            for lo, hi in (rule.bounds(c, cells), rule.bounds_from_counts(c, codes, projected)):
+                assert Decimal.from_float(lo[0]) <= want[0]
+                assert Decimal.from_float(hi[0]) >= want[1]
+                assert (lo[0], hi[0]) == pytest.approx(tuple(map(float, want)), rel=0, abs=1e-10)
+
+
+def test_one_group_and_no_events_have_the_fixed_single_bet_limit():
+    pop = _population((_group(0), _group(1)))
+    lo, hi = spillover.SpilloverInterval(pop).bounds(
+        _comparison(), _cells(pop, ["base", "upper"], [0, 0])
+    )
+    # All normalized complements are one. One group per policy implies j=0 only.
+    upper = 1 - 0.95 / (4 / 0.05 - 0.05)
+    assert lo[0] == pytest.approx(-upper, rel=0, abs=1e-13)
+    assert hi[0] == pytest.approx(upper, rel=0, abs=1e-13)
+
+
+def test_outside_domain_point_does_not_reverse_the_clipped_policy_range():
+    groups = tuple(_group(i, 2 if i < 30 else 100, (0, 1)) for i in range(60))
+    pop = _population(groups)
+    cells = _cells(pop, ["base"] * 30 + ["upper"] * 30, [0] * 30 + [99] * 30)
+    point = estimate_comparison(pop, _comparison(), cells)[0]
+    assert point == pytest.approx(100 / 51)
+    rule = spillover.SpilloverInterval(pop)
+    lo, hi = rule.bounds(_comparison(), cells)
+    with localcontext() as ctx:
+        ctx.prec = 58
+        m = _decimal_tail([[Decimal(1)] * 30], [Decimal(1)], Decimal(80))
+        # Higher-offer policy's untruncated lower and upper limits both exceed one.
+        scale = Decimal(100) / 51
+        assert scale * m > 1
+        assert lo[0] == pytest.approx(float(1 - scale * (1 - m)), rel=0, abs=1e-10)
+    assert hi[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("mean_total", "ss", "events"),
+    [(np.inf, 0, 1), (1, np.nan, 1), (-1, 0, 0), (6, 0, 1), (0, 1, 0), (1, -0.1, 1), (1, 3, 1)],
+)
+def test_infeasible_policy_moments_are_not_intervals(mean_total, ss, events):
+    # When two totals have mean one their largest possible centered SS is two.
+    pop = _population(tuple(_group(i) for i in range(4)))
+    good = BatchCell(np.zeros(1), np.zeros(1), np.array([0]), np.array([6]))
+    bad = BatchCell(np.array([mean_total]), np.array([ss]), np.array([events]), np.array([4]))
+    with pytest.raises(InvalidRequestError) as exc:
+        spillover.SpilloverInterval(pop).bounds(
+            _comparison(), {("all", "base"): good, ("all", "upper"): bad}
+        )
+    assert exc.value.code == "spillover.counts.invalid"
+
+
+def _joint_stratum(pop, indices, potentials):
+    """Enumerate both stages; different offers give assignments different probabilities."""
+    policies = pop.design.policies
+    quotas = pop.design.groups_per_policy[pop.groups[indices[0]].stratum]
+    schedule = [j for j, p in enumerate(policies) for _ in range(quotas[p])]
+    partitions = sorted(set(permutations(schedule)))
+    states = []
+    for labels in partitions:
+        urns = []
+        for i, p in zip(indices, labels, strict=True):
+            g = pop.groups[i]
+            urns.append(
+                Counter(
+                    sum(member < potentials[i][p] for member in subset)
+                    for subset in combinations(range(g.size), g.size - g.offers[p])
+                )
+            )
+        denominator = len(partitions) * prod(urn.total() for urn in urns)
+        for events in product(*urns):
+            ways = prod(urn[y] for urn, y in zip(urns, events, strict=True))
+            states.append((labels, events, Fraction(ways, denominator)))
+    assert sum(weight for _, _, weight in states) == 1
+    return states
+
+
+def _stratum_bet_expectation(pop, block, states, b, p, potentials, *, target, eta, reflected):
+    def bet(x):
+        ratio = (1 - x) / (1 - target) if reflected else x / target
+        return 1 - eta + eta * ratio
+
+    observed = Fraction(0)
+    for labels, events, weight in states:
+        factors = []
+        for i, label, y in zip(block, labels, events, strict=True):
+            if label == p:
+                group = pop.groups[i]
+                x = Fraction(group.size * y, (group.size - group.offers[p]) * b)
+                factors.append(bet(x))
+        observed += weight * prod(factors)
+
+    # Averaging the second-stage draws replaces sampled totals by the potential events.
+    expected = [bet(Fraction(potentials[i][p], b)) for i in block]
+    draws = pop.design.groups_per_policy[pop.groups[block[0]].stratum][pop.design.policies[p]]
+    assert observed == mean(prod(s, start=Fraction(1)) for s in combinations(expected, draws))
+    return observed
+
+
+def test_exact_two_stage_law_covers_the_person_targets_and_both_normalized_tails():
+    sizes = (2, 3, 4, 2, 3, 2, 3)
+    groups = tuple(
+        _group(i, size, (0, 1, size - 1), "a" if i < 4 else "b") for i, size in enumerate(sizes)
+    )
+    comparisons = (_comparison("medium"), _comparison("upper"))
+    policies = ("base", "medium", "upper")
+    quotas = {"a": {"base": 2, "medium": 1, "upper": 1}, "b": dict.fromkeys(policies, 1)}
+    pop = _population(groups, quotas, comparisons, alpha=0.25)
+    # Each entry is the number of people with untreated outcome one under that
+    # policy's fixed offer count. Where two offer counts coincide, outcomes agree.
+    potentials = [(0, 2, 2), (2, 1, 2), (0, 4, 0), (2, 0, 0), (1, 2, 1), (0, 2, 2), (3, 0, 3)]
+    blocks = (range(4), range(4, 7))
+    strata = [_joint_stratum(pop, block, potentials) for block in blocks]
+    maxima = [max(sizes[i] for i in block) for block in blocks]
+    expanded = [len(block) * b for block, b in zip(blocks, maxima, strict=True)]
+    people = sum(sizes)
+    targets = [Fraction(sum(row[p] for row in potentials), people) for p in range(3)]
+    # Direct product expectations at each policy's actual person target, not
+    # an equally weighted group target or a complement on the person scale.
+    for p, policy in enumerate(policies):
+        ns = [q[policy] for q in quotas.values()]
+        rates = [Fraction(e, n) for e, n in zip(expanded, ns, strict=True)]
+        target = targets[p] * Fraction(people, sum(expanded))
+        for reflected, j in product((False, True), range(1 + (max(ns) - 1).bit_length())):
+            expectation = Fraction(1)
+            for block, states, b, rate in zip(blocks, strata, maxima, rates, strict=True):
+                eta = Fraction(19, 20 * 2**j) * rate / max(rates)
+                expectation *= _stratum_bet_expectation(
+                    pop,
+                    block,
+                    states,
+                    b,
+                    p,
+                    potentials,
+                    target=target,
+                    eta=eta,
+                    reflected=reflected,
+                )
+            assert expectation <= 1
+
+    labels, events, weights = [], [], []
+    for (a, y, pa), (b, z, pb) in product(*strata):
+        labels.append(a + b)
+        events.append(y + z)
+        weights.append(pa * pb)
+    assert len(set(weights)) > 1
+    laws = np.array(labels)
+    rule = spillover.SpilloverInterval(pop)
+    missed = np.zeros(len(weights), dtype=bool)
+    for c in comparisons:
+        p, r = (pop.design.policies.index(name) for name in (c.policy, c.reference))
+        codes = np.where(laws == p, 1, np.where(laws == r, 0, 2))
+        counts = np.where(codes == 2, 0, events)
+        truth = targets[p] - targets[r]
+        points = summarize_counts(pop, c, codes, counts).estimate
+        assert np.dot(np.array(weights, dtype=float), points) == pytest.approx(float(truth))
+        lo, hi = rule.bounds_from_counts(c, codes, counts)
+        missed |= (lo > float(truth)) | (hi < float(truth))
+    assert sum(w for w, miss in zip(weights, missed, strict=True) if miss) <= Fraction(1, 4)
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_many_one_group_strata_keep_the_outward_side_of_the_closed_form():
+    # For every stratum and each policy, all observed normalized totals are
+    # exactly 1/2. The product reduces to (.05 + .475/m)^8192 for either tail.
+    n = 8192
+    names = [f"s{i}" for i in range(n)]
+    design = SpilloverDesign(
+        {s: {"base": 1, "upper": 1} for s in names}, (_comparison(),), "visit", "7d"
+    )
+    groups = tuple(
+        GroupProfile(2 * i + j, s, 4, (0, 2)) for i, s in enumerate(names) for j in range(2)
+    )
+    pop = SpilloverPopulation(design, groups, "many-strata")
+    r = BatchCell(np.array([2.0]), np.zeros(1), np.array([2]), np.array([4]))
+    p = BatchCell(np.array([2.0]), np.zeros(1), np.array([1]), np.array([2]))
+    cells = {(s, policy): cell for s in names for policy, cell in (("base", r), ("upper", p))}
+    lo, hi = spillover.SpilloverInterval(pop).bounds(_comparison(), cells)
+    with localcontext() as ctx:
+        ctx.prec = 58
+        limit = Decimal(".475") / (Decimal(80) ** (Decimal(1) / n) - Decimal(".05"))
+        assert Decimal.from_float(lo[0]) <= 2 * limit - 1
+        assert Decimal.from_float(hi[0]) >= 1 - 2 * limit
+        assert lo[0] == pytest.approx(float(2 * limit - 1), rel=0, abs=1e-10)
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_long_rounded_cell_mean_encloses_exact_product_in_both_tails():
+    n = 16_384
+    design = SpilloverDesign({"all": {"base": n, "upper": n}}, (_comparison(),), "visit", "7d")
+    groups = tuple(GroupProfile(i, "all", 10, (0, 7)) for i in range(2 * n))
+    pop = SpilloverPopulation(design, groups, "constant-third")
+    # Recorded DuckDB AVG of n copies of 10*1/3, with zero centered SS.
+    # Reflect its signed error as well: 1-X must use the same absolute allowance.
+    reported = float.fromhex("0x1.aaaaaaaaab0a4p+1")
+    cells = {
+        ("all", "base"): BatchCell(np.zeros(2), np.zeros(2), np.zeros(2, int), np.full(2, 10 * n)),
+        ("all", "upper"): BatchCell(
+            np.array([reported, 10 - reported]),
+            np.zeros(2),
+            np.array([n, 2 * n]),
+            np.full(2, 3 * n),
+        ),
+    }
+    lo, hi = spillover.SpilloverInterval(pop).bounds(_comparison(), cells)
+    with localcontext() as ctx:
+        ctx.prec = 58
+        # With constant X=a, all roots are exactly a times the all-one root.
+        bets = [Decimal(".95") / (2**j) for j in range(15)]
+        left, right = Decimal(0), Decimal(1)
+        for _ in range(90):
+            mid = (left + right) / 2
+            if sum((1 - t + t / mid) ** n for t in bets) >= 80 * len(bets):
+                left = mid
+            else:
+                right = mid
+        for i, a in enumerate((Decimal(1) / 3, Decimal(2) / 3)):
+            lower, upper = (1 + a) * left - 1, 1 - (1 - a) * left
+            assert Decimal.from_float(lo[i]) <= lower
+            assert Decimal.from_float(hi[i]) >= upper
+            assert (lo[i], hi[i]) == pytest.approx((float(lower), float(upper)), abs=1e-10, rel=0)

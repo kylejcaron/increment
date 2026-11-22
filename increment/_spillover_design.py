@@ -27,7 +27,7 @@ _REFUSALS = refusals(
         "spillover.log.quota": "The {field} log disagrees with the design: {requirement}.",
         "spillover.roster.changed": "The frozen {field} no longer matches: {requirement}.",
         "spillover.planning.baseline_rate": (
-            "Use a pre-assignment event rate between 0 and 1, or omit it for a point estimate only.",
+            "Use a pre-assignment event rate between 0 and 1, or omit it to skip the power check.",
             ("baseline_rate",),
         ),
         "spillover.planning.meaningful_effect": (
@@ -39,6 +39,7 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 _REQUIREMENTS = {
+    ("spillover.design.invalid", "alpha"): "choose a false-alarm rate strictly between 0 and 1",
     (
         "spillover.design.invalid",
         "roster",
@@ -78,7 +79,7 @@ _REQUIREMENTS = {
         "group_policy",
     ): "match the declared group count for each policy within each stratum",
     ("spillover.log.quota", "offered"): "match each group's offer count under its assigned policy",
-    ("spillover.roster.changed", "roster"): "use the registered roster and offer counts",
+    ("spillover.roster.changed", "roster"): "use the original design, roster and offer counts",
 }
 
 
@@ -200,6 +201,7 @@ class SpilloverDesign:
     comparisons: tuple[SpilloverComparison, ...]
     outcome: str
     horizon: str
+    alpha: float
     policies: tuple[str, ...] = field(init=False)
 
     def __init__(
@@ -208,7 +210,16 @@ class SpilloverDesign:
         comparisons: Sequence[SpilloverComparison],
         outcome: str,
         horizon: str,
+        *,
+        alpha: float = 0.05,
     ) -> None:
+        if (
+            not isinstance(alpha, Real)
+            or isinstance(alpha, (bool, np.bool_, np.timedelta64))
+            or not 0 < alpha < 1
+            or not 0 < float(alpha) < 1
+        ):
+            refuse_input("spillover.design.invalid", "alpha")
         quotas = _freeze_allocation(groups_per_policy)
         policies = tuple(next(iter(quotas.values())))
         family = _sequence(comparisons, "comparisons")
@@ -234,6 +245,7 @@ class SpilloverDesign:
         object.__setattr__(self, "comparisons", family)
         object.__setattr__(self, "outcome", _label(outcome, "outcome"))
         object.__setattr__(self, "horizon", _label(horizon, "horizon"))
+        object.__setattr__(self, "alpha", float(alpha))
         object.__setattr__(self, "policies", policies)
 
     @property
@@ -255,6 +267,7 @@ class SpilloverDesign:
             ],
             "outcome": self.outcome,
             "horizon": self.horizon,
+            "alpha": self.alpha,
         }
 
 

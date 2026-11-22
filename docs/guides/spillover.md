@@ -8,7 +8,9 @@ For example, a retailer might assign stores to make few, some or many offers and
 
 Give every policy a name. Set the number of offers each store would make under **each** policy and the number of stores that will use each policy. If you draw stores separately by region, use a separate set of store counts for each region (a *stratum*). Zero offers is fine. A policy that offers to everyone cannot be used to measure what happens without an offer.
 
-Choose the direction and size of each comparison before seeing outcomes. `policy: many, reference: few` means **many minus few**. `meaningful_effect: 0.05` means a rise of five percentage points, not a 5% relative increase. A negative value means a decrease. For a precision check, add a comparable pre-experiment event rate as `baseline_rate` on that comparison. Omit it and you still get an estimate, but no interval.
+Choose the direction and size of each comparison before seeing outcomes. `policy: many, reference: few` means **many minus few**. `meaningful_effect: 0.05` means a rise of five percentage points, not a 5% relative increase. Set `alpha` once for the experiment. At the default `0.05`, the mathematical rule limits the chance that **any** registered range misses its true effect to 5%, under the assignment rules below. Smaller alpha generally means wider ranges. Software approximates the endpoints; don't interpret a difference at the last decimal place. The [evidence and assumptions](../reference/validation-evidence.md#ev-spillover-rct2) give the details.
+
+Want to know whether the experiment could detect that change? Give the comparison a comparable pre-experiment event rate as `baseline_rate`. Without it, Increment skips the power check, **not** the final interval.
 
 Save these definitions alongside the **frozen**, versioned roster and offer counts. In this six-store example, two stores receive each policy. The size and names are examples, not limits.
 
@@ -22,6 +24,7 @@ spillovers:
     design:
       outcome: purchased
       horizon: within seven days
+      alpha: 0.01
       groups_per_policy: {all: {few: 2, some: 2, many: 2}}
       comparisons:
         - {policy: some, reference: few, meaningful_effect: 0.05}
@@ -35,7 +38,9 @@ spillovers:
 """)
 ```
 
-Point `relations` to tables or views for **this experiment**. A short table name means the connection's current schema at registration. Give a fully qualified name if the table lives elsewhere. The reader stays bound to those locations even if you switch schemas. Use a view to rename columns or limit the rows. Each customer has one roster row. Give the full plan, not just the offer count for the policy a store eventually received.
+Use durable tables or views for **this experiment**. Short names use the connection's current schema when you register. The open reader stays on those locations if you switch schemas; use fully qualified names to reopen from a different default. Registration checks the roster and planned counts, not future outcomes or the definition of a mutable view. Keep the input versions you need to reproduce the result.
+
+With DuckDB, attach the databases before registering, even if the outcome tables do not exist yet. Use absolute file paths to reopen on another connection; an in-memory database works only on its original connection. With Snowflake, avoid a temporary table or view with the same name as a registered input. The check applies to the named object, not the tables inside a view.
 
 | Relation | Columns | When needed |
 |---|---|---|
@@ -83,7 +88,7 @@ with reader:
     registration = experiment.registration_id
 ```
 
-`supported` means the simulated designs met the detection target for the chosen change. `underpowered` means the interval checks passed but at least one scenario missed that target. `inconclusive` means the simulations could not settle the power question. `not_calibrated` means plan for a point estimate only; read the comparison's `reason`. None of these labels proves how a real population will respond.
+Read the planning label before launch. `supported` means all modeled ways the chosen change could occur met the 80% detection target. `underpowered` means at least one fell short; `inconclusive` means the simulations couldn't settle that question. `not_assessed` gives a reason, such as missing history. These labels help you decide whether to change the design. None determines whether you get an interval after the trial.
 
 ## Draw the assignments, then measure
 
@@ -118,19 +123,25 @@ experiment, reader = from_definitions(
 with reader:
     rows = run(experiment, reader).comparisons
 for row in rows:
+    if row.lower is None or row.upper is None:
+        print(f"{row.policy} minus {row.reference}: no interval; {row.unavailable_reason}")
+        continue
     print(
-        f"{row.policy} minus {row.reference}: {100 * row.estimate:+.1f} points; {row.unavailable_reason}"
+        f"{row.policy} minus {row.reference}: {100 * row.estimate:+.1f} points; "
+        f"range {100 * row.lower:+.1f} to {100 * row.upper:+.1f}; {row.direction}"
     )
 ```
 
 <!-- output -->
 ```text
-some minus few: +25.0 points; missing_baseline_rate
-many minus few: +50.0 points; missing_baseline_rate
+some minus few: +25.0 points; range -97.7 to +99.1; inconclusive
+many minus few: +50.0 points; range -97.3 to +100.0; inconclusive
 ```
 
-The estimated purchase rate among customers who got **no offer** was 25 percentage points higher under “some” than under “few.” The example supplied no historical rate, so there’s no interval: the point alone is not enough to conclude that more offers helped.
+The best estimate for “some” versus “few” is a **25-point increase** in purchases by customers who got no offer. But only two stores ran each policy. The range includes both a loss and a gain, so the result is **inconclusive**. It is not “no effect,” and it is not a missing test.
 
-With a qualified plan and enough variation in the observed data, `lower` and `upper` give an approximate range in proportion units. The ranges account for **all** registered comparisons, even if one can't report an interval. People and store outcome rows stay in the warehouse; Python receives policy summaries. Each eligible person counts equally, which is not the same as pooling all customers who got no offer.
+If the whole range is above zero the row reports `increase`; if it is below zero, `decrease`. Whether that is good news depends on the outcome. A range that touches zero is inconclusive. All registered comparisons are protected without needing a previous event rate. Each eligible person counts equally; simply pooling everyone who got no offer answers a different question.
+
+Warehouse analysis returns totals by region and policy, not rows labeled with a customer or store ID. That is not anonymization: if just one customer went without an offer in a cell, its event count reveals that customer's outcome. Apply your usual access and small-cell reporting rules.
 
 Already have dataframes? Use [`increment.spillover.from_frame`](../api.md#two-stage-spillover) with the same five roles, then `run(experiment, reader)`. No warehouse connection is needed. See the [validation evidence](../reference/validation-evidence.md#ev-spillover-rct2) for the published comparison and the limits of the planning check.

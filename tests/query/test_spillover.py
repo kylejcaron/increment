@@ -114,6 +114,46 @@ def test_frozen_profiles_and_bounded_two_stage_cells(trial, monkeypatch):
     }
 
 
+@pytest.mark.slow
+def test_policy_cell_repeated_fraction_preserves_mean_and_zero_spread():
+    # Every group has size 10, and 1/3 of its 3, 6 or 9 unoffered people
+    # have events. The cell mean is 10/3, not a sum of rounded group totals.
+    con = ibis.duckdb.connect(threads=1)
+    try:
+        con.raw_sql("""
+            CREATE VIEW profiles AS
+            SELECT g AS group_id, IF(g % 2 = 0, 'base', 'more') AS policy,
+                   IF(g % 4 < 2, 6, 9) AS base_free
+            FROM range(32768) AS t(g);
+            CREATE VIEW people AS
+            SELECT 10 * group_id + j AS person_id, group_id, j,
+                   base_free - IF(policy = 'more', 3, 0) AS n_free
+            FROM profiles CROSS JOIN range(10) AS t(j);
+            CREATE VIEW roster AS SELECT person_id, group_id, 'all' AS stratum FROM people;
+            CREATE VIEW group_policy AS SELECT group_id, policy FROM profiles;
+            CREATE VIEW offer_counts AS
+                SELECT group_id, 'base' AS policy, 10 - base_free AS offers FROM profiles
+                UNION ALL SELECT group_id, 'more', 13 - base_free FROM profiles;
+            CREATE VIEW offered AS SELECT person_id, j >= n_free AS offered FROM people;
+            CREATE VIEW outcomes AS
+                SELECT person_id, 3 * j < n_free AS outcome FROM people WHERE j < n_free
+        """)
+        design = SpilloverDesign(
+            groups_per_policy={"all": {"base": 16384, "more": 16384}},
+            comparisons=(SpilloverComparison("more", "base", 0.1),),
+            outcome="purchase",
+            horizon="one week",
+        )
+        source = WarehouseSpilloverSource(con, {role: role for role in _ROLES})
+        cells = source.observe(source.freeze(design))
+        assert {cell.policy for cell in cells} == {"base", "more"}
+        for cell in cells:
+            assert cell.mean_total == pytest.approx(10 / 3, abs=1e-14, rel=0)
+            assert cell.ss == 0
+    finally:
+        con.disconnect()
+
+
 def test_unverified_digest_refuses_before_relation_lookup(trial, monkeypatch):
     con, design, _, _ = trial
     with monkeypatch.context() as guards, pytest.raises(CodedError) as exc:
@@ -248,6 +288,19 @@ def test_registered_tables_do_not_follow_database_namespace_changes(tmp_path):
         con.raw_sql("UPDATE other.outcomes SET outcome = NOT outcome")
         con.raw_sql("SET schema = 'original'")
         experiment, reader = from_definitions(path, con, family="spillover")
+        # Changing only the registered confidence level, even to the default
+        # (omitted in YAML), invalidates the receipt against these same tables.
+        default = {k: v for k, v in design.items() if k != "alpha"}
+        write_study(path, default, {role: role for role in frames})
+        with pytest.raises(CodedError) as stale:
+            from_definitions(
+                path, con, family="spillover", expected_registration=experiment.registration_id
+            )
+        assert (stale.value.code, stale.value.context["field"]) == (
+            "spillover.roster.changed",
+            "roster",
+        )
+        write_study(path, design, {role: role for role in frames})
         with reader:
             con.raw_sql("SET schema = 'other'")
             rows = run(experiment, reader).comparisons
@@ -259,6 +312,79 @@ def test_registered_tables_do_not_follow_database_namespace_changes(tmp_path):
         assert exc.value.code == "spillover.roster.changed"
     finally:
         con.disconnect()
+
+
+def test_registration_binds_duckdb_file_behind_attached_log_name(tmp_path):
+    from increment import from_definitions, run
+    from tests.spillover_trial import three_policy_trial, write_study
+
+    design, frames = three_policy_trial()
+    study = tmp_path / "study.yaml"
+    names = {role: role for role in frames} | {"outcomes": "events.main.outcomes"}
+    write_study(study, design, names)
+    main_file = tmp_path / "trial.duckdb"
+    original = tmp_path / "original.duckdb"
+    other = tmp_path / "other.duckdb"
+    con = ibis.duckdb.connect(main_file)
+    try:
+        con.attach(original, name="events")
+        for role in ("roster", "offer_counts"):
+            con.create_table(role, frames[role])
+        experiment, reader = from_definitions(study, con, family="spillover")
+        with reader:
+            receipt = experiment.registration_id
+            assert str(tmp_path) not in repr(experiment.source_recipe)
+        for role in ("group_policy", "offered"):
+            con.create_table(role, frames[role])
+    finally:
+        con.disconnect()
+
+    # The location, not the contents or lifetime of the connection, is registered.
+    for file in (original, other):
+        writer = ibis.duckdb.connect(file)
+        try:
+            writer.create_table("outcomes", frames["outcomes"])
+        finally:
+            writer.disconnect()
+    con = ibis.duckdb.connect(main_file)
+    try:
+        con.attach(original, name="events")
+        experiment, reader = from_definitions(
+            study, con, family="spillover", expected_registration=receipt
+        )
+        with reader:
+            assert run(experiment, reader).registration_id == receipt
+            con.detach("events")
+            con.attach(other, name="events")
+            with pytest.raises(CodedError) as changed:
+                run(experiment, reader)
+            assert changed.value.code == "spillover.roster.changed"
+        with pytest.raises(CodedError) as changed:
+            from_definitions(study, con, family="spillover", expected_registration=receipt)
+        assert changed.value.code == "spillover.roster.changed"
+    finally:
+        con.disconnect()
+
+
+def test_independent_in_memory_databases_do_not_share_registration(tmp_path):
+    from increment import from_definitions
+    from tests.spillover_trial import three_policy_trial, write_study
+
+    design, frames = three_policy_trial()
+    study = tmp_path / "study.yaml"
+    write_study(study, design, {role: role for role in frames})
+    receipts = []
+    for _ in range(2):
+        con = ibis.duckdb.connect()
+        try:
+            for role in ("roster", "offer_counts"):
+                con.create_table(role, frames[role])
+            experiment, reader = from_definitions(study, con, family="spillover")
+            with reader:
+                receipts.append(experiment.registration_id)
+        finally:
+            con.disconnect()
+    assert receipts[0] != receipts[1]
 
 
 def test_case_insensitive_connection_cannot_match_a_different_person(tmp_path):
