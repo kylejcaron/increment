@@ -8,7 +8,7 @@ Context keys include template fields, explicitly declared keys and named rendere
 
 ## Registered refusal codes
 
-[`absorption.*`](#family-absorption) · [`adjust.*`](#family-adjust) · [`allocation.*`](#family-allocation) · [`analysis.*`](#family-analysis) · [`arm.*`](#family-arm) · [`arm_planning.*`](#family-arm_planning) · [`artifact.*`](#family-artifact) · [`artifact_contract.*`](#family-artifact_contract) · [`breakout.*`](#family-breakout) · [`cate.*`](#family-cate) · [`compatibility.*`](#family-compatibility) · [`contrast.*`](#family-contrast) · [`conversion_inference.*`](#family-conversion_inference) · [`dashboard.*`](#family-dashboard) · [`decision.*`](#family-decision) · [`definition.*`](#family-definition) · [`design.*`](#family-design) · [`estimation.*`](#family-estimation) · [`evidence.*`](#family-evidence) · [`facade.*`](#family-facade) · [`family.*`](#family-family) · [`frame.*`](#family-frame) · [`identification.*`](#family-identification) · [`impute.*`](#family-impute) · [`install.*`](#family-install) · [`integrity.*`](#family-integrity) · [`kernel.*`](#family-kernel) · [`logged_policy.*`](#family-logged_policy) · [`model.*`](#family-model) · [`moments.*`](#family-moments) · [`package.*`](#family-package) · [`plan.*`](#family-plan) · [`power.*`](#family-power) · [`query.*`](#family-query) · [`readout.*`](#family-readout) · [`report.*`](#family-report) · [`reporting.*`](#family-reporting) · [`results.*`](#family-results) · [`sensitivity.*`](#family-sensitivity) · [`sequential.*`](#family-sequential) · [`simulate.*`](#family-simulate) · [`source.*`](#family-source) · [`store.*`](#family-store) · [`tables.*`](#family-tables) · [`unit_cycle.*`](#family-unit_cycle) · [`wire.*`](#family-wire)
+[`absorption.*`](#family-absorption) · [`adjust.*`](#family-adjust) · [`allocation.*`](#family-allocation) · [`analysis.*`](#family-analysis) · [`arm.*`](#family-arm) · [`arm_planning.*`](#family-arm_planning) · [`artifact.*`](#family-artifact) · [`artifact_contract.*`](#family-artifact_contract) · [`breakout.*`](#family-breakout) · [`cate.*`](#family-cate) · [`compatibility.*`](#family-compatibility) · [`contrast.*`](#family-contrast) · [`conversion_inference.*`](#family-conversion_inference) · [`dashboard.*`](#family-dashboard) · [`decision.*`](#family-decision) · [`definition.*`](#family-definition) · [`design.*`](#family-design) · [`estimation.*`](#family-estimation) · [`evidence.*`](#family-evidence) · [`facade.*`](#family-facade) · [`family.*`](#family-family) · [`frame.*`](#family-frame) · [`holdout.*`](#family-holdout) · [`identification.*`](#family-identification) · [`impute.*`](#family-impute) · [`install.*`](#family-install) · [`integrity.*`](#family-integrity) · [`kernel.*`](#family-kernel) · [`logged_policy.*`](#family-logged_policy) · [`model.*`](#family-model) · [`moments.*`](#family-moments) · [`package.*`](#family-package) · [`plan.*`](#family-plan) · [`power.*`](#family-power) · [`query.*`](#family-query) · [`readout.*`](#family-readout) · [`report.*`](#family-report) · [`reporting.*`](#family-reporting) · [`results.*`](#family-results) · [`sensitivity.*`](#family-sensitivity) · [`sequential.*`](#family-sequential) · [`simulate.*`](#family-simulate) · [`source.*`](#family-source) · [`store.*`](#family-store) · [`tables.*`](#family-tables) · [`unit_cycle.*`](#family-unit_cycle) · [`wire.*`](#family-wire)
 
 <span id="family-absorption"></span>
 
@@ -17234,6 +17234,122 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment._frame_moments`
 
+<span id="family-holdout"></span>
+
+## `holdout.*`
+
+<span id="holdout.event_conflict"></span>
+
+### `holdout.event_conflict`
+
+**Cause and message:**
+
+<p>Study {study_id} has conflicting {stream} records for event {event_id}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `event_id`, `stream`, `study_id`
+
+**Registering modules:** `increment._holdout_roster`
+
+<span id="holdout.identity_ambiguous"></span>
+
+### `holdout.identity_ambiguous`
+
+**Cause and message:**
+
+<p>Study {study_id} cannot establish a unique original identity at link {link_ref}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `link_ref`, `study_id`
+
+**Registering modules:** `increment._holdout_roster`
+
+<span id="holdout.not_final_cut"></span>
+
+### `holdout.not_final_cut`
+
+**Cause and message:**
+
+<p>Window {window_id!r} has a registered data cut of {final_as_of!s}, not {as_of!s}. Use the registered cut for inference or request a description.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `as_of`, `final_as_of`, `window_id`
+
+**Registering modules:** `increment._holdout_look`
+
+<span id="holdout.precision_unrepresentable"></span>
+
+### `holdout.precision_unrepresentable`
+
+**Cause and message:**
+
+<p>Window {window_id!r} allows at most 9,007,199,254,740,991 projected units.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `window_id`
+
+**Registering modules:** `increment.power.holdout`
+
+<span id="holdout.registration_mismatch"></span>
+
+### `holdout.registration_mismatch`
+
+**Cause and message:**
+
+<p>The {field} evidence does not match holdout registration {study_id}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `study_id`
+
+**Registering modules:** `increment._holdout_records`
+
+<span id="holdout.sequential_unsupported"></span>
+
+### `holdout.sequential_unsupported`
+
+**Cause and message:**
+
+<p>Window {window_id!r} supports only one fixed-horizon decision. Request a description or use the registered final data cut.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `UnsupportedRequestError`
+
+**Context keys:** `window_id`
+
+**Registering modules:** `increment._holdout_look`
+
+<span id="holdout.window_not_registered"></span>
+
+### `holdout.window_not_registered`
+
+**Cause and message:**
+
+<p>Study {study_id} did not originally register these terms for window {window_id}: {fields}. Use the original terms or describe the observed records without inference.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `fields`, `study_id`, `window_id`
+
+**Registering modules:** `increment._holdout_records`
+
 <span id="family-identification"></span>
 
 ## `identification.*`
@@ -18396,7 +18512,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `constraint`, `field`, `model`, `value`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.literal"></span>
 
@@ -18412,7 +18528,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `constraint`, `field`, `model`, `value`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.missing"></span>
 
@@ -18428,7 +18544,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `field`, `model`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.nonfinite"></span>
 
@@ -18444,7 +18560,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `field`, `model`, `value`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.pattern"></span>
 
@@ -18460,7 +18576,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `constraint`, `field`, `model`, `value`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.range"></span>
 
@@ -18476,7 +18592,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `constraint`, `field`, `model`, `value`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.type"></span>
 
@@ -18492,7 +18608,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `constraint`, `field`, `model`, `value`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="model.field.unknown"></span>
 
@@ -18508,7 +18624,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `field`, `model`
 
-**Registering modules:** `increment.errors`, `increment.semantics.models`, `increment.winsor`
+**Registering modules:** `increment._holdout_records`, `increment.errors`, `increment.power.holdout`, `increment.semantics.models`, `increment.winsor`
 
 <span id="family-moments"></span>
 
@@ -20092,7 +20208,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Context keys:** `dof`, `nc`, `tail_alpha`
 
-**Registering modules:** `increment.power._shared`
+**Registering modules:** `increment.power._shared`, `increment.power.holdout`
 
 <span id="power.planned_looks"></span>
 
