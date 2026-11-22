@@ -71,6 +71,31 @@ def _build(rows, schedule, *metrics):
     )
 
 
+@pytest.mark.parametrize(
+    "axis,field",
+    [("cycle", "value_column"), ("step", "numerator"), ("period", "denominator")],
+)
+def test_schedule_axes_are_not_response_columns(axis, field):
+    rows = _observed().with_columns(pl.col("period").alias("visits"))
+    spec = (
+        MetricSpec(name="value", value_column="orders")
+        if field == "value_column"
+        else MetricSpec(name="rate", type="ratio", numerator="orders", denominator="visits")
+    )
+    for schedule in (None, _schedule()):
+        with pytest.raises(InvalidRequestError) as caught:
+            _build(rows, schedule, spec.model_copy(update={field: axis}))
+        assert caught.value.code == "source.frame.switchback.columns"
+        assert caught.value.context["reason"] == "metric_overlaps_column"
+        assert caught.value.context["name"] == axis
+        if field == "denominator":
+            experiment, reader = _build(rows, schedule, spec)
+            with reader:
+                (result,) = view_readout(experiment, reader)
+            # Mean orders are 3 and 0; the visit count averages 1/2 in each arm.
+            assert result.estimate.value == pytest.approx(6)
+
+
 @pytest.mark.parametrize("loss", ["last_cycle", "whole_unit", "unlogged_arm"])
 def test_observations_cannot_supply_a_missing_assignment(loss):
     log = _log()

@@ -30,7 +30,7 @@ def _assignment(k, m, grain):
     )
 
 
-def _build(rows, assignment):
+def _build(rows, assignment, *, metrics=None):
     k, m = assignment.periods_per_cycle, assignment.sequence.treated_periods
     return from_switchback_frame(
         pl.DataFrame(rows).reverse(),
@@ -39,7 +39,7 @@ def _build(rows, assignment):
         period="p",
         step="s",
         group="arm",
-        metrics={"response": "mean"},
+        metrics={"response": "mean"} if metrics is None else metrics,
         identification=Randomized(control_group="A", allocation={"A": (k - m) / k, "B": m / k}),
         assignment=assignment,
     )
@@ -215,17 +215,19 @@ def test_fixed_count_preserves_small_contrasts_between_large_integer_totals():
 
 
 @pytest.mark.parametrize(
-    ("grain", "offsets", "mean_offset"),
+    ("grain", "offsets", "mean_offset", "ratio"),
     [
-        ("shared_block", (-1, 0, 1), 0),
-        ("unit_cycle", (1, 0, -1), 0),
-        ("shared_block", (4, 3, 2), 3),
+        ("shared_block", (-1, 0, 1), 0, False),
+        ("unit_cycle", (1, 0, -1), 0, False),
+        ("shared_block", (4, 3, 2), 3, False),
+        ("shared_block", (4, 3, 2), 3, True),
     ],
 )
-def test_sub_ulp_replicate_differences_retain_the_null_test(grain, offsets, mean_offset):
+def test_sub_ulp_replicate_differences_retain_the_null_test(grain, offsets, mean_offset, ratio):
     from scipy.stats import t
 
     from increment.estimation.contrast import estimate_contrast
+    from increment.frame import MetricSpec
 
     d = 2**55
     rows = [
@@ -236,12 +238,18 @@ def test_sub_ulp_replicate_differences_retain_the_null_test(grain, offsets, mean
             "s": s,
             "arm": "B" if p == i else "A",
             "response": d + offset if s == 2 and p == i else 0,
+            "denominator": int(s == 2),
         }
         for i, offset in enumerate(offsets)
         for p in range(3)
         for s in range(4)
     ]
-    _, reader = _build(rows, _assignment(3, 1, grain))
+    metrics = (
+        [MetricSpec(name="response", type="ratio", numerator="response", denominator="denominator")]
+        if ratio
+        else None
+    )
+    _, reader = _build(rows, _assignment(3, 1, grain), metrics=metrics)
     source = bound_source(reader)
     computed = estimate_contrast(
         source.contrast_stats(source.metrics[0]),

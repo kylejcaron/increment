@@ -139,7 +139,8 @@ def _finite(value: Any) -> bool:
 
 
 def _forecast_clock(frame: nw.DataFrame[Any], reject: _Reject) -> None:
-    before, after = frame.schema["forecast_at"], frame.schema["assigned_at"]
+    schema = frame.schema
+    before, after = schema["forecast_at"], schema["assigned_at"]
     forecast, assignment = nw.col("forecast_at"), nw.col("assigned_at")
     complete = len(frame) > 0 and not (
         frame["forecast_at"].null_count() or frame["assigned_at"].null_count()
@@ -161,6 +162,17 @@ def _forecast_clock(frame: nw.DataFrame[Any], reject: _Reject) -> None:
         nanos = {"s": 1_000_000_000, "ms": 1_000_000, "us": 1_000, "ns": 1}
         if int(latest) * nanos[before.time_unit] < int(first) * nanos[after.time_unit]:
             return
+    elif complete:
+        reject(
+            message=(
+                "Use two date columns, or two datetime columns with matching time zones, "
+                "for forecast_at and assigned_at. In pandas, convert Python dates "
+                "with pd.to_datetime before passing the forecasts."
+            ),
+            forecast_at_dtype=str(before),
+            assigned_at_dtype=str(after),
+            reason="forecast_clock_dtype",
+        )
     reject(
         message="All forecast timestamps must strictly precede the first assignment on the same clock.",
         reason="forecast_not_pre_assignment",

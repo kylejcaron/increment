@@ -100,20 +100,20 @@ def _analysis(
             control_group="control", allocation={"control": 0.5, "treatment": 0.5}
         ),
         assignment=assignment,
-        contrast_references=(
-            None if shared else {name: UnitCycleTApproximation() for name in metrics}
-        ),
+        contrast_references=None if shared else {"value": UnitCycleTApproximation()},
     )
 
 
 def test_switchback_readout_returns_captured_typed_result():
-    result = _run(_analysis())
+    result = _run(_analysis(include_other=True))
 
-    assert len(result) == 1
-    assert result[0].metric == "value"
+    assert {row.metric: row.reference for row in result} == {
+        "value": "unit_t_approximation",
+        "other": "unit_t_approximation",
+    }
     assert result.metadata is not None
     assert result.metadata.coherence == "captured"
-    assert result.metadata.effective_modes == {"value": "captured"}
+    assert result.metadata.effective_modes == {"value": "captured", "other": "captured"}
 
 
 def test_switchback_results_remain_stable_after_panel_mutation():

@@ -111,6 +111,8 @@ the forecast is fixed before anyone knows the assigned arm. The latest
 `forecast_at` must be strictly earlier than the earliest `assigned_at`.
 Neither washout outcomes nor a forecast copied from the outcome table
 establish that timing.
+If pandas stores Python dates as `object`, convert both clock columns with
+`pd.to_datetime` first. An unreadable date is not evidence the forecast was late.
 
 ```python
 forecasts = pl.DataFrame(
@@ -218,6 +220,11 @@ still uses every scheduled period and the same share of alpha. If instead
 all blocks show exactly +2 orders, the ordinary row keeps that +2 estimate
 but reports `zero_standard_error`: the significance test **did not run**.
 That is different from a completed test whose interval includes zero.
+
+For a fixed-count schedule, a reported t-test is approximate: even with
+random assignment it can call a change more often than the chosen alpha.
+The [48-block example](../reference/switchback-inference.md#unadjusted-means-and-conversions)
+shows when that happens. More transactions per block do not fix it.
 
 ### 4. Size a future study with the same randomization
 

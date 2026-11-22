@@ -428,7 +428,7 @@ def _align(
 def reconcile_switchback_observations(
     frame: nw.DataFrame[Any],
     *,
-    schedule: SwitchbackObservationSchedule,
+    schedule: SwitchbackObservationSchedule | None,
     assignment: SwitchbackAssignment,
     specs: Sequence[MetricSpec],
     unit: str,
@@ -440,17 +440,27 @@ def reconcile_switchback_observations(
     reject_domain: _Reject,
     reject_schedule: _Reject,
 ) -> tuple[nw.DataFrame[Any], dict[str, MissingSwitchbackResponse]]:
-    """Keep every scheduled step; leave absent discarded measurements unobserved."""
+    """Validate response columns and align retained measurements to a log when supplied."""
     axes = _Axes(unit, cycle, period, step, group)
-    if len({*axes.keys, group}) != 5:
-        reject_columns(
-            message="Each switchback identity role needs a distinct column.",
-            reason="overlapping_roles",
+    identities = {*axes.keys, group}
+    roles = axes.roles
+    arms = None
+    if schedule is not None:
+        if len(identities) != 5:
+            reject_columns(
+                message="Each switchback identity role needs a distinct column.",
+                reason="overlapping_roles",
+            )
+        arms = _logged_periods(
+            schedule,
+            axes,
+            assignment.periods_per_cycle,
+            reject_columns,
+            reject_domain,
+            reject_schedule,
         )
-    arms = _logged_periods(
-        schedule, axes, assignment.periods_per_cycle, reject_columns, reject_domain, reject_schedule
-    )
-    roles = [(role, name) for role, name in axes.roles if role != "group" or name in frame.columns]
+        if group not in frame.columns:
+            roles = tuple((role, name) for role, name in roles if role != "group")
     # Pre-assignment forecasts are a separate input, never inferred from outcome rows.
     outcomes = tuple(
         spec.model_copy(update={"decision_method": None, "sensitivity_methods": ()})
@@ -461,13 +471,15 @@ def reconcile_switchback_observations(
     _validate_columns(frame, roles=roles, metrics=outcomes, reject=reject_columns)
     for spec in specs:
         for col in (spec.y_column, spec.denominator):
-            if col in (*axes.keys, group):
+            if col in identities:
                 reject_columns(
                     message="An observation identity column is not a measured response.",
                     name=col,
                     metric=spec.name,
                     reason="metric_overlaps_column",
                 )
+    if arms is None:
+        return frame, {}
     window = assignment.window
     retained = range(
         window.washout_steps + window.carryover_order,

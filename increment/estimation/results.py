@@ -2746,9 +2746,14 @@ def contrast_evidence_available(result: ContrastResult) -> bool:
 def _contrast_residual_p_value(result: ContrastResult) -> float | None:
     """Read a stored residual tail only for the reference that produced it."""
     if result.method == "switchback_unit_variance_envelope" or (
-        result.randomization_law == "fixed_count"
-        and result.method in ("switchback_block_t", "switchback_unit_t_approximation")
-        and result.residual_side is not None
+        result.residual_side is not None
+        and (
+            result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t")
+            or (
+                result.randomization_law == "fixed_count"
+                and result.method in ("switchback_block_t", "switchback_unit_t_approximation")
+            )
+        )
     ):
         return result.residual_p_value
     return None
@@ -2796,8 +2801,8 @@ def contrast_rejection_side(result: ContrastResult) -> RejectionSide | None:
     """The side of its null the contrast's rejection lies on; ``None`` exactly when
     :func:`contrast_stat_sig` is False.
 
-    For fixed-count and envelope tests the rounded bounds may reach the null
-    even when the test rejects. Use the sign recorded with the residual tail.
+    Rounded points and bounds can reach the null even when a centered test rejects.
+    Use the sign recorded with its tail.
     """
     if not contrast_stat_sig(result):
         return None

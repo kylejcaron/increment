@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.assignment_integrity import assignment_integrity, fixed_count_integrity
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.readout_types import (
@@ -36,7 +37,19 @@ if TYPE_CHECKING:
 
 def _cell_record(cell: CellKey, row: ContrastResult, snapshot_id: str) -> CellRecord:
     if row.failure_code is None:
-        return CellRecord(cell=cell, source_snapshot_id=snapshot_id)
+        note = row.reference_qualification
+        advisories = (
+            ()
+            if note is None
+            else (
+                ReadoutAdvisory(
+                    code="estimation.contrast.approximate_t",
+                    context={"reference": row.reference},
+                    message=note,
+                ),
+            )
+        )
+        return CellRecord(cell=cell, source_snapshot_id=snapshot_id, advisories=advisories)
     assert row.failure_context is not None
     return CellRecord(
         cell=cell,

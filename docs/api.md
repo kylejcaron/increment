@@ -183,6 +183,11 @@ values.
   point with no test retains its reason in live and saved reports; its
   significance is unknown, not false. Fixed-count estimates and pilot tests
   retain small between-block differences even at large integer offsets.
+  Ratio and forecast-adjusted guardrails test the unrounded effect against
+  the declared threshold. The fixed-count readout flags approximate tests.
+  Saved experiments now bind the named outcome column, not its contents.
+  Rebuild older switchback experiments that used a different column name
+  from the metric: their saved identities cannot tell those columns apart.
 
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because

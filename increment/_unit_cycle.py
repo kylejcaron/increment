@@ -104,11 +104,19 @@ def _fixed_count_t_test(
     relative to those binary64 reference quantities. Round the standardized
     difference only after subtracting the null and dividing by the SE.
     """
-    from scipy.special import stdtr
-
+    p, side = _centered_t_tail(center, se, dof, null_abs=null_abs, alternative=alternative)
     half = Fraction(critical) * Fraction(se)
     lower = _float_outward(center - half, upper=False)
     upper = _float_outward(center + half, upper=True)
+    return lower, upper, p, side
+
+
+def _centered_t_tail(
+    center: Fraction, se: float, dof: float, *, null_abs: float, alternative: Alternative
+) -> tuple[float, Literal["greater", "less", "split"]]:
+    """Round (estimate - null) / SE once, using the supplied binary64 standard error."""
+    from scipy.special import stdtr
+
     distance = center - Fraction(null_abs)
     try:
         statistic = float(distance / Fraction(se))
@@ -121,7 +129,7 @@ def _fixed_count_t_test(
     side: Literal["greater", "less", "split"] = (
         "greater" if distance > 0 else "less" if distance < 0 else "split"
     )
-    return lower, upper, float(p), side
+    return float(p), side
 
 
 FINITE_MAX = Fraction(sys.float_info.max)

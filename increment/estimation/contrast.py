@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from increment._unit_cycle import (
+    _centered_t_tail,
     _fixed_count_t_test,
     _float_outward,
     unit_cycle_admission_outcome,
@@ -68,8 +69,8 @@ from increment.estimation.results import (
     Estimate,
     RejectionSide,
     _contrast_residual_p_value,
+    _fraction_endpoint,
     contrast_evidence_available,
-    contrast_p_value,
     contrast_rejection_side,
     contrast_stat_sig,
 )
@@ -1067,6 +1068,8 @@ def _metric_row(
     *,
     se: float | None = None,
     dof: int | None = None,
+    residual_p_value: float | None = None,
+    residual_side: RejectionSide | None = None,
     failure: DecisionFailure | None = None,
 ) -> ContrastResult:
     method, reference, estimand = _contrast_identity(
@@ -1090,6 +1093,8 @@ def _metric_row(
         estimate=estimate,
         standard_error=se,
         dof=dof,
+        residual_p_value=residual_p_value,
+        residual_side=residual_side,
         failure_code=None if failure is None else failure.code,
         failure_context=None if failure is None else failure.context,
     )
@@ -1104,15 +1109,42 @@ def unavailable_contrast(
     return _metric_row(stats, procedure, None, failure=failure)
 
 
-def _metric_endpoint(point: float, se: float, signed_critical: float) -> float:
-    bound = point + signed_critical * se
-    if math.isfinite(bound) or not math.isfinite(signed_critical):
-        return bound
-    # The half-width can overflow before cancellation with the point.
+def _metric_interval(
+    fit: SwitchbackMetricFit, procedure: ContrastDecisionProcedure
+) -> Estimate | None:
+    """Enclose only the required endpoints, without rounding the fitted center."""
+    assert (
+        fit.point is not None
+        and fit.center is not None
+        and fit.se is not None
+        and fit.dof is not None
+    )
+    tail = procedure.alpha / 2 if procedure.alternative == "two-sided" else procedure.alpha
     try:
-        return float(Fraction(point) + Fraction(signed_critical) * Fraction(se))
-    except OverflowError:
-        return bound
+        critical = student_t_isf(tail, fit.dof)
+        if not math.isfinite(critical) or critical <= 0:
+            return None
+        half = Fraction(critical) * Fraction(fit.se)
+        lower = (
+            None
+            if procedure.alternative == "less"
+            else _fraction_endpoint(fit.center - half, upper=False)
+        )
+        upper = (
+            None
+            if procedure.alternative == "greater"
+            else _fraction_endpoint(fit.center + half, upper=True)
+        )
+    except ArithmeticError:
+        return None
+    return Estimate(
+        value=fit.point,
+        lb=lower,
+        ub=upper,
+        open_side="upper" if upper is None else "lower" if lower is None else None,
+        alpha=procedure.alpha,
+        level=math.fsum((1.0, -procedure.alpha)),
+    )
 
 
 def _metric_computation(
@@ -1129,36 +1161,25 @@ def _metric_computation(
         else switchback_cuped(stats.cuped_outcomes, stats.cuped_predictors)
     )
     if fit.reason is None:
-        assert fit.point is not None and fit.se is not None and fit.dof is not None
-        tail = procedure.alpha / 2 if procedure.alternative == "two-sided" else procedure.alpha
-        try:
-            critical = student_t_isf(tail, fit.dof)
-        except ArithmeticError:
-            critical = math.nan
-        lower = (
-            None
-            if procedure.alternative == "less"
-            else _metric_endpoint(fit.point, fit.se, -critical)
-        )
-        upper = (
-            None
-            if procedure.alternative == "greater"
-            else _metric_endpoint(fit.point, fit.se, critical)
-        )
-        if critical > 0 and all(
-            v is None or (math.isfinite(v) and v != fit.point) for v in (lower, upper)
-        ):
-            estimate = Estimate(
-                value=fit.point,
-                lb=lower,
-                ub=upper,
-                open_side="upper" if upper is None else "lower" if lower is None else None,
-                alpha=procedure.alpha,
-                level=math.fsum((1.0, -procedure.alpha)),
+        estimate = _metric_interval(fit, procedure)
+        if estimate is not None:
+            assert fit.center is not None and fit.se is not None and fit.dof is not None
+            p, side = _centered_t_tail(
+                fit.center,
+                fit.se,
+                fit.dof,
+                null_abs=procedure.null_abs,
+                alternative=procedure.alternative,
             )
-            row = _metric_row(stats, procedure, estimate, se=fit.se, dof=fit.dof)
-            p = contrast_p_value(row)
-            assert p is not None
+            row = _metric_row(
+                stats,
+                procedure,
+                estimate,
+                se=fit.se,
+                dof=fit.dof,
+                residual_p_value=p,
+                residual_side=side,
+            )
             evidence = PValueEvidence(key, row.method, p, row.reference)
             return DecisionComputation(results=(row,), evidence={key: evidence}, failures={})
         fit = SwitchbackMetricFit(point=fit.point, reason="numeric_range")

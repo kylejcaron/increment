@@ -44,11 +44,11 @@ The study excludes overlapping rosters, adaptive saturation, exposure defined by
 
 ## Reproduction
 
-From the repository root, run `python calibration/randomized_saturation.py` (Python standard library only). The command checks exact identities and prints the weighted decision record and grid summary. No public estimator, reader or planner is installed. The design follows allocation-policy estimands in [Hudgens and Halloran (2008)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2600548/); see also [Baird et al., randomized saturation designs](https://pdel.ucsd.edu/_files/WorkingPaper_Spillovers_20160902.pdf) for the distinct model-based planning problem. The [method acceptance criteria](../../CONTRIBUTING.md#adding-a-method-or-design) apply before any production reconsideration.
+From the repository root, run `python calibration/randomized_saturation.py` (Python standard library only). The command checks exact identities and prints the weighted decision record and grid summary. This Normal test is research code, not a public estimator or planner. The design follows allocation-policy estimands in [Hudgens and Halloran (2008)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2600548/); see also [Baird et al., randomized saturation designs](https://pdel.ucsd.edu/_files/WorkingPaper_Spillovers_20160902.pdf) for the distinct model-based planning problem. The [method acceptance criteria](../../CONTRIBUTING.md#adding-a-method-or-design) apply before any production reconsideration.
 
 ## Executed evaluation and decision (2026-11-19)
 
-**Defer production inference and sizing; reject the proposed Normal decision as a general 5% procedure.** The design identifies the roster-weighted policy contrast under partial interference. It is the interval, not identification under that assumption, that fails on complete, correctly randomized rosters. Even 40 clusters per arm with both levels interior did not suffice. The research command is the only implementation.
+**Reject the proposed Normal test for production decisions and sizing.** The design identifies the roster-weighted policy contrast under partial interference. It is this interval, not identification under that assumption, that fails on complete, correctly randomized rosters. Even 40 clusters per arm with both levels interior did not suffice. This finding does not assess other interval methods.
 
 Command executed from the worktree: `.venv/bin/python calibration/randomized_saturation.py` (exit 0). The exact moment, mass and statewise hypergeometric comparisons completed. The tables transcribe its output; the linked [research command](../randomized_saturation.py) reproduces the integer numerators and full grid. No replications were sampled or discarded.
 

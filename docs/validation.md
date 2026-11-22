@@ -172,11 +172,11 @@ gates, not observed results.
   [reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
   [Measured coverage with few units or blocks](reference/switchback-inference.md#coverage-with-few-units-or-blocks)
   separates returned intervals from all attempted experiments.
-- **Two-stage saturation (research only):** with 40 clusters per saturation level,
-  one influential untreated outcome per cluster, and 99% versus 1% treated,
-  the proposed 5% test rejected a true null on **22.15%** of assignments.
-  No production inference or sizing is offered. Reproduce the exact evaluation
-  with `python -m calibration.randomized_saturation` in the repository.
+- **Two-stage offers, rejected method:** With 40 groups per offer level,
+  one influential untreated outcome per group, and 99% versus 1% treated,
+  a proposed 5% Normal test called a change on **22.15%** of assignments
+  when the average effect was zero. That test is not used for decisions
+  or sizing. Reproduce it with `python -m calibration.randomized_saturation`.
 - **Adaptive logged policies:** refused. Historical coverage figures predate the
   gate and cannot be reproduced from the retained estimator
   ([measurements](reference/validation-evidence.md#adaptive-logger-measurements),

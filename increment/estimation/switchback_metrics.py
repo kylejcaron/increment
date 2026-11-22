@@ -41,6 +41,7 @@ class SwitchbackMetricFit:
     dof: int | None = None
     reason: _Reason | None = None
     arm: _Arm | None = None
+    center: Fraction | None = None
 
 
 def _integer_column(column: np.ndarray) -> tuple[np.ndarray, Fraction] | _Reason:
@@ -71,7 +72,9 @@ def _point(value: Fraction) -> float | None:
     return rounded if rounded or not value else None
 
 
-def _with_variance(point: float, variance: Fraction, dof: int) -> SwitchbackMetricFit:
+def _with_variance(
+    point: float, center: Fraction, variance: Fraction, dof: int
+) -> SwitchbackMetricFit:
     if not variance:
         return SwitchbackMetricFit(point, reason="zero_spread")
     # Materialize only the square root in output units, not its square.
@@ -84,7 +87,7 @@ def _with_variance(point: float, variance: Fraction, dof: int) -> SwitchbackMetr
         return SwitchbackMetricFit(point, reason="numeric_range")
     if not se:
         return SwitchbackMetricFit(point, reason="numeric_range")
-    return SwitchbackMetricFit(point, se, dof)
+    return SwitchbackMetricFit(point, se, dof, center=center)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +170,8 @@ def switchback_ratio(components: _Rows | np.ndarray, *, alpha: float) -> Switchb
     for name, arm in arms:
         if not arm.sd:
             return SwitchbackMetricFit(reason="zero_denominator", arm=name)
-    point = _point(t.rate() - c.rate())
+    center = t.rate() - c.rate()
+    point = _point(center)
     if point is None:
         return SwitchbackMetricFit(reason="numeric_range")
     if n == 1:
@@ -176,7 +180,7 @@ def switchback_ratio(components: _Rows | np.ndarray, *, alpha: float) -> Switchb
     if unavailable is not None:
         return unavailable
     paired = t.influence() - c.influence()
-    return _with_variance(point, (paired @ paired) / (n * (n - 1)), n - 1)
+    return _with_variance(point, center, (paired @ paired) / (n * (n - 1)), n - 1)
 
 
 def _jackknife_variance(deleted: list[Fraction], unit: Fraction) -> Fraction:
@@ -203,7 +207,8 @@ def _adjusted_fit(x: np.ndarray, y: np.ndarray, unit: Fraction) -> SwitchbackMet
     if det == 0:
         return SwitchbackMetricFit(reason="rank_deficient")
     intercept = sxx * sy - sx * sxy
-    point = _point(unit * intercept / det)
+    center = unit * intercept / det
+    point = _point(center)
     if point is None:
         return SwitchbackMetricFit(reason="numeric_range")
     if n == 2:
@@ -219,7 +224,7 @@ def _adjusted_fit(x: np.ndarray, y: np.ndarray, unit: Fraction) -> SwitchbackMet
         if det_i == 0:
             return SwitchbackMetricFit(point, reason="high_leverage")
         deleted.append(Fraction(sxx_i * sy_i - sx_i * sxy_i, det_i))
-    return _with_variance(point, _jackknife_variance(deleted, unit), n - 2)
+    return _with_variance(point, center, _jackknife_variance(deleted, unit), n - 2)
 
 
 def switchback_cuped(

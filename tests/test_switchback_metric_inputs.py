@@ -11,9 +11,10 @@ import pytest
 
 from increment import SwitchbackObservationSchedule, from_switchback_frame, run
 from increment.declarations import Method
-from increment.errors import CapabilityError, InvalidRequestError
+from increment.errors import CapabilityError, CodedError, InvalidRequestError
 from increment.estimation.contrast import SwitchbackMetricStats, UnavailableContrastStats
 from increment.frame import MetricSpec, from_switchback_panel
+from increment.kernel.experiment import Experiment
 from increment.semantics.assignment import FixedCountOrder, SwitchbackAssignment, SwitchbackWindow
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan
@@ -84,6 +85,32 @@ def test_frozen_forecasts_and_integer_outcomes_share_signed_order_weights(shared
     assert evidence.cuped_outcomes == pytest.approx(ys)
     assert evidence.cuped_predictors == pytest.approx(xs)
     assert source.context.procedures["sales"].forecast_column == "forecast"
+
+
+@pytest.mark.parametrize("method", [None, _ADJUSTED.decision_method], ids=["mean", "cuped"])
+def test_saved_measure_binds_its_column_not_its_values(method):
+    rows, forecasts = _paired(("a", "b", "c", "d"))
+    rows = rows.with_columns(pl.col("sales").alias("refunds"))
+    metric = MetricSpec(name="outcome", value_column="sales", decision_method=method)
+
+    def bind(frame, spec):
+        return _build(frame, [spec], forecasts if method else None, builder=from_switchback_frame)
+
+    declared, reader = bind(rows, metric)
+    with reader:
+        saved = Experiment.from_json(declared.to_json())
+    changed = rows.with_columns((3 * (pl.col("arm") == "treatment").cast(pl.Int64)).alias("sales"))
+    same, reader = bind(changed, metric)
+    with reader:
+        assert same.hash() == saved.hash()
+        (cell,) = run(saved, reader).cells
+        # Every unit gets the CT and TC weights (2 and 2/3) once, averaging to 4/3.
+        assert cell.summary is not None and cell.summary.point == pytest.approx(4)
+    other, reader = bind(rows, metric.model_copy(update={"value_column": "refunds"}))
+    with reader, pytest.raises(CodedError) as wrong_column:
+        run(saved, reader)
+    assert wrong_column.value.code == "kernel.provider.digest_mismatch"
+    assert other.hash() != saved.hash()
 
 
 @pytest.mark.parametrize("grain", ["shared_block", "unit_cycle"])
@@ -280,6 +307,8 @@ def test_missing_forecast_values_keep_the_first_scheduled_key(payload):
     [
         ("observations_only", "pre_assignment_forecasts_required"),
         ("late", "forecast_not_pre_assignment"),
+        ("missing_timestamp", "forecast_not_pre_assignment"),
+        ("pandas_date", "forecast_clock_dtype"),
         ("infinite", "nonfinite_forecast"),
         ("duplicate", "forecast_keys"),
         ("absent", "forecast_keys"),
@@ -302,6 +331,14 @@ def test_only_complete_pre_assignment_measurements_can_adjust_a_mean(defect, rea
             .otherwise(pl.col("forecast_at"))
             .alias("forecast_at")
         )
+    elif defect == "missing_timestamp":
+        forecasts = forecasts.with_columns(pl.lit(None).alias("forecast_at"))
+    elif defect == "pandas_date":
+        import pandas as pd
+
+        forecasts = forecasts.to_pandas()
+        forecasts["forecast_at"] = pd.Series([date(2025, 1, 1)] * len(forecasts), dtype=object)
+        forecasts["assigned_at"] = pd.to_datetime(forecasts["assigned_at"])
     elif defect == "infinite":
         forecasts = forecasts.with_columns(
             pl.when(pl.col("unit") == "a").then(None).otherwise(float("inf")).alias("forecast")
@@ -317,6 +354,14 @@ def test_only_complete_pre_assignment_measurements_can_adjust_a_mean(defect, rea
     with pytest.raises((CapabilityError, InvalidRequestError)) as caught:
         _build(rows, [_ADJUSTED], forecasts, **options)
     assert caught.value.context["reason"] == reason
+    if defect == "pandas_date":
+        assert caught.value.code == "source.frame.switchback.metric"
+        assert caught.value.context["forecast_at_dtype"] == "Object"
+        assert isinstance(forecasts, pd.DataFrame)
+        forecasts["forecast_at"] = pd.to_datetime(forecasts["forecast_at"])
+        source = _build(rows, [_ADJUSTED], forecasts)
+        stats = source.contrast_stats(source.metrics[0])
+        assert stats.cuped_predictors == pytest.approx((2, 8 / 3))
     if defect == "observations_only":
         from tests.capability_consumers_scalar import SWITCHBACK_FORECAST
 

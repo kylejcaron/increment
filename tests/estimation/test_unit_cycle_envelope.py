@@ -189,7 +189,8 @@ def test_cantelli_direction_and_open_side(alternative, open_side):
     assert endpoint == pytest.approx(sign * (1.25 - cutoff) / 0.625)
     assert result.residual_p_value == pytest.approx((0.01 / 4) / (0.01 / 4 + 1.25**2))
     assert result.reference == "residual_cantelli"
-    assert contrast_results_to_readout([result])[0]["stat_sig"] is True
+    (row,) = contrast_results_to_readout([result])
+    assert row["stat_sig"] is True and "reference_qualification" not in row
 
 
 @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])

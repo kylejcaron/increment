@@ -1627,6 +1627,7 @@ depends_on = [
   "increment._evidence_loaders", "increment._evidence_scopes", "increment.kernel.context",
   "increment._sequential_readouts", "increment.estimation.sequential",
   "increment.declarations", "increment._source_admission",
+  "increment.estimation.advisory",
   "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result", "increment.estimation._readout_refusals", "increment.estimation.assignment_integrity", "increment.estimation.results", "increment.estimation.readout_types", "increment.estimation.family", "increment.estimation.cuped", "increment.estimation.encouragement", "increment.estimation.winsor", "increment.estimation.conversion_route", "increment.estimation.diagnostics", "increment.estimation.quantile", "increment.estimation.multiplicity", "increment.estimation.adjust", "increment.estimation.engine", "increment.estimation.contrast_results", "increment.estimation.inference",
   "increment._source_operations",
 ]

@@ -467,6 +467,8 @@ def contrast_results_to_readout(
                 "family_size": None,
             }
         )
+        if (qualification := result.reference_qualification) is not None:
+            rows[-1]["reference_qualification"] = qualification
         if result.randomization_law == "fixed_count":
             rows[-1].update(
                 periods_per_cycle=result.periods_per_cycle,
@@ -1110,6 +1112,9 @@ def _row_caveats(
     note = row.get("note")
     if not _is_missing(note) and str(note):
         caveats.append(_ReadoutCaveat("note", str(note)))
+    reference_note = row.get("reference_qualification")
+    if not _is_missing(reference_note):
+        caveats.append(_ReadoutCaveat("note", str(reference_note)))
     low_reliability = row.get("low_reliability")
     if not _is_missing(low_reliability) and bool(low_reliability):
         caveats.append(

@@ -924,15 +924,7 @@ def _validated_unit_cycle_references(
     control: str,
     treatment: str,
 ) -> Mapping[str, UnitCycleReference]:
-    copied = _copy_references(references)
-    if not copied and assignment.sequence.independence_unit == "unit_cycle":
-        # Ordinary callers receive a qualified unit-t approximation from the
-        # declared design; complete envelopes remain research inputs.
-        copied = {
-            spec.name: UnitCycleTApproximation()
-            for spec in specs
-            if spec.type != "ratio" and spec.decision_method is None
-        }
+    copied = dict(_copy_references(references))
     declared_metrics = {spec.name: spec for spec in specs}
     for name, reference in copied.items():
         if name not in declared_metrics:
@@ -962,6 +954,10 @@ def _validated_unit_cycle_references(
                 _unit_refuse(
                     "unit_cycle.reference_mismatch", reason="additive_conversion_unsupported"
                 )
+    if assignment.sequence.independence_unit == "unit_cycle":
+        for spec in specs:
+            if spec.name not in copied and spec.type != "ratio" and spec.decision_method is None:
+                copied[spec.name] = UnitCycleTApproximation()
     return copied
 
 
@@ -1721,7 +1717,6 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
     timestamps must all strictly precede the earliest ``assigned_at``.
     """
     from increment._frame_validation import (
-        _validate_columns,
         _validate_switchback_domains,
         _validate_switchback_labels,
         _validate_switchback_metric_values,
@@ -1792,35 +1787,20 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
     window = assignment.window
     total_steps = window.washout_steps + window.observation_steps
 
-    nwf = eager_frame(frame)
-    missing: dict[str, MissingSwitchbackResponse] = {}
-    if schedule is not None:
-        nwf, missing = reconcile_switchback_observations(
-            nwf,
-            schedule=schedule,
-            assignment=assignment,
-            specs=specs,
-            unit=unit,
-            cycle=cycle,
-            period=period,
-            step=step,
-            group=group,
-            reject_columns=_reject_columns,
-            reject_domain=_reject_domain,
-            reject_schedule=_reject_schedule,
-        )
-    roles = [
-        ("unit", unit),
-        ("cycle", cycle),
-        ("period", period),
-        ("step", step),
-        ("group", group),
-    ]
-    observed_specs = [
-        spec.model_copy(update={"decision_method": None}) if spec.name in forecasts else spec
-        for spec in specs
-    ]
-    _validate_columns(nwf, roles=roles, metrics=observed_specs, reject=_reject_columns)
+    nwf, missing = reconcile_switchback_observations(
+        eager_frame(frame),
+        schedule=schedule,
+        assignment=assignment,
+        specs=specs,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        group=group,
+        reject_columns=_reject_columns,
+        reject_domain=_reject_domain,
+        reject_schedule=_reject_schedule,
+    )
     _validate_switchback_labels(
         nwf,
         unit=unit,
@@ -2063,6 +2043,15 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
                     **metadata,
                 )
     inputs: dict[str, object] = {}
+    outcome_aliases = tuple(
+        sorted(
+            (spec.name, spec.y_column)
+            for spec in specs
+            if spec.type != "ratio" and spec.y_column != spec.name
+        )
+    )
+    if outcome_aliases:
+        inputs["outcome_columns"] = outcome_aliases
     if forecasts:
         inputs["forecast_columns"] = tuple(sorted(forecasts.items()))
     ratio_columns = {

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import date
 
 import polars as pl
 import pytest
 
-from increment import from_switchback_frame, run
+from increment import AnalysisPlan, ExperimentMetric, from_switchback_frame, run
 from increment.estimation.engine import Method
 from increment.frame import MetricSpec
 from increment.result_envelope import render
@@ -45,6 +46,10 @@ def _experiment(metrics):
                     "one": 1,
                 }
             )
+    return _paired_experiment(rows, metrics)
+
+
+def _paired_experiment(rows, metrics, plan=None, *, with_forecasts=True):
     forecasts = pl.DataFrame(
         {
             "u": row["u"],
@@ -66,8 +71,9 @@ def _experiment(metrics):
         step="s",
         group="arm",
         metrics=metrics,
+        plan=plan,
         experiment_id="retained",
-        pre_assignment_forecasts=forecasts,
+        pre_assignment_forecasts=forecasts if with_forecasts else None,
         assignment=SwitchbackAssignment(
             sequence=IndependentBernoulliOrder(probability_ct=0.5),
             window=SwitchbackWindow(washout_steps=0, observation_steps=1),
@@ -255,6 +261,18 @@ def test_constant_fixed_count_effect_keeps_point_but_not_a_test_in_saved_reports
     verdict = verdicts[cell.identity.hash()]
     assert (verdict.status, verdict.reason_codes) == ("not_evaluated", (code,))
     assert verdicts[cells["varying"].identity.hash()].status == "reject"
+    assert report.metadata is not None
+    records = {r.cell.metric: r for r in report.metadata.cells}
+    (advisory,) = (
+        a for a in records["varying"].advisories if a.code == "estimation.contrast.approximate_t"
+    )
+    assert "approximat" in advisory.message.lower()
+    assert "false positive" in advisory.message.lower()
+    assert advisory.message in render(envelope, audience="full")
+    assert advisory.code not in {a.code for a in records["constant"].advisories}
+    from increment.tables import readout_table
+
+    assert advisory.message in readout_table(report).gt().as_raw_html()
 
 
 @pytest.mark.integration
@@ -303,6 +321,67 @@ def test_changing_frozen_forecast_changes_method_identity_even_for_equal_values(
         assert cell.summary is not None and cell.summary.point == pytest.approx(7)
         identities.append(cell.identity.method_config_hash)
     assert all(identities) and identities[0] != identities[1]
+
+
+@pytest.mark.parametrize(
+    ("kind", "n", "steps", "sign", "variance", "df"),
+    [
+        ("ratio", 8, 3, 1, 27 / 112, 7),
+        ("adjusted", 12, 4, -1, 11 / 45, 10),
+    ],
+)
+def test_switchback_guardrail_tests_unrounded_effect(kind, n, steps, sign, variance, df):
+    from scipy.stats import t
+
+    margin = 0.01
+    unit = math.ulp(margin)
+    rows = [
+        {
+            "u": str(i),
+            "c": 0,
+            "p": p,
+            "s": 0,
+            "arm": "B" if p == i % 2 else "A",
+            "one": 1,
+            "y": sign * (margin - (steps * unit if i >= n - 2 else 0)) if p == i % 2 else 0.0,
+        }
+        for i in range(n)
+        for p in range(2)
+    ]
+    metric = (
+        MetricSpec(
+            name=kind,
+            type="ratio",
+            numerator="y",
+            denominator="one",
+            preferred_direction="decrease",
+        )
+        if kind == "ratio"
+        else MetricSpec(
+            name=kind,
+            value_column="y",
+            decision_method=Method.cuped(covariates="prior_position"),
+            preferred_direction="increase",
+        )
+    )
+    experiment, reader = _paired_experiment(
+        rows,
+        [metric],
+        AnalysisPlan(guardrails=[ExperimentMetric(metric=kind, margin_abs=margin)]),
+        with_forecasts=kind == "adjusted",
+    )
+    with reader:
+        analyzed = run(experiment, reader)
+    # A unit denominator gives the raw mean. With forecasts +/-1 the intercept
+    # averages the two position means. One exceptional unit in each position
+    # moves either estimate by 2*steps/n ULPs, not the single ULP displayed.
+    expected_p = t.sf((2 * steps / n) / math.sqrt(variance), df)
+    restored = ReadoutResults.model_validate_json(analyzed.readout().model_dump_json())
+    (row,) = estimates_to_readout(restored)
+    assert row["lift"] == sign * (margin - unit) and row["null_abs"] == sign * margin
+    assert row["standard_error"] == pytest.approx(unit * math.sqrt(variance), abs=0.0)
+    assert row["p_value"] == pytest.approx(expected_p)
+    assert row["stat_sig"] is False and analyzed.decisions.cells[0].status == "retain"
 
 
 @pytest.mark.parametrize(

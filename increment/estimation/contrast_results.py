@@ -393,6 +393,35 @@ class ContrastResult(_FixedCountMetadata):
     def sampling_reason_context(self) -> Mapping[str, object] | None:
         return self.failure_context
 
+    @property
+    def reference_qualification(self) -> str | None:
+        if (
+            self.sampling_available
+            and self.standard_error
+            and self.reference
+            in (
+                "block_t",
+                "unit_t_approximation",
+                "switchback_ratio_delta_t",
+                "switchback_cuped_jackknife_t",
+            )
+        ):
+            return (
+                "This switchback test uses a t approximation. Depending on the schedule and "
+                "outcomes, false positives can be more frequent than the chosen test level."
+            )
+        return None
+
+    def _valid_t_residual(self) -> bool:
+        p, side = self.residual_p_value, self.residual_side
+        if p is None or side is None:
+            return p is None and side is None  # Historical t references omitted both.
+        if self.standard_error is None or self.standard_error == 0:
+            return False
+        if side == "split":
+            return p == (1.0 if self.alternative == "two-sided" else 0.5)
+        return self.alternative == "two-sided" or side == self.alternative or p >= 0.5
+
     def _check_metric_result(self, replicates: int) -> bool:
         """Validate fitted references and unavailable tests without inventing uncertainty."""
         estimate = self.estimate
@@ -419,8 +448,6 @@ class ContrastResult(_FixedCountMetadata):
                     self.effective_alpha,
                     self.refusal_probability_upper,
                     self.residual_cutoff,
-                    self.residual_p_value,
-                    self.residual_side,
                     self.provenance,
                     self.response_meaning,
                     self.dof_unavailable_reason,
@@ -436,6 +463,7 @@ class ContrastResult(_FixedCountMetadata):
         if self.failure_code is None:
             return (
                 (ratio or adjusted)
+                and self._valid_t_residual()
                 and self.failure_context is None
                 and estimate is not None
                 and self.standard_error is not None
@@ -451,6 +479,8 @@ class ContrastResult(_FixedCountMetadata):
                     else None
                 )
             )
+        if self.residual_p_value is not None or self.residual_side is not None:
+            return False
         if reason == "zero_standard_error":
             return (
                 not (ratio or adjusted)
@@ -638,24 +668,8 @@ class ContrastResult(_FixedCountMetadata):
             or self.dof != replicates - 1
             or self.standard_error is None
             or self.dof_unavailable_reason is not None
-            or (self.residual_side is None) != (self.residual_p_value is None)
-            or (
-                self.residual_p_value is not None
-                and (
-                    self.randomization_law != "fixed_count"
-                    or self.standard_error == 0
-                    or (
-                        self.residual_side == "split"
-                        and self.residual_p_value
-                        != (1.0 if self.alternative == "two-sided" else 0.5)
-                    )
-                    or (
-                        self.alternative != "two-sided"
-                        and self.residual_side != self.alternative
-                        and self.residual_p_value < 0.5
-                    )
-                )
-            )
+            or not self._valid_t_residual()
+            or (self.residual_p_value is not None and self.randomization_law != "fixed_count")
             or any(
                 value is not None
                 for value in (

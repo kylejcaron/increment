@@ -21,6 +21,8 @@ booleans. In a dense frame, supply one row with its arm and response at
 every unit × cycle × period × step, including washout. Duplicate keys,
 gaps and nulls do not establish a schedule. Every shared block must have
 the same schedule across its roster.
+Keep the outcome, numerator and denominator separate from these schedule
+keys, whether or not you supply an assignment log.
 
 **Separate assignment log.** Pass `schedule=SwitchbackObservationSchedule(
 assignments=..., units=..., cycles=...)` when the log, not the response
@@ -43,7 +45,9 @@ needs exactly one row per unit × cycle × period, using the builder's key
 column names. `forecast_at` and `assigned_at` must both be dates, or both
 datetimes with the same time zone. The latest forecast must strictly precede
 the first assignment. A missing key, repeated key or late forecast invalidates
-the table. A missing **value** at a valid key makes only metrics using that
+the table. If a pandas date column has dtype `object`, convert both clocks
+with `pd.to_datetime`; Increment won't guess whether strings are dates.
+A missing **value** at a valid key makes only metrics using that
 forecast unavailable (`missing_forecast`). Other metrics keep the full roster
 and their original share of alpha. Use finite numeric values; declare the
 predictor with `MetricSpec(..., decision_method=Method.cuped(covariates="forecast"))`.
@@ -150,6 +154,10 @@ if deleting one replicate makes the slope unidentified, the full-fit point
 is descriptive only (`high_leverage`). Neither fit falls back to an
 unadjusted decision.
 
+For both metrics, the test subtracts the declared threshold before rounding
+the effect for display. This matters when a guardrail sits within a few
+floating-point steps of the estimated effect.
+
 ### Market and geo units
 
 Set `unit` to the entity that drew its own schedule. For a geo experiment,
@@ -196,6 +204,10 @@ See [Reading results](result-fields.md) for contrast rows and
   in unit/cycle/period/step order, and the arm at that key. Other metrics
   keep their own results; `decision_scope_complete` is false when a required
   decision is missing. No zero estimate or non-rejection is substituted.
+  In a legacy paired-switchback table dictionary,
+  `row.get("sampling_available") is False` means no test ran, even if
+  `stat_sig` is false. Do not require that key on older successful rows.
+  The decision and the rendered table already distinguish an unavailable test.
 
 `increment.workflows.assignment_diagnostic(experiment, reader)` returns the
 validated schedule evidence for an experiment built with
