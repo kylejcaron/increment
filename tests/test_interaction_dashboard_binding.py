@@ -65,8 +65,8 @@ exposures:
 
 
 @contextmanager
-def _reader(path, definitions, *, watermark=_CUTOFF):
-    con = ibis.duckdb.connect(path, read_only=True)
+def _reader(path, definitions, *, watermark=_CUTOFF, read_only=True):
+    con = ibis.duckdb.connect(path, read_only=read_only)
     try:
         experiment, reader = from_definitions(
             definitions,
@@ -226,6 +226,22 @@ def test_snapshot_rejects_same_count_data_from_another_sealed_generation(tmp_pat
     assert error.value.code == "overlap.scan.invalid"
     assert error.value.context["reason"] == "different_source_generation"
     assert readout_csv(snapshot) == headline
+
+
+def test_binding_refuses_an_exact_generation_opened_for_writing(tmp_path):
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _empty_capture(definitions)
+    with _reader(path, definitions) as (experiment, _, con):
+        manifest = _manifest(path, con, experiment, capture)
+    with (
+        _reader(path, definitions, read_only=False) as (experiment, reader, _),
+        pytest.raises(CodedError) as error,
+    ):
+        bind_interaction_scan(capture, source=InteractionDuckDBSource(experiment, reader, manifest))
+    assert error.value.code == "overlap.scan.invalid"
+    assert error.value.context["reason"] == "focal_facts_not_verified"
 
 
 def test_split_outcomes_keep_historical_rows_and_refuse_a_shorter_headline(tmp_path):

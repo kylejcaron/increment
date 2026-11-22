@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from scipy.stats import t
 
-from increment._overlap_evidence import CELL_IDS, FactorId, OverlapCell, overlap_binary_moments
 from increment.errors import CodedError
 from increment.estimation import interaction_scan as scan_estimation
 from increment.estimation.interaction_scan import evaluate_interaction_scan
@@ -16,6 +15,7 @@ from increment.estimation.overlap import analyze_overlap
 from increment.semantics.interaction_scan import (
     CapturedPair,
     ExperimentIdentity,
+    FactorId,
     FocalStudy,
     InteractionInventory,
     InventoryEntry,
@@ -27,8 +27,15 @@ from increment.semantics.interaction_scan import (
     UnavailablePair,
     freeze_interaction_scan,
 )
-from increment.semantics.overlap import OverlapClaim, OverlapEvidence, OverlapFactor
+from increment.semantics.overlap import (
+    CellId,
+    OverlapCell,
+    OverlapClaim,
+    OverlapEvidence,
+    OverlapFactor,
+)
 
+_CELL_IDS: tuple[CellId, ...] = ("00", "10", "01", "11")
 _RATES = (0.31, 0.34, 0.30, 0.28)
 _A = ("a_given_b_off", "a_given_b_on", "interaction")
 _B = ("b_given_a_off", "b_given_a_on", "interaction")
@@ -43,6 +50,15 @@ def saved_pair():
     )
 
 
+def _bernoulli_moments(n: int, successes: int) -> tuple[float | None, float | None, float | None]:
+    """Derive fixture moments for a complete binary cell without production helpers."""
+    if n == 0:
+        return None, None, None
+    if successes == n:
+        return 1.0, 0.0, 0.0
+    return 0.0, successes / n, successes * (n - successes) / n
+
+
 def _binary_cells(counts, successes):
     return tuple(
         OverlapCell(
@@ -53,12 +69,12 @@ def _binary_cells(counts, successes):
             n_missing=0,
             n_pending=0,
             n_success=k,
-            anchor=moments[0],
-            mean_delta=moments[1],
-            m2=moments[2],
+            anchor=anchor,
+            mean_delta=delta,
+            m2=m2,
         )
-        for cell, n, k in zip(CELL_IDS, counts, successes, strict=True)
-        for moments in (overlap_binary_moments(n, k) if n else (None, None, None),)
+        for cell, n, k in zip(_CELL_IDS, counts, successes, strict=True)
+        for anchor, delta, m2 in (_bernoulli_moments(n, k),)
     )
 
 
@@ -76,7 +92,7 @@ def _mean_cells(anchors, deltas, sums_sq):
             mean_delta=delta,
             m2=m2,
         )
-        for cell, anchor, delta, m2 in zip(CELL_IDS, anchors, deltas, sums_sq, strict=True)
+        for cell, anchor, delta, m2 in zip(_CELL_IDS, anchors, deltas, sums_sq, strict=True)
     )
 
 
@@ -384,7 +400,7 @@ def test_focal_orientation_matches_fixed_family_before_and_after_replay(
                 fit.upper,
             )
             assert tuple(cell.cell for cell in row.cells) == tuple(
-                cell for cell, weight in zip(CELL_IDS, c, strict=True) if weight
+                cell for cell, weight in zip(_CELL_IDS, c, strict=True) if weight
             )
 
     absent = _binary_cells((counts[0], 0, *counts[2:]), (5580, 0, 3000, 2240))
@@ -595,7 +611,7 @@ def test_joint_combinations_keep_the_registered_family_when_an_arm_is_empty(save
             rates[assignment] = p
             n = 0 if assignment == "11111" else counts_by_size[size]
             successes = round(n * p)
-            anchor, delta, m2 = overlap_binary_moments(n, successes) if n else (None, None, None)
+            anchor, delta, m2 = _bernoulli_moments(n, successes)
             cells.append(
                 contract.CombinationCell(
                     metric=plan.metrics[0].name,

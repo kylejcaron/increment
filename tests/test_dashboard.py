@@ -1622,9 +1622,9 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
 
     from examples.interaction_discovery import open_example
     from increment.dashboard import dashboard_html
-    from increment.dashboard._app import build_payload
     from increment.errors import CodedError
     from increment.overlap import bind_interaction_scan, capture_interaction_scan
+    from tests.test_dashboard_capture import _page_payload
 
     with open_example(tmp_path, triggered=True) as example:
         experiment = example.source.experiment
@@ -1666,11 +1666,11 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
         )
         assert (direct.lower, direct.upper) == pytest.approx(expected, abs=1e-7)
 
-    hidden_payload = build_payload(experiment, snapshot=hidden)
+    hidden_payload = _page_payload(dashboard_html(experiment, snapshot=hidden))
     before = hidden_payload["populationViews"]["assigned"]["interactions"]
-    after = build_payload(experiment, snapshot=replayed)["populationViews"]["assigned"][
-        "interactions"
-    ]
+    after = _page_payload(dashboard_html(experiment, snapshot=replayed))["populationViews"][
+        "assigned"
+    ]["interactions"]
     assert [item["key"] for item in before["metricOptions"]] == ["save_rate"]
     assert {item["key"] for item in after["metricOptions"]} == {"save_rate", "share_rate"}
     assert (
@@ -1694,11 +1694,12 @@ def test_interaction_report_uses_the_frozen_family_after_pair_evidence_replay(tm
     assert (
         before["metrics"]["save_rate"]["details"][tips].count('data-inc-reason="empty_cell"') >= 1
     )
-    assert "metrics" not in hidden_payload["populationViews"]["triggered"]["interactions"]
-    assert not hidden_payload["populationViews"]["triggered"]["interactions"].get("alert")
-    incomplete = build_payload(experiment, snapshot=partial)["populationViews"]["assigned"][
-        "interactions"
-    ]
+    assert hidden_payload["defaultPopulation"] == "triggered"
+    assert "metrics" not in hidden_payload["interactions"]
+    assert not hidden_payload["interactions"].get("alert")
+    incomplete = _page_payload(dashboard_html(experiment, snapshot=partial))["populationViews"][
+        "assigned"
+    ]["interactions"]
     assert incomplete["metrics"]["save_rate"]["explanation"] == ""
     assert incomplete["health"]
     assert not incomplete.get("alert")

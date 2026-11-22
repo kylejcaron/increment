@@ -12,7 +12,6 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment._interaction_capture import capture_interaction_scan
 from increment.assignment import compile_allocation
 from increment.errors import CodedError
 from increment.overlap import (
@@ -22,6 +21,7 @@ from increment.overlap import (
     OverlapResult,
     OverlapSdkArchive,
     analyze_overlap,
+    capture_interaction_scan,
     capture_overlap_frame,
     capture_overlap_warehouse,
     sdk_overlap_decision,
