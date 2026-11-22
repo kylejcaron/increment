@@ -384,13 +384,9 @@ def test_manifest_fingerprint_survives_reader_timezone_change(tmp_path):
         )
 
 
-def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path):
-    from increment.dashboard._app import build_payload
-    from increment.semantics import interaction_scan as contract
+def _joint_capture(definitions):
+    from increment.overlap import CombinationRegistration, InteractionCombination
 
-    definitions = _write_definitions(tmp_path / "definitions")
-    path = tmp_path / "facts.duckdb"
-    _publish(path)
     original = _empty_capture(definitions)
     scope = original.plan.scope
     focal = scope.focal.entry
@@ -403,11 +399,11 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
         )
         for name in ("Cards", "Filters")
     )
-    combination = contract.InteractionCombination(
+    combination = InteractionCombination(
         candidates=tuple(entry.identity for entry in others),
         joint_assignment="independent_unit_bernoulli",
     )
-    registration = contract.CombinationRegistration(
+    registration = CombinationRegistration(
         registered_at=_ENTRY - timedelta(days=1),
         scope=scope,
         metrics=original.plan.metrics,
@@ -427,7 +423,31 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
             "combination_registration_sha256": registration.registration_id,
         }
     )
-    capture = capture_interaction_scan(plan, observed_inventory=observed, evidence_by_study={})
+    return capture_interaction_scan(plan, observed_inventory=observed, evidence_by_study={})
+
+
+def _joint_manifest(path, con, experiment, capture):
+    from increment.overlap import CombinationFeed
+
+    manifest = _manifest(path, con, experiment, capture)
+    catalog = manifest.focal_assignments.coordinate[0]
+    feed = CombinationFeed(
+        candidates=capture.plan.combinations[0].candidates,
+        roster=interaction_duckdb_fact(con.table("joint_roster", database=(catalog, "analytics"))),
+        outcomes=interaction_duckdb_fact(
+            con.table("joint_outcomes", database=(catalog, "analytics"))
+        ),
+    )
+    return manifest.model_copy(update={"combination_feeds": (feed,)})
+
+
+def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path):
+    from increment.dashboard._app import build_payload
+
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _joint_capture(definitions)
     con = ibis.duckdb.connect(path)
     try:
         con.raw_sql("""
@@ -440,7 +460,7 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
                 unit_id VARCHAR, metric VARCHAR, definition_sha256 VARCHAR,
                 value DOUBLE, finalized_at TIMESTAMPTZ)
             """)
-        metric = plan.metrics[0]
+        metric = capture.plan.metrics[0]
         con.con.executemany(
             "INSERT INTO analytics.joint_outcomes VALUES (?, ?, ?, ?, ?)",
             [
@@ -457,24 +477,13 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
         con.disconnect()
 
     with _reader(path, definitions) as (experiment, reader, con):
-        manifest = _manifest(path, con, experiment, capture)
-        catalog = manifest.focal_assignments.coordinate[0]
-        feed = contract.CombinationFeed(
-            candidates=combination.candidates,
-            roster=interaction_duckdb_fact(
-                con.table("joint_roster", database=(catalog, "analytics"))
-            ),
-            outcomes=interaction_duckdb_fact(
-                con.table("joint_outcomes", database=(catalog, "analytics"))
-            ),
-        )
-        manifest = manifest.model_copy(update={"combination_feeds": (feed,)})
+        manifest = _joint_manifest(path, con, experiment, capture)
         bound = bind_interaction_scan(
             capture, source=InteractionDuckDBSource(experiment, reader, manifest)
         )
         snapshot = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=bound)
-        assert len(snapshot.combinations) == 1
-        result = snapshot.combinations[0]
+        assert snapshot.interactions is not None
+        (result,) = snapshot.interactions.combinations
         cells = {cell.cell: cell for cell in result.cells}
         assert (cells["000"].n_observed, cells["000"].n_success) == (1, 0)
         assert (cells["001"].n_pending, cells["101"].n_missing) == (1, 1)
@@ -492,6 +501,7 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
         assert 'aria-label="Filters on"' in combination_view["effects"]
         assert "inc-assignment-dot" not in combination_view["change"]
         assert combination_view["effects"].count("<svg ") == 2  # one point and its shared axis
+        (feed,) = manifest.combination_feeds
         wrong_order = feed.model_copy(update={"candidates": feed.candidates[::-1]})
         with pytest.raises(CodedError) as mismatch:
             bind_interaction_scan(
@@ -504,3 +514,66 @@ def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path)
             )
         assert mismatch.value.code == "overlap.scan.invalid"
         assert mismatch.value.context["reason"] == "unknown_combination"
+
+
+@pytest.mark.parametrize("receipt", ["matching", "wrong_hash", "wrong_timestamp"])
+def test_only_matching_native_registration_enables_adjusted_joint_intervals(tmp_path, receipt):
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _joint_capture(definitions)
+    registration = capture.plan.combination_registration
+    assert registration is not None
+    metric = capture.plan.metrics[0]
+    con = ibis.duckdb.connect(path)
+    try:
+        con.con.execute("""
+            CREATE TABLE analytics.joint_roster AS
+            SELECT concat(assignment, '-', sample) AS unit_id, assignment
+            FROM unnest(['000', '001', '010', '011', '100', '101', '110', '111'])
+                AS cells(assignment)
+            CROSS JOIN range(80) AS units(sample)
+            """)
+        con.con.execute(
+            """
+            CREATE TABLE analytics.joint_outcomes AS
+            SELECT unit_id, ? AS metric, ? AS definition_sha256, ?::TIMESTAMPTZ AS finalized_at,
+                   (CAST(split_part(unit_id, '-', 2) AS BIGINT) <
+                        CASE WHEN starts_with(assignment, '1') THEN 60 ELSE 20 END)::DOUBLE AS value
+            FROM analytics.joint_roster
+            """,
+            [metric.name, metric.definition_sha256, _CUTOFF],
+        )
+        con.con.execute("""
+            CREATE TABLE main.increment_interaction_combination_registration (
+                registration_sha256 VARCHAR, registered_at TIMESTAMPTZ
+            )
+            """)
+        con.con.execute(
+            "INSERT INTO main.increment_interaction_combination_registration VALUES (?, ?)",
+            [
+                "0" * 64 if receipt == "wrong_hash" else registration.registration_id,
+                _ENTRY if receipt == "wrong_timestamp" else registration.registered_at,
+            ],
+        )
+        con.raw_sql("CHECKPOINT")
+    finally:
+        con.disconnect()
+
+    with _reader(path, definitions) as (experiment, reader, con):
+        manifest = _joint_manifest(path, con, experiment, capture)
+        bound = bind_interaction_scan(
+            capture, source=InteractionDuckDBSource(experiment, reader, manifest)
+        )
+        snapshot = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=bound)
+    assert snapshot.interactions is not None
+    (result,) = snapshot.interactions.combinations
+    first = result.rows[0]
+    assert first.estimate is not None and first.estimate == pytest.approx(0.5)
+    if receipt == "matching":
+        assert first.lower is not None and first.upper is not None
+        assert 0 < first.lower < first.estimate < first.upper
+        assert first.decision == "detected"
+    else:
+        assert first.lower is first.upper is first.decision is None
+        assert [reason.code for reason in first.reasons] == ["joint_registration_unverified"]

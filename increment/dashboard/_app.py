@@ -392,7 +392,7 @@ def _interaction_payload(
             "pairs": pairs,
             "combinations": [
                 combination_packet(result, scan, snapshot.config.theme)
-                for result in snapshot.combinations
+                for result in scan.combinations
                 if result.metric.name == metric
             ],
         }

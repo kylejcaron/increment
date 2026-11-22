@@ -58,7 +58,6 @@ class VerifiedInteractionAttachment:
 
     value: InteractionAttachment
     facts: FocalSourceFacts
-    combinations: tuple[CombinationResult, ...]
 
 
 def interaction_metric_sha256(metric: Metric) -> str:
@@ -224,14 +223,14 @@ def bind_scan(
         ).hexdigest(),
         pair_evidence_sha256=tuple(item.evidence_sha256 for item in retained),
     )
+    evaluated = evaluated.model_copy(
+        update={"combinations": evaluate_joint(capture, joint, verified_registration)}
+    )
     attachment = object.__new__(VerifiedInteractionAttachment)
     object.__setattr__(
         attachment, "value", InteractionAttachment(scan=evaluated, focal_receipt=receipt)
     )
     object.__setattr__(attachment, "facts", facts)
-    object.__setattr__(
-        attachment, "combinations", evaluate_joint(capture, joint, verified_registration)
-    )
     return attachment
 
 

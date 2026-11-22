@@ -871,6 +871,9 @@ class InteractionScan(_ScanModel):
     coverage: ScanCoverage
     rows: Ordered[tuple[ScanRow, ...]]
     details: Ordered[tuple[PairDetail, ...]]
+    combinations: Ordered[tuple[CombinationResult, ...]] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
     def _validate_overlap(self) -> Self:
         candidates = tuple(detail.candidate for detail in self.details)
