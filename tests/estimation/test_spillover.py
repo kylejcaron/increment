@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment._spillover_design import GroupProfile, SpilloverPopulation
 from increment.errors import InvalidRequestError
 from increment.estimation import spillover
 from increment.estimation.spillover import (
@@ -638,13 +637,8 @@ def test_many_one_group_strata_keep_the_outward_side_of_the_closed_form():
     # exactly 1/2. The product reduces to (.05 + .475/m)^8192 for either tail.
     n = 8192
     names = [f"s{i}" for i in range(n)]
-    design = SpilloverDesign(
-        {s: {"base": 1, "upper": 1} for s in names}, (_comparison(),), "visit", "7d"
-    )
-    groups = tuple(
-        GroupProfile(2 * i + j, s, 4, (0, 2)) for i, s in enumerate(names) for j in range(2)
-    )
-    pop = SpilloverPopulation(design, groups, "many-strata")
+    groups = tuple((2 * i + j, s, 4, (0, 2)) for i, s in enumerate(names) for j in range(2))
+    pop = _population(groups, {s: {"base": 1, "upper": 1} for s in names})
     r = BatchCell(np.array([2.0]), np.zeros(1), np.array([2]), np.array([4]))
     p = BatchCell(np.array([2.0]), np.zeros(1), np.array([1]), np.array([2]))
     cells = {(s, policy): cell for s in names for policy, cell in (("base", r), ("upper", p))}
@@ -661,9 +655,7 @@ def test_many_one_group_strata_keep_the_outward_side_of_the_closed_form():
 @pytest.mark.numerical_certification
 def test_long_rounded_cell_mean_encloses_exact_product_in_both_tails():
     n = 16_384
-    design = SpilloverDesign({"all": {"base": n, "upper": n}}, (_comparison(),), "visit", "7d")
-    groups = tuple(GroupProfile(i, "all", 10, (0, 7)) for i in range(2 * n))
-    pop = SpilloverPopulation(design, groups, "constant-third")
+    pop = _population(tuple((i, "all", 10, (0, 7)) for i in range(2 * n)))
     # Recorded DuckDB AVG of n copies of 10*1/3, with zero centered SS.
     # Reflect its signed error as well: 1-X must use the same absolute allowance.
     reported = float.fromhex("0x1.aaaaaaaaab0a4p+1")

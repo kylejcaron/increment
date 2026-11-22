@@ -160,6 +160,38 @@ def _allocate_exact(capacity, count, *, proportional):
     return max((v for v in candidates if sum(v) == count), key=objective)
 
 
+def _allocation_errors(sizes, low, movable, delta, schedules):
+    groups = range(len(sizes))
+    order = sorted((i for i in groups if movable[i]), key=lambda i: Fraction(low[i], sizes[i]))
+    gain = tuple(sizes[i] - low[i] if i in order[: len(order) // 2] else 0 for i in groups)
+    loss = tuple(low[i] if i in order[len(order) // 2 :] else 0 for i in groups)
+    pairs = min(sum(gain), sum(loss))
+    up = _allocate_exact(gain, pairs, proportional=False)
+    down = _allocate_exact(loss, pairs, proportional=False)
+    capacity = tuple(
+        (sizes[i] - low[i] if delta > 0 else low[i]) if movable[i] else 0 for i in groups
+    )
+    expected = {
+        "unchanged": (0,) * len(sizes),
+        "cancelling": tuple(g - l for g, l in zip(up, down, strict=True)),
+    }
+    for label in ("spread", "concentrated"):
+        flips = _allocate_exact(capacity, abs(delta), proportional=label == "spread")
+        expected[label] = tuple(x if delta > 0 else -x for x in flips)
+    labels = {s.schedule for s in schedules}
+    error = int(len(schedules) != len(expected) or labels != expected.keys())
+    for s in schedules:
+        if s.schedule not in expected:
+            continue
+        error += s.low != low
+        moves = tuple(h - l for h, l in zip(s.high, low, strict=True))
+        error += sum(abs(a - b) for a, b in zip(moves, expected[s.schedule], strict=True))
+        error += s.true_effect != sum(moves) / sum(sizes)
+        if s.schedule == "cancelling":
+            error += s.cancelling_pairs != pairs
+    return error
+
+
 def _schedule_error():
     error = 0
     for sizes, low, movable in [
@@ -167,33 +199,29 @@ def _schedule_error():
         ((10,) * 4, (0, 3, 7, 10), (False, True, True, False)),
         ((100, 10, 40, 20), (10, 3, 20, 4), (True,) * 4),
     ]:
-        order = sorted(
-            (i for i in range(4) if movable[i]), key=lambda i: Fraction(low[i], sizes[i])
-        )
-        gain = tuple(sizes[i] - low[i] if i in order[: len(order) // 2] else 0 for i in range(4))
-        loss = tuple(low[i] if i in order[len(order) // 2 :] else 0 for i in range(4))
-        pairs = min(sum(gain), sum(loss))
-        up = _allocate_exact(gain, pairs, proportional=False)
-        down = _allocate_exact(loss, pairs, proportional=False)
+        for delta in (-4, 4):
+            schedules = _spillover._schedules("spread", sizes, low, delta, movable)
+            error += _allocation_errors(sizes, low, movable, delta, schedules)
+
+    # Count the schedules actually presented to the planner. A rate of .145 among
+    # 100 people rounds to 15; equal offer quotas cannot move anyone's outcome.
+    unequal = {
+        "spread": (2, 3, 4, 6),
+        "largest_first": (0, 0, 0, 15),
+        "smallest_first": (10, 5, 0, 0),
+    }
+    for sizes, movable, rate, change, count, baselines in (
+        ((10, 20, 30, 40), (True,) * 4, 0.145, 0.145, 15, unequal),
+        ((10,) * 4, (False, True, True, False), 0.5, 0.1, 4, {"spread": (5,) * 4}),
+    ):
         for sign in (-1, 1):
-            capacity = tuple(
-                (sizes[i] - low[i] if sign > 0 else low[i]) if movable[i] else 0 for i in range(4)
-            )
-            expected = {
-                "unchanged": (0,) * 4,
-                "cancelling": tuple(g - l for g, l in zip(up, down, strict=True)),
-            }
-            for label in ("spread", "concentrated"):
-                flips = _allocate_exact(capacity, 4, proportional=label == "spread")
-                expected[label] = tuple(sign * n for n in flips)
-            schedules = _spillover._schedules("spread", sizes, low, sign * 4, movable)
-            error += {s.schedule for s in schedules} != expected.keys()
-            for s in schedules:
-                moves = tuple(h - l for h, l in zip(s.high, low, strict=True))
-                error += sum(abs(a - b) for a, b in zip(moves, expected[s.schedule], strict=True))
-                error += s.true_effect != sum(moves) / sum(sizes)
-                if s.schedule == "cancelling":
-                    error += s.cancelling_pairs != pairs
+            cases = _spillover._model_grid(sizes, rate, sign * change, movable)
+            if isinstance(cases, str):
+                error += 1
+                continue
+            for profile, low in baselines.items():
+                schedules = tuple(s for s in cases if s.baseline_profile == profile)
+                error += _allocation_errors(sizes, low, movable, sign * count, schedules)
     return CalibrationCheck("schedule deviations from exact feasible integer allocations", error, 0)
 
 

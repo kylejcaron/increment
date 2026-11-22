@@ -14,7 +14,6 @@ from scipy.stats import binom
 
 from calibration.spillover import certify_decisions, certify_sampling, three_levels
 from increment.errors import CodedError
-from increment.power._spillover import _model_grid
 from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
 
 
@@ -171,9 +170,6 @@ def _check_bounds(row, family):
 def test_whole_roster_rounding_and_profile_schedules_predict_interval_frequencies(effect):
     # On this roster both the baseline and |change| round from 14.5 to 15 people.
     sizes, offers = (10, 20, 30, 40), ((0, 1), (0, 2), (0, 1), (0, 2))
-    grid = _model_grid(sizes, 0.145, effect, (True,) * len(sizes))
-    assert not isinstance(grid, str)
-    policies = {(s.baseline_profile, s.schedule): (s.low, s.high) for s in grid}
     (plan,) = _plan(sizes, offers=offers, comparisons=(_comparison(0.145, effect),))
     # Baseline, cancellation, proportional gains, concentrated gains. Raising
     # the least affected groups uses event FRACTIONS, not raw event counts.
@@ -195,7 +191,6 @@ def test_whole_roster_rounding_and_profile_schedules_predict_interval_frequencie
             "spread": spread,
             "concentrated": concentrated,
         }
-        assert policies[row.baseline_profile, row.schedule] == (low, high[row.schedule])
         _check_rates(row, sizes, offers, low, high[row.schedule])
         if row.schedule == "cancelling":
             assert row.cancelling_pairs == sum(
@@ -209,9 +204,6 @@ def test_whole_roster_rounding_and_profile_schedules_predict_interval_frequencie
 def test_signed_changes_and_cancellation_leave_equal_offer_groups_unchanged(effect):
     sizes = (10,) * 4
     offers = ((0, 0), (0, 1), (0, 2), (1, 1))
-    grid = _model_grid(sizes, 0.5, effect, tuple(r != p for r, p in offers))
-    assert not isinstance(grid, str)
-    spread = {s.schedule: (s.low, s.high) for s in grid if s.baseline_profile == "spread"}
     (plan,) = _plan(sizes, offers=offers, comparisons=(_comparison(0.5, effect),))
     sign = 1 if effect > 0 else -1
     low = (5,) * 4
@@ -223,7 +215,6 @@ def test_signed_changes_and_cancellation_leave_equal_offer_groups_unchanged(effe
     rows = {s.schedule: s for s in plan.scenarios if s.baseline_profile == "spread"}
     assert rows["cancelling"].cancelling_pairs == 5
     for schedule, high in expected.items():
-        assert spread[schedule] == (low, high)
         _check_rates(rows[schedule], sizes, offers, low, high)
 
 
