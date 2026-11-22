@@ -193,8 +193,8 @@ def _capture(
     return ScanCapture(
         plan=plan,
         coverage="partial" if partial else "complete",
-        observed_inventory=ObservedInventory(
-            **source, cutoff=cutoff, coverage="partial" if partial else "complete"
+        observed_inventory=ObservedInventory.model_validate(
+            {**source, "cutoff": cutoff, "coverage": "partial" if partial else "complete"}
         ),
         pairs=tuple(
             PairInput(
@@ -526,3 +526,118 @@ def test_excluded_candidate_retains_evidence_but_never_fits(saved_pair):
     (detail,) = scan.details
     assert detail.evidence is not None
     assert detail.evidence.evidence_sha256 == evidence.evidence_sha256
+
+
+def test_joint_combinations_keep_the_registered_family_when_an_arm_is_empty(saved_pair):
+    from itertools import product
+
+    from increment.semantics import interaction_scan as contract
+
+    capture = _capture(saved_pair, candidates=4)
+    binary = tuple(metric for metric in capture.plan.metrics if metric.kind == "binary_mean")
+    original = capture.plan.model_copy(update={"metrics": binary})
+    candidates = tuple(candidate.entry.identity for candidate in original.candidates)
+    sets = tuple(
+        contract.InteractionCombination(
+            candidates=candidates[:count], joint_assignment="independent_unit_bernoulli"
+        )
+        for count in (2, 3, 4)
+    )
+    registration = contract.CombinationRegistration(
+        registered_at=saved_pair.plan.registered_at,
+        scope=original.scope,
+        combinations=sets,
+        metrics=original.metrics,
+    )
+    plan = original.model_copy(update={"combination_registration": registration})
+    assert plan.plan_id != original.plan_id
+    assert capture.observed_inventory is not None
+    observed = capture.observed_inventory.model_copy(
+        update={"combination_registration_sha256": registration.registration_id}
+    )
+    reversed_first = sets[0].model_copy(update={"candidates": sets[0].candidates[::-1]})
+    reordered = registration.model_copy(update={"combinations": (reversed_first, *sets[1:])})
+    assert (
+        plan.plan_id != original.model_copy(update={"combination_registration": reordered}).plan_id
+    )
+
+    counts_by_size = {3: 20_000, 4: 12_000, 5: 2500}
+    rates_by_set = {}
+    cells_by_set = {}
+    for declared in sets:
+        size = len(declared.candidates) + 1
+        rates = {}
+        cells = []
+        for a, b, c, d, e in product((0, 1), repeat=5):
+            if (size == 3 and d) or (size < 5 and e):
+                continue
+            assignment = f"{a}{b}{c}{d}{e}"[:size]
+            p = (
+                30
+                + 4 * a
+                + 2 * b
+                + c
+                + 2 * d
+                + e
+                + a * b * (1 - 6 * c)
+                + a * b * c * d
+                + a * b * c * d * e
+            ) / 100
+            rates[assignment] = p
+            n = 0 if assignment == "11111" else counts_by_size[size]
+            successes = round(n * p)
+            anchor, delta, m2 = overlap_binary_moments(n, successes) if n else (None, None, None)
+            cells.append(
+                contract.CombinationCell(
+                    metric=plan.metrics[0].name,
+                    cell=assignment,
+                    n_assigned=n,
+                    n_observed=n,
+                    n_missing=0,
+                    n_pending=0,
+                    n_success=successes,
+                    anchor=anchor,
+                    mean_delta=delta,
+                    m2=m2,
+                )
+            )
+        rates_by_set[declared] = rates
+        cells_by_set[declared] = tuple(cells)
+
+    results = scan_estimation.evaluate_combinations(
+        plan, cells_by_set, coverage="complete", observed=observed
+    )
+    assert [result.family_size for result in results] == [37, 37, 37]
+    third, fourth, fifth = results
+    assert third.rows[-1].estimate == pytest.approx(-0.06)
+    assert [row.estimate for row in fourth.rows[-3:]] == pytest.approx([-0.06, -0.05, 0.01])
+    estimates = rates_by_set[sets[1]].values()
+    n = counts_by_size[4]
+    components = [p * (1 - p) / (n - 1) for p in estimates]
+    variance = sum(components)
+    df = (n - 1) * variance**2 / sum(v**2 for v in components)
+    radius = t.isf(plan.scope.alpha / 74, df) * math.sqrt(variance)
+    change = fourth.rows[-1]
+    assert (change.lower, change.upper) == pytest.approx((0.01 - radius, 0.01 + radius))
+    assert change.decision == "none_detected"
+    assert fifth.rows[-3].estimate == pytest.approx(0.01)
+    for row in (fifth.rows[-4], fifth.rows[-2], fifth.rows[-1]):
+        assert (row.estimate, row.lower, row.upper, row.decision) == (None, None, None, None)
+        assert tuple((reason.code, reason.cell) for reason in row.reasons) == (
+            ("empty_cell", "11111"),
+        )
+    del cells_by_set[sets[-1]]
+    without_feed = scan_estimation.evaluate_combinations(
+        plan, cells_by_set, coverage="complete", observed=observed
+    )
+    assert without_feed[:2] == results[:2]
+    assert without_feed[-1].family_size == 37
+    assert without_feed[-1].cells == ()
+    assert without_feed[-1].rows[-1].reasons[0].code == "joint_feed_missing"
+    not_preregistered = scan_estimation.evaluate_combinations(
+        plan, cells_by_set, coverage="complete", observed=capture.observed_inventory
+    )
+    contrast = not_preregistered[1].rows[-1]
+    assert contrast.estimate == pytest.approx(0.01)
+    assert contrast.lower is contrast.upper is contrast.decision is None
+    assert contrast.reasons[0].code == "joint_registration_unverified"

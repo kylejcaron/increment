@@ -127,7 +127,7 @@ def _empty_capture(definitions, names=("checkout_conversion",)):
     )
     return capture_interaction_scan(
         plan,
-        observed_inventory=ObservedInventory(cutoff=_CUTOFF, **roster),
+        observed_inventory=ObservedInventory.model_validate({**roster, "cutoff": _CUTOFF}),
         evidence_by_study={},
     )
 

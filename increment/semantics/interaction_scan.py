@@ -21,6 +21,7 @@ from increment._overlap_evidence import (
     OverlapDeliveryCount,
     OverlapModel,
     Sha256,
+    _CellMoments,
     _instant_json,
     overlap_digest,
 )
@@ -58,6 +59,80 @@ class ExperimentIdentity(_ScanModel):
     def sort_key(self) -> tuple[str, str, str]:
         """Scalar strings sort in the same order as their UTF-8 bytes."""
         return self.target, self.experiment_id, self.revision
+
+
+CombinationKind = Literal["effect", "without", "with", "change"]
+
+
+class InteractionCombination(_ScanModel):
+    """A registered comparison of the focal experiment and two to four others."""
+
+    candidates: Annotated[
+        Ordered[tuple[ExperimentIdentity, ...]], Field(min_length=2, max_length=4)
+    ]
+    joint_assignment: Literal["independent_unit_bernoulli"]
+
+    def _validate_overlap(self) -> Self:
+        if len(set(self.candidates)) != len(self.candidates):
+            self._invalid_field("candidates", "duplicate_candidate")
+        return self
+
+    @property
+    def assignments(self) -> tuple[str, ...]:
+        """Exact assignment keys in focal-first order, including unobserved cells."""
+        width = len(self.candidates) + 1
+        return tuple(f"{index:0{width}b}" for index in range(1 << width))
+
+    @property
+    def contrasts(self) -> tuple[tuple[CombinationKind, str | None], ...]:
+        """Prespecified settings and three change comparisons."""
+        width = len(self.candidates)
+        settings: tuple[tuple[CombinationKind, str | None], ...] = tuple(
+            ("effect", f"{index:0{width}b}") for index in range(1 << width)
+        )
+        return (*settings, ("without", None), ("with", None), ("change", None))
+
+
+class CombinationCell(_CellMoments[str]):
+    """Bounded moments for one assignment in a registered combination."""
+
+    def _validate_overlap(self) -> Self:
+        if not 3 <= len(self.cell) <= 5 or set(self.cell) - {"0", "1"}:
+            self._invalid_field("cell", "invalid_assignment")
+        return super()._validate_overlap()
+
+
+@dataclass(frozen=True, slots=True)
+class CombinationReason:
+    """An unavailable or qualified comparison, with its affected assignment."""
+
+    code: str
+    cell: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CombinationRow:
+    """One conditional effect or contrast on the metric's own scale."""
+
+    kind: CombinationKind
+    assignment: str | None
+    estimate: float | None = None
+    lower: float | None = None
+    upper: float | None = None
+    availability: ScanAvailability = "unavailable"
+    reasons: tuple[CombinationReason, ...] = ()
+    decision: ScanDecision | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CombinationResult:
+    """One registered combination and metric at the frozen look."""
+
+    declaration: InteractionCombination
+    metric: OverlapMetric
+    rows: tuple[CombinationRow, ...]
+    cells: tuple[CombinationCell, ...]
+    family_size: int
 
 
 class InventoryEntry(_ScanModel):
@@ -136,6 +211,37 @@ class ScanScope(ScanWindow):
         return self
 
 
+class CombinationRegistration(_ScanModel):
+    """The complete outcome-free combination family published before entry."""
+
+    registered_at: Instant
+    scope: ScanScope
+    metrics: Annotated[Ordered[tuple[OverlapMetric, ...]], Field(min_length=1)]
+    combinations: Annotated[Ordered[tuple[InteractionCombination, ...]], Field(min_length=1)]
+
+    def _validate_overlap(self) -> Self:
+        if self.registered_at >= self.scope.entry_open:
+            self._invalid_field("registered_at", "combination_not_registered_before_entry")
+        ordered = tuple(
+            sorted(self.metrics, key=lambda metric: (metric.definition_sha256, metric.name))
+        )
+        object.__setattr__(self, "metrics", ordered)
+        return self
+
+    @property
+    def registration_id(self) -> str:
+        """Hash the fixed scope, exact metric definitions and comparison order."""
+        return overlap_digest(
+            "plan",
+            {
+                "kind": "interaction_combinations.v1",
+                "registration": self.model_dump(
+                    mode="json", exclude={"scope": {"focal": {"entry": {"display_name"}}}}
+                ),
+            },
+        )
+
+
 class _InventoryRoster(_ScanModel):
     universe_id: Identity
     source_id: Identity
@@ -192,6 +298,9 @@ class ObservedInventory(_InventoryRoster):
     """Independent outcome-free inventory receipt as of the predeclared look."""
 
     cutoff: Instant
+    combination_registration_sha256: Sha256 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     def _validate_overlap(self) -> Self:
         super()._validate_overlap()
@@ -280,6 +389,9 @@ class InteractionScanPlan(_ScanModel):
     scope: ScanScope
     inventory: InteractionInventory
     metrics: Ordered[tuple[OverlapMetric, ...]]
+    combination_registration: CombinationRegistration | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     def _validate_overlap(self) -> Self:
         scope, inventory = self.scope, self.inventory
@@ -293,7 +405,43 @@ class InteractionScanPlan(_ScanModel):
                 self._invalid_field("focal", "inventory_conflict")
         ordered = sorted(self.metrics, key=lambda metric: (metric.definition_sha256, metric.name))
         object.__setattr__(self, "metrics", tuple(ordered))
+        if self.combination_registration is not None:
+            self._check_combinations(self.combination_registration)
         return self
+
+    def _check_combinations(self, registration: CombinationRegistration) -> None:
+        if registration.scope != self.scope or registration.metrics != self.metrics:
+            self._invalid_field("combination_registration", "combination_scope_mismatch")
+        allowed = {
+            candidate.entry.identity for candidate in self.candidates if not candidate.reasons
+        }
+        focal = self.scope.focal.entry.identity
+        seen: set[frozenset[ExperimentIdentity]] = set()
+        for item in registration.combinations:
+            others = frozenset(item.candidates)
+            if not others <= allowed:
+                self._invalid_field(
+                    "combination_registration", "incompatible_combination_candidate"
+                )
+            identities = (focal, *item.candidates)
+            if len({entry.target for entry in identities}) != len(identities) or len(
+                {entry.experiment_id for entry in identities}
+            ) != len(identities):
+                self._invalid_field("combination_registration", "repeated_combination_regime")
+            if others in seen:
+                self._invalid_field("combination_registration", "duplicate_combination")
+            seen.add(others)
+
+    @property
+    def combinations(self) -> tuple[InteractionCombination, ...]:
+        """Combination sets in their registered order."""
+        registration = self.combination_registration
+        return registration.combinations if registration is not None else ()
+
+    @property
+    def combination_family_size(self) -> int:
+        """Number of registered combination rows, including unavailable ones."""
+        return len(self.metrics) * sum(len(item.contrasts) for item in self.combinations)
 
     @property
     def roster_coverage(self) -> ScanCoverage:
@@ -387,6 +535,11 @@ class InteractionScanPlan(_ScanModel):
                     mode="json", exclude={"entries": {"__all__": {"display_name"}}}
                 ),
                 "metrics": [metric.model_dump(mode="json") for metric in self.metrics],
+                **(
+                    {"combination_registration": self.combination_registration.registration_id}
+                    if self.combination_registration is not None
+                    else {}
+                ),
             },
         )
 
@@ -413,6 +566,7 @@ def freeze_interaction_scan(
     end: datetime,
     cutoff: datetime,
     alpha: float,
+    combination_registration: CombinationRegistration | None = None,
 ) -> InteractionScanPlan:
     """Freeze a family from an inventory and study declaration, without outcomes."""
     scope = ScanScope(
@@ -425,7 +579,12 @@ def freeze_interaction_scan(
         cutoff=cutoff,
         alpha=alpha,
     )
-    return InteractionScanPlan(scope=scope, inventory=inventory, metrics=metrics)
+    return InteractionScanPlan(
+        scope=scope,
+        inventory=inventory,
+        metrics=metrics,
+        combination_registration=combination_registration,
+    )
 
 
 class MetricIssue(_ScanModel):
@@ -746,6 +905,16 @@ class StudyFeedFact(_ScanModel):
     fact: SourceFact
 
 
+class CombinationFeed(_ScanModel):
+    """Native joint roster and outcomes published for one ordered registration."""
+
+    candidates: Annotated[
+        Ordered[tuple[ExperimentIdentity, ...]], Field(min_length=2, max_length=4)
+    ]
+    roster: SourceFact
+    outcomes: SourceFact
+
+
 class SourceGenerationManifest(_ScanModel):
     """Source declaration of one sealed dataset, not proof or a saved scan."""
 
@@ -759,6 +928,9 @@ class SourceGenerationManifest(_ScanModel):
     focal_exposures: SourceFact | None = None
     focal_outcomes: Ordered[tuple[tuple[Identity, SourceFact], ...]]
     pair_feeds: Ordered[tuple[StudyFeedFact, ...]]
+    combination_feeds: Ordered[tuple[CombinationFeed, ...]] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
     def _validate_overlap(self) -> Self:
         if len({metric for metric, _ in self.focal_outcomes}) != len(self.focal_outcomes):
@@ -770,6 +942,16 @@ class SourceGenerationManifest(_ScanModel):
             self.pair_feeds, key=lambda feed: (feed.study_id, FEED_ROLES.index(feed.role))
         )
         object.__setattr__(self, "pair_feeds", tuple(feeds))
+        combinations = self.combination_feeds
+        if len({feed.candidates for feed in combinations}) != len(combinations):
+            self._invalid_field("combination_feeds", "duplicate_combination_feed")
+        object.__setattr__(
+            self,
+            "combination_feeds",
+            tuple(
+                sorted(combinations, key=lambda feed: tuple(i.sort_key for i in feed.candidates))
+            ),
+        )
         return self
 
 

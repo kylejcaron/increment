@@ -24,6 +24,7 @@ from increment._overlap_evidence import (
     OverlapIngress,
     OverlapModel,
     Sha256,
+    _CellMoments,
     overlap_digest,
     overlap_wire_payload,
 )
@@ -150,12 +151,12 @@ def _required_cells(c: _ExactWeights, cells: tuple[OverlapCell, ...]) -> tuple[O
     return tuple(cell for weight, cell in zip(c, cells, strict=True) if weight)
 
 
-def _reasons(
-    cells: tuple[OverlapCell, ...], *, target_count: int, claimed: bool
-) -> tuple[_ReasonPair, ...]:
+def _reasons[Key: str](
+    cells: tuple[_CellMoments[Key], ...], *, target_count: int, claimed: bool
+) -> tuple[tuple[Key | None, _Reason], ...]:
     if not target_count:
         return ((None, "no_target"),)
-    reasons: list[_ReasonPair] = []
+    reasons: list[tuple[Key | None, _Reason]] = []
     for cell in cells:
         if cell.n_pending:
             reasons.append((cell.cell, "pending_outcomes"))
@@ -180,7 +181,9 @@ def _reasons(
     return tuple(reasons)
 
 
-def _availability(reasons: tuple[_ReasonPair, ...], *, claimed: bool) -> _Availability:
+def _availability(
+    reasons: tuple[tuple[str | None, _Reason], ...], *, claimed: bool
+) -> _Availability:
     if any(reason in _NO_POINT for _, reason in reasons):
         return "unavailable"
     if any(reason in _NO_VARIANCE for _, reason in reasons):
@@ -201,10 +204,10 @@ def _rounded(value: Fraction, *, metric: str, quantity: str) -> float:
     return rounded
 
 
-def _point(
-    cells: tuple[OverlapCell, ...],
-    weights: _Weights,
-    exact_weights: _ExactWeights,
+def _point[Key: str](
+    cells: tuple[_CellMoments[Key], ...],
+    weights: tuple[float, ...],
+    exact_weights: tuple[_Exact, ...],
     pairs: tuple[tuple[int, int], ...],
     *,
     metric: str,
@@ -245,7 +248,9 @@ def _point(
     return _rounded(exact, metric=metric, quantity="estimate")
 
 
-def _welch(weights: _Weights, cells: tuple[OverlapCell, ...]) -> tuple[float, float]:
+def _welch[Key: str](
+    weights: tuple[float, ...], cells: tuple[_CellMoments[Key], ...]
+) -> tuple[float, float]:
     # h_j = c_j**2 * M2_j / ((n_j - 1) * n_j). Normalize sqrt(h_j)
     # before squaring, so df never divides two underflowed squared variances.
     roots: list[tuple[float, int]] = []
