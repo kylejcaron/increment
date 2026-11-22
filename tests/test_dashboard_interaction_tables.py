@@ -197,24 +197,50 @@ def _assignment_rows(markup: str) -> list[tuple[str, ...]]:
     ]
 
 
-def test_same_name_buttons_open_their_own_four_cell_evidence(_scan):
-    from increment.dashboard._interaction_html import interaction_tables
+def _interaction_packets(scan: InteractionScan):
+    from dataclasses import replace
 
-    fragments = interaction_tables(_scan, metric_key="save")
+    from increment.dashboard import dashboard_html
+    from tests.dashboard_snapshots import experiment_for
+    from tests.dashboard_snapshots import snapshot as make_snapshot
+    from tests.test_dashboard_capture import _page_payload
+
+    base = make_snapshot()
+    names = {base.metrics[0].name: "save", base.metrics[1].name: "revenue"}
+    snapshot = make_snapshot(
+        metrics=tuple(
+            model.model_copy(update={"name": names[model.name]}) for model in base.metrics[:2]
+        ),
+        group_data=tuple(
+            replace(group, metric=names[group.metric])
+            for group in base.group_data
+            if group.metric in names
+        ),
+        primary_metric="save",
+        interactions=scan,
+    )
+    page = dashboard_html(experiment_for(snapshot), snapshot=snapshot)
+    return _page_payload(page)["interactions"]["metrics"]
+
+
+def test_same_name_buttons_open_their_own_four_cell_evidence(_scan):
+    packet = _interaction_packets(_scan)["save"]
+    overview, details = packet["overview"], packet["details"]
+
     first, second = (detail.candidate.key.pair_id for detail in _scan.details)
-    assert tuple(fragments.details) == (first, second)
+    assert tuple(details) == (first, second)
     for pair, revision in ((first, "r1"), (second, "r2")):
-        row = _candidate_row(fragments.overview, pair)
+        row = _candidate_row(overview, pair)
         assert _NAME in _text(row)
         assert "<script>" not in row
         assert revision in _text(row)
-    assert [row[1:4] for row in _assignment_rows(fragments.details[first])] == [
+    assert [row[1:4] for row in _assignment_rows(details[first])] == [
         ("10,000", "10,000", "3,100"),
         ("10,000", "10,000", "3,400"),
         ("10,000", "10,000", "3,000"),
         ("10,000", "10,000", "2,800"),
     ]
-    second_rows = _assignment_rows(fragments.details[second])
+    second_rows = _assignment_rows(details[second])
     # Source A/B is transposed for the second pair, not the actual counts.
     assert [row[1:4] for row in second_rows] == [
         ("50", "50", "0"),
@@ -225,27 +251,27 @@ def test_same_name_buttons_open_their_own_four_cell_evidence(_scan):
     assert "missing" in second_rows[2][-1].lower()
     assert "assigned" in second_rows[-1][-1].lower()
     assert {"Focal experiment", "Other experiment", "Metric", "Outcome window", "Target"} <= set(
-        re.findall(r"<dt>(.*?)</dt>", fragments.details[second])
+        re.findall(r"<dt>(.*?)</dt>", details[second])
     )
 
 
 def test_stored_rate_numbers_and_absence_are_visible_in_both_levels(_scan):
-    from increment.dashboard._interaction_html import interaction_tables
+    packet = _interaction_packets(_scan)["save"]
+    overview, details = packet["overview"], packet["details"]
 
-    fragments = interaction_tables(_scan, metric_key="save")
-    first, second = tuple(fragments.details)
-    first_row = _accessible_numbers(_candidate_row(fragments.overview, first))
-    first_detail = _accessible_numbers(fragments.details[first])
+    first, second = tuple(details)
+    first_row = _accessible_numbers(_candidate_row(overview, first))
+    first_detail = _accessible_numbers(details[first])
     assert "−5 pp of save" in first_row and "−5 pp of save" in first_detail
     for bound in ("−7.56 pp of save", "−2.44 pp of save"):
         assert bound in first_row and bound in first_detail
     assert "How " + _NAME + " changed Same name’s effect on save" in first_detail
     for number in ("+3 pp", "+1.16 pp", "+4.84 pp", "−2 pp", "−3.78 pp", "−0.22 pp"):
         assert number in first_detail
-    unavailable = _candidate_row(fragments.overview, second)
+    unavailable = _candidate_row(overview, second)
     assert "Couldn’t estimate · nobody was assigned both on" in _text(unavailable)
     assert "<svg" not in unavailable
-    detail = fragments.details[second]
+    detail = details[second]
     assert "Estimate only · no interval" in _text(detail)
     point_only = next(
         row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", detail, re.S) if "Estimate only" in row
@@ -255,30 +281,31 @@ def test_stored_rate_numbers_and_absence_are_visible_in_both_levels(_scan):
 
 
 def test_relative_pair_shows_its_own_lifts_and_supported_metric_direction(_scan):
-    from increment.dashboard._interaction_html import interaction_tables
+    packet = _interaction_packets(_scan)["save"]
+    relative = packet["relative"]
+    overview, details = relative["overview"], relative["details"]
 
     (first, second) = tuple(detail.candidate.key.pair_id for detail in _scan.details)
-    fragments = interaction_tables(_scan, metric_key="save", relative=True)
-    comparison = _accessible_numbers(fragments.details[first])
+    comparison = _accessible_numbers(details[first])
     assert "How " + _NAME + " changed Same name’s lift" in comparison
     assert re.search(r"\+9\.7% \[\+[\d.]+%, \+[\d.]+%\]", comparison)
     assert "−6.7%" in comparison
     assert "−16.3 pp [" in comparison
-    detected = _candidate_row(fragments.overview, first)
-    overview = _accessible_numbers(detected)
-    assert "−16.3 pp [" in overview and "%" not in overview
+    detected = _candidate_row(overview, first)
+    overview_numbers = _accessible_numbers(detected)
+    assert "−16.3 pp [" in overview_numbers and "%" not in overview_numbers
     assert re.search(r'<rect\b[^>]+\bfill="var\(--inc-dashboard-theme-accent,', detected)
     assert "Favorable" in comparison and "Unfavorable" in comparison
     assert "Lower with other on" in comparison
-    assert "baseline is zero or negative" in _accessible_numbers(fragments.details[second])
+    assert "baseline is zero or negative" in _accessible_numbers(details[second])
 
 
 def test_outlying_stored_bound_shares_an_unclipped_axis_and_small_fit_keeps_interval(_scan):
-    from increment.dashboard._interaction_html import interaction_tables
+    packet = _interaction_packets(_scan)["revenue"]
+    overview, details = packet["overview"], packet["details"]
 
-    fragments = interaction_tables(_scan, metric_key="revenue")
-    first, second = tuple(fragments.details)
-    overview, detail = fragments.overview, fragments.details[first]
+    first, second = tuple(details)
+    detail = details[first]
     assert "USD/account" in _text(overview) and "USD/account" in _text(detail)
     assert "None detected" in _text(_candidate_row(overview, first))
     assert "insufficient evidence" in _text(detail).lower()

@@ -319,11 +319,11 @@ class OverlapDeliveryCount(OverlapModel):
         refuse(EVIDENCE_INVALID, role="deliveries", reason=reason, count=1)
 
 
-class OverlapCell(OverlapModel):
-    """Observations and centered moments for one metric and assignment cell."""
+class _CellMoments[Key: str](OverlapModel):
+    """Shared sufficient statistics for a complete assignment cell."""
 
     metric: Identity
-    cell: CellId
+    cell: Key
     n_assigned: Count
     n_observed: Count
     n_missing: Count
@@ -364,6 +364,26 @@ class OverlapCell(OverlapModel):
         if delta > 0 and not _feasible_centered_ss(self.n_observed, delta, m2):
             self._invalid_field("m2", "inconsistent_moments")
         return self
+
+    def validate_metric_kind(self, *, binary: bool) -> None:
+        """Check that success counts and moments agree with the metric recipe."""
+        success = self.n_success
+        if not binary:
+            if success is not None:
+                self._invalid_field("n_success", "unexpected_success_count")
+            return
+        if success is None:
+            self._invalid_field("n_success", "missing_success_count")
+        if self.anchor is not None and (
+            self.anchor,
+            self.mean_delta,
+            self.m2,
+        ) != overlap_binary_moments(self.n_observed, success):
+            self._invalid_field("n_success", "binary_moments_mismatch")
+
+
+class OverlapCell(_CellMoments[CellId]):
+    """Observations and centered moments for a two-experiment assignment cell."""
 
 
 def _feasible_centered_ss(n: int, delta: float, m2: float) -> bool:

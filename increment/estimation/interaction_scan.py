@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from fractions import Fraction
 from itertools import batched
 
@@ -29,13 +29,21 @@ from increment.estimation.overlap import (
 from increment.estimation.results import _fraction_endpoint, _quadratic_intervals
 from increment.semantics.interaction_scan import (
     SCAN_CONTRASTS,
+    CombinationCell,
+    CombinationKind,
+    CombinationReason,
+    CombinationResult,
+    CombinationRow,
+    InteractionCombination,
     InteractionScan,
     InteractionScanPlan,
+    ObservedInventory,
     PairDetail,
     PairEvidenceRef,
     PairInput,
     ScanCapture,
     ScanCellCounts,
+    ScanCoverage,
     ScanDecision,
     ScanMemberKey,
     ScanReason,
@@ -44,7 +52,7 @@ from increment.semantics.interaction_scan import (
 )
 from increment.semantics.overlap import CONTRAST_IDS
 
-__all__ = ["evaluate_interaction_scan"]
+__all__ = ["evaluate_combinations", "evaluate_interaction_scan"]
 
 _FOCAL_INDICES = {
     "A": tuple(CONTRAST_IDS.index(key) for key in ("a_given_b_off", "a_given_b_on", "interaction")),
@@ -387,3 +395,128 @@ def evaluate_interaction_scan(capture: ScanCapture) -> InteractionScan:
         rows=tuple(rows),
         details=tuple(details),
     )
+
+
+def _combination_support(
+    cells: tuple[CombinationCell, ...], kind: CombinationKind, assignment: str | None
+) -> tuple[CombinationCell, ...]:
+    if kind == "effect":
+        return tuple(cell for cell in cells if cell.cell[1:] == assignment)
+    if kind == "change":
+        return cells
+    fixed = "1" if kind == "with" else "0"
+    return tuple(cell for cell in cells if cell.cell.endswith(fixed))
+
+
+def _combination_fit(
+    cells: tuple[CombinationCell, ...],
+    kind: CombinationKind,
+    assignment: str | None,
+    *,
+    target_count: int,
+    tail: float | None,
+    unverified_reason: str | None,
+) -> CombinationRow:
+    if not cells:
+        return CombinationRow(kind, assignment, reasons=(CombinationReason("joint_feed_missing"),))
+    support = _combination_support(cells, kind, assignment)
+    raw = _reasons(support, target_count=target_count, claimed=tail is not None)
+    availability = _availability(raw, claimed=tail is not None)
+    reasons = tuple(CombinationReason(code, key) for key, code in raw)
+    if availability == "unavailable":
+        return CombinationRow(kind, assignment, reasons=reasons)
+    if unverified_reason is not None:
+        reasons += (CombinationReason(unverified_reason),)
+    half = len(support) // 2
+    # Pair the two focal settings. The other varied factors determine the sign.
+    end = None if kind == "change" else -1
+    signs = tuple(
+        (-1) ** cell.cell[1:end].count("0") if kind != "effect" else 1 for cell in support[:half]
+    )
+    exact = (*(-sign for sign in signs), *signs)
+    weights = tuple(map(float, exact))
+    pairs = tuple((i, half + i) if sign > 0 else (half + i, i) for i, sign in enumerate(signs))
+    metric = support[0].metric
+    try:
+        estimate = _point(support, weights, exact, pairs, metric=metric)
+    except CodedError as exc:
+        if exc.code != NUMERIC_RANGE.code:
+            raise
+        return CombinationRow(kind, assignment, reasons=(*reasons, CombinationReason(exc.code)))
+    lower = upper = None
+    decision: ScanDecision | None = None
+    if tail and availability != "point_only":
+        try:
+            se, df = _welch(weights, support)
+            lower, upper = _simultaneous_interval(estimate, se, df, tail=tail, metric=metric)
+        except CodedError as exc:
+            if exc.code not in _INTERVAL_REFUSALS:
+                raise
+            availability = "descriptive"
+            reasons += (CombinationReason(exc.code),)
+        else:
+            if availability == "decided":
+                decision = "detected" if lower > 0 or upper < 0 else "none_detected"
+    return CombinationRow(kind, assignment, estimate, lower, upper, availability, reasons, decision)
+
+
+def evaluate_combinations(
+    plan: InteractionScanPlan,
+    captured: Mapping[InteractionCombination, tuple[CombinationCell, ...]],
+    *,
+    coverage: ScanCoverage,
+    observed: ObservedInventory | None,
+) -> tuple[CombinationResult, ...]:
+    """Estimate the full registered family, keeping unavailable comparisons in the divisor."""
+    registration = plan.combination_registration
+    if captured.keys() - set(plan.combinations):
+        refuse(SCAN_INVALID, field="combination_feeds", reason="unknown_combination")
+    if registration is None:
+        return ()
+    if observed is not None:
+        plan.scope.require_cutoff(observed.cutoff)
+    reason = None
+    if coverage != "complete" or plan.roster_coverage != "complete":
+        reason = "incomplete_inventory"
+    elif (
+        observed is None or observed.combination_registration_sha256 != registration.registration_id
+    ):
+        reason = "joint_registration_unverified"
+    elif observed.coverage_for(plan.scope) != "complete" or not plan.matches_observed_roster(
+        observed
+    ):
+        reason = "incomplete_inventory"
+    family_size = plan.combination_family_size
+    tail = _member_tail(plan.scope.alpha, family_size) if reason is None else None
+    if tail == 0.0:
+        tail, reason = None, "estimation.tails.unresolvable"
+    results = []
+    for declared in plan.combinations:
+        by_metric = {}
+        cells = captured.get(declared)
+        assignments = declared.assignments
+        if cells is not None:
+            by_metric = {(cell.metric, cell.cell): cell for cell in cells}
+            expected = {(metric.name, bits) for metric in plan.metrics for bits in assignments}
+            if by_metric.keys() != expected or len(by_metric) != len(cells):
+                refuse(
+                    SCAN_INVALID, field="combination_cells", reason="incomplete_or_duplicate_cells"
+                )
+        for metric in plan.metrics:
+            group = tuple(by_metric[metric.name, bits] for bits in assignments) if by_metric else ()
+            for cell in group:
+                cell.validate_metric_kind(binary=metric.kind == "binary_mean")
+            target_count = sum(cell.n_assigned for cell in group)
+            rows = tuple(
+                _combination_fit(
+                    group,
+                    kind,
+                    assignment,
+                    target_count=target_count,
+                    tail=tail,
+                    unverified_reason=reason,
+                )
+                for kind, assignment in declared.contrasts
+            )
+            results.append(CombinationResult(declared, metric, rows, group, family_size))
+    return tuple(results)

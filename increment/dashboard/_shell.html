@@ -223,6 +223,34 @@ button.metric-select { cursor: pointer; }
 .inc-interaction-unfavorable { color: var(--unfavorable); font-weight: 600; }
 .inc-interaction-detected { color: var(--accent); font-weight: 600; }
 .inc-interaction-neutral { color: var(--muted); }
+#interaction-combinations > summary { cursor: pointer; color: var(--accent); font-weight: 650; }
+#interaction-combinations .interaction-controls label { max-width: 100%; grid-template-columns: minmax(0, 1fr); }
+#interaction-combination-body h4 { margin: 10px 0 4px; font-size: 16px; }
+#interaction-combination-body > p { margin-block: 4px 8px; }
+.inc-combination-chart .gt_table { min-width: 0 !important; width: 100% !important; }
+.inc-combination-chart :is(th, td) { padding: 4px 6px !important; white-space: normal !important; }
+.inc-combination-chart th { font-size: 11px !important; overflow-wrap: anywhere; }
+.inc-combination-chart svg { max-width: 100%; }
+.inc-assignment-dot { font-size: 15px; color: var(--ink); }
+.inc-combination-point { position: relative; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inc-combination-point:is(:hover, :focus-visible)::after {
+  content: attr(data-inc-interval); position: absolute; right: 0; bottom: 100%; z-index: 2;
+  white-space: normal; width: max-content; max-width: min(20ch, 60vw); padding: 4px 7px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line); font-size: 12px;
+}
+.inc-combination-point:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.inc-combination-groups table { border-collapse: collapse; }
+.inc-combination-groups :is(th, td) { padding: 4px 8px; border: 1px solid var(--line); }
+#interaction-combination-method { margin: 8px 0 0; font-size: 12px; }
+@media(max-width: 550px) {
+  #interaction-combinations { padding: 10px; }
+  .inc-combination-chart :is(th, td) { padding: 3px !important; }
+  .inc-combination-chart .gt_table { table-layout: fixed; }
+  .inc-combination-chart th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap !important; }
+  .inc-combination-chart th:nth-last-child(2) { width: 39%; }
+  .inc-combination-chart th:last-child { width: 56px; }
+}
+.interaction-controls label[hidden] { display: none; }
 .inc-interaction-cells { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table-surface .inc-interaction-cells { min-width: 0; }
 .inc-interaction-contrasts { overflow-x: auto; }
@@ -764,6 +792,25 @@ button.metric-select { cursor: pointer; }
           <div class="native-output" id="interaction-detail-body"></div>
           <button type="button" id="close-interaction-detail">Back to comparisons</button>
         </section>
+        <details id="interaction-combinations" class="interaction-detail" hidden>
+          <summary>Compare a combination</summary>
+          <div class="interaction-controls">
+            <label>Other experiments <select id="interaction-combination"></select></label>
+            <label>Question <select id="interaction-combination-question">
+              <option value="effects">Effect by combination</option>
+              <option value="change">Change in interaction</option>
+            </select></label>
+            <label id="interaction-combination-filter-label" hidden>
+              <span id="interaction-combination-factor"></span>
+              <select id="interaction-combination-filter">
+                <option value="">Both settings</option><option value="0">Off</option><option value="1">On</option>
+              </select>
+            </label>
+          </div>
+          <div class="native-output" id="interaction-combination-body"></div>
+          <div class="native-output" id="interaction-combination-groups"></div>
+          <p id="interaction-combination-method" class="muted"></p>
+        </details>
       </section>
       <div class="explore-layout" id="explore-layout" hidden>
         <aside class="metric-list" id="metric-list" aria-labelledby="metric-list-label">
@@ -1225,11 +1272,16 @@ button.metric-select { cursor: pointer; }
   let interactionMetric = null;
   let interactionPair = null;
   let interactionScale = null;
+  let interactionCombination = null;
+  let interactionCombinationQuestion = 'effects';
+  let interactionCombinationFilter = '';
   let interactionFocus = null;
   let interactionFocusPair = null;
   const interactionFocusIds = new Set([
     'interaction-metric', 'interaction-pair', 'interaction-scale', 'interaction-overview',
     'interaction-detail-heading', 'close-interaction-detail',
+    'interaction-combination', 'interaction-combination-question',
+    'interaction-combination-filter',
   ]);
 
   // Keep the last evidence focus as attention moves to the added-metrics toolbar.
@@ -1251,8 +1303,13 @@ button.metric-select { cursor: pointer; }
 
   function restoreInteractions(selection) {
     interactionScale = ['relative', 'absolute'].includes(selection.scale) ? selection.scale : null;
+    interactionCombination = selection.combination || null;
+    interactionCombinationQuestion = selection.combinationQuestion === 'change' ? 'change' : 'effects';
+    interactionCombinationFilter = ['0', '1'].includes(selection.combinationFilter) ? selection.combinationFilter : '';
     openInteractions(selection.metric, selection.pair);
     if (!interactionMetric || interactionMetric !== selection.metric) return;
+    const combinations = $('interaction-combinations');
+    if (!combinations.hidden) combinations.open = Boolean(selection.combinationOpen);
     if (selection.focusPair) {
       const button = [...$('interaction-overview').querySelectorAll('button[data-inc-pair-id]')]
         .find((item) => item.getAttribute('data-inc-pair-id') === selection.focusPair);
@@ -1282,6 +1339,36 @@ button.metric-select { cursor: pointer; }
       button.setAttribute('aria-expanded', String(button.getAttribute('data-inc-pair-id') === interactionPair));
     }
     if (moveFocus && interactionPair) $('interaction-detail-heading').focus();
+  }
+
+  function renderInteractionCombination(packet) {
+    const sets = packet?.combinations || [];
+    const result = sets.find((entry) => entry.id === interactionCombination) || sets[0];
+    const panel = $('interaction-combinations');
+    panel.hidden = !result;
+    if (!result) panel.open = false;
+    if (interactionCombination !== result?.id) interactionCombinationFilter = '';
+    interactionCombination = result?.id || null;
+    const picker = $('interaction-combination');
+    picker.replaceChildren(...sets.map((entry) => el('option', { value: entry.id, text: entry.label })));
+    picker.value = interactionCombination || '';
+    $('interaction-combination-question').value = interactionCombinationQuestion;
+    const body = $('interaction-combination-body');
+    mountNative(body, result?.[interactionCombinationQuestion] || '');
+    const filter = $('interaction-combination-filter');
+    const canFilter = Boolean(result?.slice) && interactionCombinationQuestion === 'effects';
+    $('interaction-combination-filter-label').hidden = !canFilter;
+    $('interaction-combination-factor').textContent = result?.slice || '';
+    filter.value = interactionCombinationFilter;
+    if (canFilter && interactionCombinationFilter) {
+      for (const row of body.querySelectorAll('tbody tr')) {
+        const marks = row.querySelectorAll('[data-inc-assignment]');
+        const last = marks[marks.length - 1];
+        if (last) row.hidden = last.getAttribute('data-inc-assignment') !== interactionCombinationFilter;
+      }
+    }
+    mountNative($('interaction-combination-groups'), result?.groups || '');
+    $('interaction-combination-method').textContent = result?.method || '';
   }
 
   function renderInteractions() {
@@ -1318,6 +1405,7 @@ button.metric-select { cursor: pointer; }
     $('interaction-explanation').hidden = !packet?.explanation;
     $('interaction-explanation').textContent = packet?.explanation || '';
     renderInteractionDetail(packet);
+    renderInteractionCombination(packet);
   }
 
   $('interaction-metric').addEventListener('change', (event) => {
@@ -1332,6 +1420,19 @@ button.metric-select { cursor: pointer; }
   $('interaction-pair').addEventListener('change', (event) => {
     interactionPair = event.target.value || null;
     renderInteractionDetail(own(data.interactions?.metrics, interactionMetric));
+  });
+  $('interaction-combination').addEventListener('change', (event) => {
+    interactionCombination = event.target.value;
+    interactionCombinationFilter = '';
+    renderInteractionCombination(own(data.interactions?.metrics, interactionMetric));
+  });
+  $('interaction-combination-question').addEventListener('change', (event) => {
+    interactionCombinationQuestion = event.target.value === 'change' ? 'change' : 'effects';
+    renderInteractionCombination(own(data.interactions?.metrics, interactionMetric));
+  });
+  $('interaction-combination-filter').addEventListener('change', (event) => {
+    interactionCombinationFilter = event.target.value;
+    renderInteractionCombination(own(data.interactions?.metrics, interactionMetric));
   });
   $('interaction-overview').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-inc-pair-id]');
@@ -1598,6 +1699,8 @@ button.metric-select { cursor: pointer; }
     const interaction = exploreState.view === 'interactions' ? {
       metric: interactionMetric, pair: interactionPair, scale: interactionScale,
       focus: interactionFocus, focusPair: interactionFocusPair,
+      combination: interactionCombination, combinationQuestion: interactionCombinationQuestion,
+      combinationFilter: interactionCombinationFilter, combinationOpen: $('interaction-combinations').open,
     } : null;
     toHost({ type: 'set-exploratory-metrics', metrics: next, interaction });
   }

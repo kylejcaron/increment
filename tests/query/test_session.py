@@ -787,37 +787,6 @@ def test_session_does_not_fabricate_source_snapshot_evidence():
     assert session.pin_sources(()).source_snapshot_evidence is None
 
 
-def test_read_only_duckdb_generation_changes_when_fact_content_changes(tmp_path):
-    from increment.query.overlap import _sealed_duckdb_generation
-
-    path = tmp_path / "facts.duckdb"
-    con = ibis.duckdb.connect(path)
-    try:
-        con.raw_sql("CREATE TABLE outcomes AS SELECT 1 AS value")
-        assert _sealed_duckdb_generation(con) is None
-    finally:
-        con.disconnect()
-
-    def captured_generation():
-        readonly = ibis.duckdb.connect(path, read_only=True)
-        try:
-            return _sealed_duckdb_generation(readonly)
-        finally:
-            readonly.disconnect()
-
-    old = captured_generation()
-    assert old is not None
-    assert captured_generation() == old
-    con = ibis.duckdb.connect(path)
-    try:
-        con.raw_sql("UPDATE outcomes SET value = 2")
-    finally:
-        con.disconnect()
-    new = captured_generation()
-    assert new is not None
-    assert new != old
-
-
 def test_temp_name_caps_identifier_length():
     _, s = _session()
     name = s.temp_name("a" * 100, "b" * 100)

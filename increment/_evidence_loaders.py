@@ -42,7 +42,11 @@ from increment.errors import CapabilityError, _ArtifactContractErrorMarker
 if TYPE_CHECKING:
     from increment.kernel.context import EvidenceExecutionContext
     from increment.semantics.interaction_scan import (
+        CombinationCell,
+        CombinationFeed,
+        CombinationRegistration,
         FocalSourceFacts,
+        InteractionCombination,
         InteractionScanPlan,
         StudyFeedFact,
     )
@@ -288,6 +292,24 @@ def load_interaction_pair_facts(
 ) -> tuple[StudyFeedFact, ...]:
     """Verify original warehouse evidence against its qualified physical feeds."""
     return cast(Any, source).interaction_pair_facts(evidence, tables)
+
+
+def load_interaction_combination_cells(
+    source: EvidenceSource,
+    catalog: str,
+    plan: InteractionScanPlan,
+    combination: InteractionCombination,
+    feed: CombinationFeed,
+) -> tuple[CombinationCell, ...]:
+    """Reduce qualified joint facts without returning per-unit rows."""
+    return cast(Any, source).interaction_combination_cells(catalog, plan, combination, feed)
+
+
+def load_interaction_combination_registration(
+    source: EvidenceSource, catalog: str, registration: CombinationRegistration
+) -> bool:
+    """Verify the registered joint-comparison commitment on the sealed source."""
+    return cast(Any, source).interaction_combination_registered(catalog, registration)
 
 
 def build_triggered_srm_provider(

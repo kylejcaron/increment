@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING
 from increment._binding import binding_for
 from increment._canonical import canonical_json_bytes, declaration_value
 from increment._dashboard_capture import DashboardCapture, capture_dashboard
-from increment._evidence_loaders import load_interaction_focal_facts, load_interaction_pair_facts
+from increment._evidence_loaders import (
+    load_interaction_combination_cells,
+    load_interaction_combination_registration,
+    load_interaction_focal_facts,
+    load_interaction_pair_facts,
+)
 from increment._overlap_refusals import SCAN_INVALID
 from increment.errors import refuse
 from increment.semantics.interaction_scan import (
@@ -27,7 +32,10 @@ if TYPE_CHECKING:
     from increment._binding import ExperimentReader, SourceBinding
     from increment.kernel.experiment import Experiment
     from increment.semantics.interaction_scan import (
+        CombinationCell,
+        CombinationResult,
         FocalSourceFacts,
+        InteractionCombination,
         InteractionScan,
         InteractionScanPlan,
         ScanCapture,
@@ -129,6 +137,10 @@ def bind_scan(
     capture: ScanCapture,
     source: InteractionDuckDBSource,
     evaluate: Callable[[ScanCapture], InteractionScan],
+    evaluate_joint: Callable[
+        [ScanCapture, dict[InteractionCombination, tuple[CombinationCell, ...]], bool],
+        tuple[CombinationResult, ...],
+    ],
 ) -> VerifiedInteractionAttachment:
     """Issue a result from one verified capture and the source that supplied it."""
     binding = binding_for(source.experiment, source.reader)
@@ -152,7 +164,13 @@ def bind_scan(
     if any(item.plan.study_id not in published for item in retained):
         refuse(SCAN_INVALID, field="manifest", reason="study_inventory_mismatch")
 
-    def verify(pin: DashboardCapture) -> FocalSourceFacts:
+    declarations = {item.candidates: item for item in plan.combinations}
+    if any(feed.candidates not in declarations for feed in manifest.combination_feeds):
+        refuse(SCAN_INVALID, field="combination_feeds", reason="unknown_combination")
+
+    def verify(
+        pin: DashboardCapture,
+    ) -> tuple[FocalSourceFacts, dict[InteractionCombination, tuple[CombinationCell, ...]], bool]:
         pinned = pin.binding.source
         facts = load_interaction_focal_facts(pinned, plan)
         if facts is None:
@@ -164,9 +182,23 @@ def bind_scan(
             proven = load_interaction_pair_facts(pinned, item, tables)
             if declared != {feed.role: feed.fact for feed in proven}:
                 refuse(SCAN_INVALID, field="manifest", reason="pair_evidence_mismatch")
-        return facts
+        catalog = facts.assignments.coordinate[0]
+        captured = {
+            combination: load_interaction_combination_cells(
+                pinned, catalog, plan, combination, feed
+            )
+            for feed in manifest.combination_feeds
+            for combination in (declarations[feed.candidates],)
+        }
+        registration = plan.combination_registration
+        registered = registration is not None and load_interaction_combination_registration(
+            pinned, catalog, registration
+        )
+        return facts, captured, registered
 
-    facts = capture_dashboard(binding, verify, metrics=metrics, interaction_facts=True)
+    facts, joint, verified_registration = capture_dashboard(
+        binding, verify, metrics=metrics, interaction_facts=True
+    )
     evaluated = evaluate(capture)
     receipt = FocalBindingReceipt(
         scan_plan_id=plan.plan_id,
@@ -190,6 +222,9 @@ def bind_scan(
             )
         ).hexdigest(),
         pair_evidence_sha256=tuple(item.evidence_sha256 for item in retained),
+    )
+    evaluated = evaluated.model_copy(
+        update={"combinations": evaluate_joint(capture, joint, verified_registration)}
     )
     attachment = object.__new__(VerifiedInteractionAttachment)
     object.__setattr__(

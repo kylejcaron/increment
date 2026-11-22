@@ -441,10 +441,23 @@ bounds. See **Scope and interval adjustment** for the family size, level,
 and fixed look. The adjustment does not require independent pairs; the
 within-pair independent assignment and outcome requirements still apply.
 
-These exploratory comparisons describe pairs, not a combination of three
-or more treatments. The **Possible interaction** badge is based on the
-adjusted absolute interval. It opens the detected pair in **% lift vs. control**
-if that scale also detects the change. The primary result is unchanged.
+The **Possible interaction** badge uses the adjusted absolute pair interval.
+It opens the detected pair in **% lift vs. control** if that scale also detects
+the change. The primary result is unchanged.
+
+#### Compare a combination
+
+With a registered joint study, this Explore section shows effects by exact
+assignment and the change in interaction with the last experiment. Both views
+use the metric’s own units (percentage points for rates, not relative lift).
+Only comparisons that need a missing group are unavailable.
+
+The approximate fixed-cutoff intervals use a separate Bonferroni family:
+all settings and all three interaction comparisons per set and metric,
+including unavailable rows and hidden metrics. The dashboard does not
+adjust again when you switch views. The result requires independent binary
+assignments on jointly eligible units. It is not a launch recommendation and
+does not change the headline, pair badge, or Health.
 
 ### Time series and dates
 

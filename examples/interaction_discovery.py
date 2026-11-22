@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import file_digest, sha256
+from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal, TypedDict
@@ -22,8 +23,11 @@ from increment import from_definitions, load_definitions
 from increment.artifacts import SourceSnapshotEvidence
 from increment.dashboard import DashboardConfig, dashboard_html, prepare_dashboard
 from increment.overlap import (
+    CombinationFeed,
+    CombinationRegistration,
     ExperimentIdentity,
     FocalStudy,
+    InteractionCombination,
     InteractionDuckDBSource,
     InteractionInventory,
     InventoryEntry,
@@ -248,6 +252,7 @@ def _write_warehouse(
     path: Path,
     regimes: tuple[tuple[InventoryEntry, OverlapFactor, str], ...],
     metric: OverlapMetric,
+    plan: InteractionScanPlan,
 ) -> None:
     with duckdb.connect(str(path)) as con:
         con.execute("CREATE SCHEMA analytics")
@@ -278,12 +283,77 @@ def _write_warehouse(
             [_FOCAL, metric.name, metric.definition_sha256, _ENTRY, _START, _END, _CUTOFF],
         )
         con.execute(_WAREHOUSE)
+        _write_combinations(con, plan)
         con.execute(
             "CREATE TABLE main.increment_interaction_generation AS "
             "SELECT 1 AS version, CAST(? AS VARCHAR) AS generation_id",
             [_GENERATION],
         )
         con.execute("CHECKPOINT")
+
+
+def _write_combinations(con: duckdb.DuckDBPyConnection, plan: InteractionScanPlan) -> None:
+    registration = plan.combination_registration
+    if registration is None:
+        return
+    con.execute("""CREATE TABLE main.increment_interaction_combination_registration(
+        registration_sha256 VARCHAR, registered_at TIMESTAMPTZ)""")
+    con.execute(
+        "INSERT INTO main.increment_interaction_combination_registration VALUES (?, ?)",
+        [registration.registration_id, registration.registered_at],
+    )
+    con.execute(
+        "CREATE TEMP TABLE combo_counts (size INTEGER, assignment VARCHAR, n INTEGER, saves INTEGER)"
+    )
+    for item in registration.combinations:
+        n = len(item.candidates) + 1
+        sample_size = {3: 20_000, 4: 12_000, 5: 2500}[n]
+        rows = []
+        for bits in product((0, 1), repeat=n):
+            if n == 5 and all(bits):
+                continue
+            a, b, c, d, e = (*bits, 0, 0)[:5]
+            percent = (
+                30
+                + 4 * a
+                + 2 * b
+                + c
+                + 2 * d
+                + e
+                + a * b * (1 - 6 * c)
+                + a * b * c * d
+                + a * b * c * d * e
+            )
+            rows.append((n, "".join(map(str, bits)), sample_size, sample_size * percent // 100))
+        con.executemany("INSERT INTO combo_counts VALUES (?, ?, ?, ?)", rows)
+    con.execute("""CREATE TEMP TABLE combo_units AS
+        SELECT size, assignment, concat_ws(':', 'joint', size, assignment, slot) AS unit_id,
+               slot < saves AS saved, slot % 5 = 0 AS shared
+        FROM combo_counts, LATERAL range(n) AS units(slot)""")
+    con.execute("CREATE TEMP TABLE combo_metrics(metric VARCHAR, definition_sha256 VARCHAR)")
+    con.executemany(
+        "INSERT INTO combo_metrics VALUES (?, ?)",
+        [(m.name, m.definition_sha256) for m in plan.metrics],
+    )
+    for size in (3, 4, 5):
+        con.execute(f"""CREATE TABLE analytics.combination_{size}_roster AS
+            SELECT unit_id, assignment FROM combo_units WHERE size = {size}""")
+        con.execute(f"""CREATE TABLE analytics.combination_{size}_outcomes AS
+            SELECT unit_id, metric, combo_metrics.definition_sha256,
+                   (CASE WHEN combo_metrics.metric = 'save_rate' THEN saved ELSE shared END)::DOUBLE AS value,
+                   cutoff AS finalized_at
+            FROM combo_units CROSS JOIN combo_metrics CROSS JOIN (SELECT cutoff FROM fixed_look)
+            WHERE size = {size}""")
+    con.execute("""INSERT INTO analytics.event_log
+        SELECT unit_id, window_start, 'assignment',
+               CASE WHEN starts_with(assignment, '1') THEN 'on' ELSE 'off' END, focal
+        FROM combo_units, fixed_look
+        UNION ALL
+        SELECT unit_id, window_end - INTERVAL '1 hour', 'saved', NULL, focal
+        FROM combo_units, fixed_look WHERE saved
+        UNION ALL
+        SELECT unit_id, window_end - INTERVAL '1 hour', 'shared', NULL, focal
+        FROM combo_units, fixed_look WHERE shared""")
 
 
 def _capture_pair(con: Backend, plan: OverlapPlan, catalog: str) -> OverlapEvidence:
@@ -400,7 +470,9 @@ class Example:
 
 
 @contextmanager
-def open_example(directory: Path, *, triggered: bool = False) -> Iterator[Example]:
+def open_example(
+    directory: Path, *, triggered: bool = False, combinations: bool = False
+) -> Iterator[Example]:
     """Build one synthetic archive in an empty directory and open it read-only."""
     definitions = directory / "search.yaml"
     _definitions(definitions, triggered=triggered)
@@ -419,6 +491,11 @@ def open_example(directory: Path, *, triggered: bool = False) -> Iterator[Exampl
     focal_regime = _regime(_FOCAL, "Search layout", 1)
     candidates = tuple(_regime(name, label, weight) for name, label, weight, _ in _CANDIDATES)
     regimes = (focal_regime, *candidates)
+    if combinations:
+        regimes += (
+            _regime("smart_suggestions", "Smart suggestions", 1),
+            _regime("account_prompts", "Account prompts", 1),
+        )
     focal = FocalStudy(
         entry=focal_regime[0],
         population_id="accounts-eligible-for-both-changes",
@@ -441,13 +518,29 @@ def open_example(directory: Path, *, triggered: bool = False) -> Iterator[Exampl
         cutoff=_CUTOFF,
         alpha=0.05,
     )
+    registration = None
+    if combinations:
+        joint_entries = (regimes[1][0], regimes[2][0], regimes[4][0], regimes[5][0])
+        registration = CombinationRegistration(
+            registered_at=_REGISTERED,
+            scope=plan.scope,
+            metrics=plan.metrics,
+            combinations=tuple(
+                InteractionCombination(
+                    candidates=tuple(entry.identity for entry in joint_entries[:width]),
+                    joint_assignment="independent_unit_bernoulli",
+                )
+                for width in (2, 3, 4)
+            ),
+        )
+        plan = plan.model_copy(update={"combination_registration": registration})
     pair_plans = tuple(
         _pair_plan(focal, focal_regime[1], factor, archive, primary)
         for _, factor, archive in candidates
     )
 
     database = directory / "search.duckdb"
-    _write_warehouse(database, regimes, primary)
+    _write_warehouse(database, regimes, primary, plan)
     con = ibis.duckdb.connect(database, read_only=True)
     try:
         [(catalog,)] = con.con.execute("SELECT current_database()").fetchall()
@@ -458,7 +551,10 @@ def open_example(directory: Path, *, triggered: bool = False) -> Iterator[Exampl
             ).fetchall()
         )
         observed = ObservedInventory(
-            version="observed-v1", cutoff=_CUTOFF, **_roster_fields(observed_entries)
+            version="observed-v1",
+            cutoff=_CUTOFF,
+            combination_registration_sha256=registration.registration_id if registration else None,
+            **_roster_fields(observed_entries),
         )
         receipts = {pair.study_id: _capture_pair(con, pair, catalog) for pair in pair_plans}
         experiment, reader = from_definitions(
@@ -498,6 +594,21 @@ def open_example(directory: Path, *, triggered: bool = False) -> Iterator[Exampl
                 focal_assignments=event_log,
                 focal_outcomes=tuple((metric.name, event_log) for metric in metrics),
                 pair_feeds=pair_feeds,
+                combination_feeds=tuple(
+                    CombinationFeed(
+                        candidates=item.candidates,
+                        roster=interaction_duckdb_fact(
+                            con.table(f"combination_{size}_roster", database=(catalog, "analytics"))
+                        ),
+                        outcomes=interaction_duckdb_fact(
+                            con.table(
+                                f"combination_{size}_outcomes", database=(catalog, "analytics")
+                            )
+                        ),
+                    )
+                    for item in plan.combinations
+                    for size in (len(item.candidates) + 1,)
+                ),
             )
             source = InteractionDuckDBSource(experiment, reader, manifest)
             yield Example(source, plan, observed, receipts)
@@ -517,8 +628,12 @@ def main() -> None:
     parser.add_argument(
         "--replay-pairs", action="store_true", help="restore the original format-1 pair JSON"
     )
+    parser.add_argument("--combinations", action="store_true", help="include the joint experiments")
     args = parser.parse_args()
-    with TemporaryDirectory() as directory, open_example(Path(directory)) as example:
+    with (
+        TemporaryDirectory() as directory,
+        open_example(Path(directory), combinations=args.combinations) as example,
+    ):
         experiment = example.source.experiment
         snapshot = example.prepare(
             show_second_metric=args.show_second_metric, replay_pairs=args.replay_pairs

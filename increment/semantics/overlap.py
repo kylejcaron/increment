@@ -29,7 +29,6 @@ from increment._overlap_evidence import (
     OverlapIngress,
     OverlapModel,
     Sha256,
-    overlap_binary_moments,
     overlap_digest,
     overlap_wire_payload,
 )
@@ -402,17 +401,6 @@ class OverlapEvidence(OverlapModel):
             if not 0 <= delivered <= events or (delivered == 0 and events != 0):
                 self._invalid_field("deliveries", "delivery_count_mismatch")
 
-    @staticmethod
-    def _check_binary(cell: OverlapCell) -> None:
-        success = cell.n_success
-        if success is None:
-            refuse(EVIDENCE_INVALID, role="cells", reason="missing_success_count", count=1)
-        if cell.anchor is None:
-            return
-        observed = (cell.anchor, cell.mean_delta, cell.m2)
-        if observed != overlap_binary_moments(cell.n_observed, success):
-            refuse(EVIDENCE_INVALID, role="cells", reason="binary_moments_mismatch", count=1)
-
     def _validate_overlap(self) -> Self:
         if self.format != OVERLAP_FORMAT:
             refuse(FORMAT_INVALID, field="format", reason="unsupported_version")
@@ -435,10 +423,7 @@ class OverlapEvidence(OverlapModel):
                 self._invalid_field("cells", "assigned_count_mismatch")
             if not complete and cell.n_pending != cell.n_assigned:
                 self._invalid_field("cells", "followup_not_complete")
-            if kinds[cell.metric] == "binary_mean":
-                self._check_binary(cell)
-            elif cell.n_success is not None:
-                self._invalid_field("cells", "unexpected_success_count")
+            cell.validate_metric_kind(binary=kinds[cell.metric] == "binary_mean")
         self._check_deliveries(assigned)
         return self
 

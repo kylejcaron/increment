@@ -5,8 +5,8 @@ from datetime import timedelta
 
 import pytest
 
-from increment._interaction_capture import capture_interaction_scan
 from increment.errors import CodedError
+from increment.overlap import capture_interaction_scan
 from increment.semantics.interaction_scan import (
     CapturedPair,
     ExperimentIdentity,

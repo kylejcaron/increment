@@ -9,7 +9,7 @@ import pyarrow as pa
 import pytest
 
 from increment import from_definitions, load_definitions
-from increment.dashboard import DashboardConfig, prepare_dashboard, readout_csv
+from increment.dashboard import DashboardConfig, dashboard_html, prepare_dashboard, readout_csv
 from increment.errors import CodedError
 from increment.overlap import (
     ExperimentIdentity,
@@ -27,7 +27,13 @@ from increment.overlap import (
     interaction_metric_sha256,
 )
 from increment.query.session import SourceSnapshotEvidence
-from tests.test_dashboard_capture import EXPERIMENTS, FACT_SOURCES, _event_rows, _write_definitions
+from tests.test_dashboard_capture import (
+    EXPERIMENTS,
+    FACT_SOURCES,
+    _event_rows,
+    _page_payload,
+    _write_definitions,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -59,8 +65,8 @@ exposures:
 
 
 @contextmanager
-def _reader(path, definitions, *, watermark=_CUTOFF):
-    con = ibis.duckdb.connect(path, read_only=True)
+def _reader(path, definitions, *, watermark=_CUTOFF, read_only=True):
+    con = ibis.duckdb.connect(path, read_only=read_only)
     try:
         experiment, reader = from_definitions(
             definitions,
@@ -127,7 +133,7 @@ def _empty_capture(definitions, names=("checkout_conversion",)):
     )
     return capture_interaction_scan(
         plan,
-        observed_inventory=ObservedInventory(cutoff=_CUTOFF, **roster),
+        observed_inventory=ObservedInventory.model_validate({**roster, "cutoff": _CUTOFF}),
         evidence_by_study={},
     )
 
@@ -220,6 +226,22 @@ def test_snapshot_rejects_same_count_data_from_another_sealed_generation(tmp_pat
     assert error.value.code == "overlap.scan.invalid"
     assert error.value.context["reason"] == "different_source_generation"
     assert readout_csv(snapshot) == headline
+
+
+def test_binding_refuses_an_exact_generation_opened_for_writing(tmp_path):
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _empty_capture(definitions)
+    with _reader(path, definitions) as (experiment, _, con):
+        manifest = _manifest(path, con, experiment, capture)
+    with (
+        _reader(path, definitions, read_only=False) as (experiment, reader, _),
+        pytest.raises(CodedError) as error,
+    ):
+        bind_interaction_scan(capture, source=InteractionDuckDBSource(experiment, reader, manifest))
+    assert error.value.code == "overlap.scan.invalid"
+    assert error.value.context["reason"] == "focal_facts_not_verified"
 
 
 def test_split_outcomes_keep_historical_rows_and_refuse_a_shorter_headline(tmp_path):
@@ -382,3 +404,195 @@ def test_manifest_fingerprint_survives_reader_timezone_change(tmp_path):
         assert con.con.execute("SELECT current_setting('TimeZone')").fetchone() == (
             "America/Los_Angeles",
         )
+
+
+def _joint_capture(definitions):
+    from increment.overlap import CombinationRegistration, InteractionCombination
+
+    original = _empty_capture(definitions)
+    scope = original.plan.scope
+    focal = scope.focal.entry
+    others = tuple(
+        focal.model_copy(
+            update={
+                "identity": ExperimentIdentity(target=name, experiment_id=name, revision="v1"),
+                "display_name": name,
+            }
+        )
+        for name in ("Cards", "Filters")
+    )
+    combination = InteractionCombination(
+        candidates=tuple(entry.identity for entry in others),
+        joint_assignment="independent_unit_bernoulli",
+    )
+    registration = CombinationRegistration(
+        registered_at=_ENTRY - timedelta(days=1),
+        scope=scope,
+        metrics=original.plan.metrics,
+        combinations=(combination,),
+    )
+    inventory = original.plan.inventory.model_copy(update={"entries": (focal, *others)})
+    plan = original.plan.model_copy(
+        update={
+            "inventory": inventory,
+            "combination_registration": registration,
+        }
+    )
+    assert original.observed_inventory is not None
+    observed = original.observed_inventory.model_copy(
+        update={
+            "entries": inventory.entries,
+            "combination_registration_sha256": registration.registration_id,
+        }
+    )
+    return capture_interaction_scan(plan, observed_inventory=observed, evidence_by_study={})
+
+
+def _joint_manifest(path, con, experiment, capture):
+    from increment.overlap import CombinationFeed
+
+    manifest = _manifest(path, con, experiment, capture)
+    catalog = manifest.focal_assignments.coordinate[0]
+    feed = CombinationFeed(
+        candidates=capture.plan.combinations[0].candidates,
+        roster=interaction_duckdb_fact(con.table("joint_roster", database=(catalog, "analytics"))),
+        outcomes=interaction_duckdb_fact(
+            con.table("joint_outcomes", database=(catalog, "analytics"))
+        ),
+    )
+    return manifest.model_copy(update={"combination_feeds": (feed,)})
+
+
+def test_joint_roster_keeps_pending_missing_and_zero_outcomes_distinct(tmp_path):
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _joint_capture(definitions)
+    con = ibis.duckdb.connect(path)
+    try:
+        con.raw_sql("""
+            CREATE TABLE analytics.joint_roster AS
+            SELECT * FROM (VALUES ('off','000'),('on','100'),('late','001'),('lost','101'))
+                AS t(unit_id, assignment)
+            """)
+        con.raw_sql("""
+            CREATE TABLE analytics.joint_outcomes(
+                unit_id VARCHAR, metric VARCHAR, definition_sha256 VARCHAR,
+                value DOUBLE, finalized_at TIMESTAMPTZ)
+            """)
+        metric = capture.plan.metrics[0]
+        con.con.executemany(
+            "INSERT INTO analytics.joint_outcomes VALUES (?, ?, ?, ?, ?)",
+            [
+                (unit, metric.name, metric.definition_sha256, value, when)
+                for unit, value, when in (
+                    ("off", 0.0, _CUTOFF),
+                    ("on", 1.0, _CUTOFF),
+                    ("late", None, None),
+                )
+            ],
+        )
+        con.raw_sql("CHECKPOINT")
+    finally:
+        con.disconnect()
+
+    with _reader(path, definitions) as (experiment, reader, con):
+        manifest = _joint_manifest(path, con, experiment, capture)
+        bound = bind_interaction_scan(
+            capture, source=InteractionDuckDBSource(experiment, reader, manifest)
+        )
+        snapshot = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=bound)
+        assert snapshot.interactions is not None
+        (result,) = snapshot.interactions.combinations
+        cells = {cell.cell: cell for cell in result.cells}
+        assert (cells["000"].n_observed, cells["000"].n_success) == (1, 0)
+        assert (cells["001"].n_pending, cells["101"].n_missing) == (1, 1)
+        assert result.rows[0].estimate == 1.0
+        assert result.rows[1].estimate is None
+        assert {(reason.code, reason.cell) for reason in result.rows[1].reasons} == {
+            ("pending_outcomes", "001"),
+            ("missing_outcomes", "101"),
+        }
+        payload = _page_payload(dashboard_html(experiment, snapshot=snapshot))
+        packet = payload["interactions"]["metrics"][metric.name]
+        combination_view = packet["combinations"][0]
+        assert 'aria-label="Cards off"' in combination_view["effects"]
+        assert 'aria-label="Filters on"' in combination_view["effects"]
+        assert "inc-assignment-dot" not in combination_view["change"]
+        assert combination_view["effects"].count("<svg ") == 2  # one point and its shared axis
+        (feed,) = manifest.combination_feeds
+        wrong_order = feed.model_copy(update={"candidates": feed.candidates[::-1]})
+        with pytest.raises(CodedError) as mismatch:
+            bind_interaction_scan(
+                capture,
+                source=InteractionDuckDBSource(
+                    experiment,
+                    reader,
+                    manifest.model_copy(update={"combination_feeds": (wrong_order,)}),
+                ),
+            )
+        assert mismatch.value.code == "overlap.scan.invalid"
+        assert mismatch.value.context["reason"] == "unknown_combination"
+
+
+@pytest.mark.parametrize("receipt", ["matching", "wrong_hash", "wrong_timestamp"])
+def test_only_matching_native_registration_enables_adjusted_joint_intervals(tmp_path, receipt):
+    definitions = _write_definitions(tmp_path / "definitions")
+    path = tmp_path / "facts.duckdb"
+    _publish(path)
+    capture = _joint_capture(definitions)
+    registration = capture.plan.combination_registration
+    assert registration is not None
+    metric = capture.plan.metrics[0]
+    con = ibis.duckdb.connect(path)
+    try:
+        con.con.execute("""
+            CREATE TABLE analytics.joint_roster AS
+            SELECT concat(assignment, '-', sample) AS unit_id, assignment
+            FROM unnest(['000', '001', '010', '011', '100', '101', '110', '111'])
+                AS cells(assignment)
+            CROSS JOIN range(80) AS units(sample)
+            """)
+        con.con.execute(
+            """
+            CREATE TABLE analytics.joint_outcomes AS
+            SELECT unit_id, ? AS metric, ? AS definition_sha256, ?::TIMESTAMPTZ AS finalized_at,
+                   (CAST(split_part(unit_id, '-', 2) AS BIGINT) <
+                        CASE WHEN starts_with(assignment, '1') THEN 60 ELSE 20 END)::DOUBLE AS value
+            FROM analytics.joint_roster
+            """,
+            [metric.name, metric.definition_sha256, _CUTOFF],
+        )
+        con.con.execute("""
+            CREATE TABLE main.increment_interaction_combination_registration (
+                registration_sha256 VARCHAR, registered_at TIMESTAMPTZ
+            )
+            """)
+        con.con.execute(
+            "INSERT INTO main.increment_interaction_combination_registration VALUES (?, ?)",
+            [
+                "0" * 64 if receipt == "wrong_hash" else registration.registration_id,
+                _ENTRY if receipt == "wrong_timestamp" else registration.registered_at,
+            ],
+        )
+        con.raw_sql("CHECKPOINT")
+    finally:
+        con.disconnect()
+
+    with _reader(path, definitions) as (experiment, reader, con):
+        manifest = _joint_manifest(path, con, experiment, capture)
+        bound = bind_interaction_scan(
+            capture, source=InteractionDuckDBSource(experiment, reader, manifest)
+        )
+        snapshot = prepare_dashboard(experiment, reader, config=_CONFIG, interactions=bound)
+    assert snapshot.interactions is not None
+    (result,) = snapshot.interactions.combinations
+    first = result.rows[0]
+    assert first.estimate is not None and first.estimate == pytest.approx(0.5)
+    if receipt == "matching":
+        assert first.lower is not None and first.upper is not None
+        assert 0 < first.lower < first.estimate < first.upper
+        assert first.decision == "detected"
+    else:
+        assert first.lower is first.upper is first.decision is None
+        assert [reason.code for reason in first.reasons] == ["joint_registration_unverified"]
