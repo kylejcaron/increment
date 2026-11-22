@@ -6,7 +6,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import from_switchback_frame
+from increment import from_switchback_frame, run
 from increment.errors import InvalidRequestError
 from increment.estimation.contrast_results import ContrastResult, ContrastResults
 from increment.estimators import (
@@ -98,12 +98,21 @@ def test_zero_variance_contrast_is_not_stat_sig():
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
-    result = contrast_rows(view_readout(experiment, resolver))[0]
+    saved = run(experiment, resolver)
+    result = contrast_rows(saved.readout())[0]
     assert result.estimate is not None
     assert result.standard_error == 0.0
     assert result.estimate.lb is None and result.estimate.ub is None
     row = contrast_results_to_readout([result])[0]
     assert row["stat_sig"] is False
+    assert result.sampling_available is False and result.decision_scope_complete is False
+    (cell,) = saved.cells
+    status, _ = cell.components["sampling"]
+    assert (status.state, status.code, status.context) == (
+        "unavailable",
+        "evidence.p_value.unavailable",
+        {"metric": "value", "reason": "zero_standard_error"},
+    )
 
 
 def _shared_panel_rows(roster, block_order, outcome_fn, *, washout=1, observation=1):
@@ -227,6 +236,8 @@ def test_shared_schedule_zero_variance_contrast_is_not_stat_sig():
     assert isinstance(frame, pl.DataFrame)
     assert frame.schema["lb"] == frame.schema["ub"] == pl.Float64
     assert frame["lb"].to_list() == frame["ub"].to_list() == [None]
+    flags = frame.select("sampling_available", "decision_scope_complete", "available_cell_count")
+    assert flags.row(0) == (False, False, 0)
     row = contrast_results_to_readout([result])[0]
     assert (row["lower"], row["higher"], row["level"]) == (None, None, None)
     assert row["stat_sig"] is False

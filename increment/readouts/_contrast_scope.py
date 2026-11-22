@@ -31,8 +31,23 @@ if TYPE_CHECKING:
         UnavailableContrastStats,
     )
     from increment.estimation.contrast_results import ContrastResult
-    from increment.estimation.decision_types import DecisionFailure
     from increment.semantics.models import Metric
+
+
+def _cell_record(cell: CellKey, row: ContrastResult, snapshot_id: str) -> CellRecord:
+    if row.failure_code is None:
+        return CellRecord(cell=cell, source_snapshot_id=snapshot_id)
+    assert row.failure_context is not None
+    return CellRecord(
+        cell=cell,
+        source_snapshot_id=snapshot_id,
+        failure=CellFailure(
+            hypothesis=cell.hypothesis(), code=row.failure_code, context=row.failure_context
+        ),
+        sampling=SamplingInference(
+            available=False, reason_code=row.failure_code, reason_context=row.failure_context
+        ),
+    )
 
 
 def scope_contrast_results(
@@ -41,7 +56,6 @@ def scope_contrast_results(
     metrics: Sequence[Metric],
     stats: Mapping[str, ContrastStats | SwitchbackMetricStats | UnavailableContrastStats],
     procedures: Mapping[str, Any],
-    failures: Mapping[str, DecisionFailure] | None = None,
     component_source: str | None = None,
     dimension: str | None = None,
     source_identity_record: Mapping[str, Any] | None = None,
@@ -49,7 +63,6 @@ def scope_contrast_results(
     effective_modes: Mapping[str, Literal["captured", "live", "provider"]] | None = None,
 ) -> ContrastResults:
     """Stamp every selected contrast, including cells without a decision."""
-    failures = failures or {}
     components = [
         component(
             kind="unit_evidence_rows",
@@ -117,8 +130,9 @@ def scope_contrast_results(
     )
 
     metric_types = declared_metric_types(metrics)
-    complete = not failures
-    scope_reason = {"unavailable_metrics": tuple(sorted(failures))} if failures else None
+    unavailable = tuple(sorted(row.metric for row in results if row.failure_code is not None))
+    complete = not unavailable
+    scope_reason = {"unavailable_metrics": unavailable} if unavailable else None
     stamped = [
         row.model_copy(
             update={
@@ -174,21 +188,7 @@ def scope_contrast_results(
     )
     metadata = ReadoutMetadata(
         scope=scope,
-        cells=tuple(
-            CellRecord(
-                cell=cell,
-                source_snapshot_id=snapshot_id,
-                failure=CellFailure(
-                    hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
-                ),
-                sampling=SamplingInference(
-                    available=False, reason_code=failure.code, reason_context=failure.context
-                ),
-            )
-            if (failure := failures.get(cell.metric)) is not None
-            else CellRecord(cell=cell, source_snapshot_id=snapshot_id)
-            for cell in ordered
-        ),
+        cells=tuple(_cell_record(cell, cells[cell], snapshot_id) for cell in ordered),
         coherence=coherence,
         effective_modes=effective_modes or {},
     )

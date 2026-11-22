@@ -31,11 +31,12 @@ from increment._study import (
     refuse_allocation_defect,
 )
 from increment._unit_cycle import (
-    _refuse as _unit_refuse,
-)
-from increment._unit_cycle import (
+    _fixed_count_moments,
     unit_cycle_admission_outcome,
     unit_cycle_envelope_cutoff,
+)
+from increment._unit_cycle import (
+    _refuse as _unit_refuse,
 )
 from increment.decision import ContrastContext, compile_contrast_procedures
 from increment.errors import (
@@ -51,7 +52,6 @@ from increment.estimation.contrast import (
     SwitchbackMetricStats,
     UnavailableContrastStats,
     _exact_sum,
-    _unit_centered_moments,
     reduce_contrast_partitions,
 )
 from increment.estimation.contrast_results import (
@@ -458,7 +458,15 @@ class FrameSwitchbackSource:
 
         stats = self.contrast_stats(metric)
         if isinstance(stats, UnavailableContrastStats):
-            self._missing[metric.name].refuse_planning()
+            if stats.failure_code == "source.frame.switchback.response_unobserved":
+                self._missing[metric.name].refuse_planning()
+            _reject_metric(
+                message=(
+                    f"Metric {metric.name!r} is missing a forecast in {stats.forecast_column!r} "
+                    f"at {stats.failure_context['first_missing_key']!r}."
+                ),
+                **stats.failure_context,
+            )
         if isinstance(stats, SwitchbackMetricStats):
             _reject_metric(
                 message="Sizing this metric needs a model for its joint measurements; use a design-matched simulation.",
@@ -1532,13 +1540,9 @@ def _fixed_count_stats(
         else:
             sums = _exact_group_sums(values, signs, groups, 2 * n)
         try:
-            deltas = [
-                float((sums[2 * i + 1] / m - sums[2 * i] / (k - m)) / per_replicate)
-                for i in range(n)
-            ]
-            reference, residual, m2 = _unit_centered_moments(deltas)
-            if not all(map(math.isfinite, (reference, residual, m2))):
-                raise OverflowError
+            numerators = ((k - m) * sums[2 * i + 1] - m * sums[2 * i] for i in range(n))
+            total, m2 = _fixed_count_moments(numerators, n, per_replicate * m * (k - m))
+            point = float(total / n)
         except (OverflowError, ValueError):
             _reject_numeric(
                 message=f"metric {spec.name!r}: centered contrast cannot be represented",
@@ -1564,8 +1568,9 @@ def _fixed_count_stats(
             n_cycles=units * cycles,
             n_blocks=cycles if shared else None,
             mean_slope=1.0,
-            reference_delta=reference,
-            mean_residual=residual,
+            reference_delta=point,
+            mean_residual=0.0,
+            exact_delta_total=total.as_integer_ratio(),
             m2_delta=m2,
         )
     return stats
@@ -2013,7 +2018,7 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
             }
         )
         metadata.update(control_group=control, treatment_group=treatment)
-        if joint:
+        if joint or forecasts:
             joint_columns = dict.fromkeys(
                 col
                 for spec in joint
@@ -2033,7 +2038,7 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
                         for col in joint_columns
                     },
                     treated=aligned,
-                    forecast_columns={n: c for n, c in forecasts.items() if n not in missing},
+                    forecast_columns=forecasts,
                     forecast_frame=pre_assignment_forecasts,
                     keys=(unit, cycle, period),
                     units=blocks.units,

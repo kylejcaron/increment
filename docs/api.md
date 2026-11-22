@@ -169,8 +169,9 @@ values.
   `increment.power.switchback_profile_plan` sizes an unadjusted mean for
   this schedule, or a conversion under a bounded window-risk model for
   paired or fixed-count schedules. Existing paired mean plans keep their
-  moment-t interpretation. None of these pilot fits certifies small-sample
-  coverage; see the [paired measurements](reference/switchback-inference.md#coverage-with-few-units-or-blocks).
+  moment-t interpretation. Pilot power does not certify coverage: see the
+  [fixed-count calendar](reference/switchback-inference.md#unadjusted-means-and-conversions)
+  and [paired measurements](reference/switchback-inference.md#coverage-with-few-units-or-blocks).
 
 - Switchback readouts can compare ratios of retained totals and adjust a
   mean with a separate, pre-assignment forecast. An undefined rate keeps
@@ -178,6 +179,10 @@ values.
   missing responses from missing assignments, pass `SwitchbackObservationSchedule`
   with the full assignment log, roster and cycle count. Without a separate
   log, the dense input requirements are unchanged.
+  A missing forecast value affects only the metrics that use it. A scalar
+  point with no test retains its reason in live and saved reports; its
+  significance is unknown, not false. Fixed-count estimates and pilot tests
+  retain small between-block differences even at large integer offsets.
 
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because

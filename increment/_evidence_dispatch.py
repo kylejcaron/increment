@@ -152,7 +152,6 @@ class ContrastHandler:
 
         self.preflight(source, request)
         results = []
-        failures = {}
         stats = {}
         for metric in request.metrics:
             procedure = request.procedures[metric.name]
@@ -164,18 +163,14 @@ class ContrastHandler:
             stats[metric.name] = evidence
             computation = compute_contrast(evidence, procedure)
             results.extend(computation.results)
-            if computation.failures and isinstance(
-                evidence, (SwitchbackMetricStats, UnavailableContrastStats)
-            ):
+            if not computation.results:
+                assert isinstance(evidence, (SwitchbackMetricStats, UnavailableContrastStats))
                 (failure,) = computation.failures.values()
-                failures[metric.name] = failure
-                if not computation.results:
-                    results.append(unavailable_contrast(evidence, procedure, failure))
+                results.append(unavailable_contrast(evidence, procedure, failure))
         rows = scope_contrast_results(
             results,
             metrics=request.metrics,
             stats=stats,
-            failures=failures,
             procedures=request.procedures,
             source_identity_record=source_identity(source),
             coherence=(

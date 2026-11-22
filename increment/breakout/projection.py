@@ -339,11 +339,6 @@ def _projection_columns(
     return tuple(columns)
 
 
-def projection_columns(model: type[BaseModel], estimates: Sequence[BaseModel]) -> tuple[str, ...]:
-    """Return the typed projection columns of ``estimates`` in canonical order."""
-    return _projection_columns(model, estimates, _estimate_field(model), _binomial_set_field(model))
-
-
 def select_columns(columns: Sequence[str], available: Sequence[str]) -> tuple[str, ...]:
     """Return requested projection columns in canonical order, refusing unknown names."""
     if isinstance(columns, str):
@@ -743,23 +738,16 @@ def result_frame(
     model's collection preset; the scope columns and ``view_partial`` are always kept.
     """
     from increment._interpretation import interpret_readout
-    from increment.estimation.contrast_results import (
-        CONTRAST_FRAME_COLUMNS,
-        ContrastResult,
-        ContrastResults,
-    )
+    from increment.estimation.contrast_results import ContrastResult, ContrastResults
 
     presets = tuple(summary_columns(model) for model, _ in groups) if columns == "summary" else None
     interpretation = interpret_readout([row for _, rows in groups for row in rows], metadata)
     frames = []
-    available: dict[str, None] = {}
-    summary: dict[str, None] = {}
+    summary: set[str] = set()
     for position, (model, rows) in enumerate(groups):
         if model is ContrastResult:
             native = ContrastResults(rows, metadata=metadata).to_frame(backend=backend)
-            typed = CONTRAST_FRAME_COLUMNS
         else:
-            typed = projection_columns(model, rows)
             native = with_readout_evidence(
                 to_frame(rows, model=model, backend=backend),
                 rows,
@@ -767,10 +755,10 @@ def result_frame(
                 backend=backend,
                 interpretation=interpretation,
             )
+        group_frame = nw.from_native(native, eager_only=True)
         if presets is not None:
-            summary.update(dict.fromkeys(select_columns(presets[position], typed)))
-        available.update(dict.fromkeys(typed))
-        frames.append(nw.from_native(native, eager_only=True))
+            summary.update(select_columns(presets[position], group_frame.columns))
+        frames.append(group_frame)
     if len(frames) > 1 and backend != "pandas":
         # Polars and PyArrow refuse to concatenate one column under two dtypes; pandas widens
         # it instead, and its numpy integer columns cannot hold the retyped null.
@@ -793,13 +781,14 @@ def result_frame(
             "string",
         ),
     }
+    available = [*identity, *frame.columns]
     if columns is None:
-        projected = frame.columns
+        selected = available
     elif presets is not None:
-        projected = [*(name for name in available if name in summary), "view_partial"]
+        selected = [*identity, *(name for name in frame.columns if name in summary), "view_partial"]
     else:
-        projected = [*select_columns(columns, tuple(available)), "view_partial"]
-    selected = [*identity, *projected]
+        keep = {*identity, "view_partial", *select_columns(columns, available)}
+        selected = [name for name in available if name in keep]
     if backend == "pandas":
         import pandas as pd
 

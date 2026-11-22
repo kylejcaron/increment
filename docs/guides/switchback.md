@@ -212,6 +212,13 @@ Average refund per return is undefined in treatment: no point, interval
 or decision. The orders rows still use the full roster. A weak but
 nonzero denominator can instead give a descriptive point without a test.
 
+If one store has a blank demand forecast for a scheduled period,
+`adjusted_orders` has no estimate and reports `missing_forecast`. `orders`
+still uses every scheduled period and the same share of alpha. If instead
+all blocks show exactly +2 orders, the ordinary row keeps that +2 estimate
+but reports `zero_standard_error`: the significance test **did not run**.
+That is different from a completed test whose interval includes zero.
+
 ### 4. Size a future study with the same randomization
 
 For orders, assume treatment adds the same amount to each retained-window
@@ -257,6 +264,12 @@ candidate's upper bound is below 80%. `undecided` is not a recommendation
 to take a later point. Neither answer says what happens between grid points.
 The bounds describe simulation error under this pilot model, not uncertainty
 about the pilot or the real test's false-positive rate.
+
+For the same 4-of-5 design, suppose treatment does nothing and one slot
+is always busier than the others. Even with 48 blocks, the nominal 5% test
+can call a difference on 7.14% of assignments. See the [calendar and exact
+count](../reference/switchback-inference.md#unadjusted-means-and-conversions).
+More transactions in each block don't create more independent draws.
 
 ## When it refuses
 

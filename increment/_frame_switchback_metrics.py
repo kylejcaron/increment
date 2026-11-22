@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
+from functools import cache
 from numbers import Integral, Real
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import narwhals as nw
 import numpy as np
 
-from increment._frame_validation import _missing_count, eager_frame, require_eager_frame
-from increment.estimation.contrast import SwitchbackMetricStats, _exact_sum
+from increment._frame_validation import (
+    _is_missing,
+    _missing_count,
+    eager_frame,
+    require_eager_frame,
+)
+from increment.estimation.contrast import (
+    SwitchbackMetricStats,
+    UnavailableContrastStats,
+    _exact_sum,
+)
 from increment.semantics.assignment import FixedCountOrder, SwitchbackAssignment
 from increment.semantics.models import CupedCovariateBinding
 
@@ -68,13 +79,12 @@ def forecast_column(spec: MetricSpec, reject: _Reject) -> str | None:
     return covariates[0].name
 
 
-def _numeric_values(frame: nw.DataFrame[Any], column: str) -> bool:
-    dtype = frame.schema[column]
-    if dtype.is_numeric():
+def _numeric_values(series: nw.Series[Any]) -> bool:
+    if series.dtype.is_numeric():
         return True
-    return dtype == nw.Object and all(
+    return series.dtype == nw.Object and all(
         isinstance(value, Real | Decimal) and not isinstance(value, bool)
-        for value in frame[column].to_list()
+        for value in series.to_list()
     )
 
 
@@ -101,7 +111,7 @@ def validate_metric_columns(
                     missing_values=missing,
                     reason="null_metric",
                 )
-            if not _numeric_values(frame, column):
+            if not _numeric_values(frame[column]):
                 reject_numeric(
                     message=f"Metric {spec.name!r} requires a numeric column, not {column!r} of type {frame.schema[column]}.",
                     metric=spec.name,
@@ -157,6 +167,43 @@ def _forecast_clock(frame: nw.DataFrame[Any], reject: _Reject) -> None:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _MissingForecast:
+    count: int
+    first_key: tuple[str, int, int]
+
+
+def _forecast_values(
+    table: nw.DataFrame[Any],
+    column: str,
+    keys: tuple[str, str, str],
+    ordered: list[int],
+    shape: tuple[int, int, int],
+    reject: _Reject,
+) -> np.ndarray | _MissingForecast:
+    series = table[column]
+    missing = table.select(_is_missing(table, column))[column]
+    count = int(missing.sum())
+    observed = series.filter(~missing) if count else series
+    if len(observed) and not _numeric_values(observed):
+        reject(
+            message=f"Forecast column {column!r} must be numeric.",
+            column=column,
+            reason="nonnumeric_forecast",
+        )
+    values = observed.to_list()
+    if not all(map(_finite, values)):
+        reject(
+            message=f"Forecast column {column!r} must be finite.",
+            column=column,
+            reason="nonfinite_forecast",
+        )
+    if count:
+        u, c, p = min(table.select(*keys).filter(missing).iter_rows())
+        return _MissingForecast(count, (u, int(c), int(p)))
+    return np.asarray([values[i] for i in ordered], dtype=object).reshape(shape)
+
+
 def _forecast_data(
     frame: IntoDataFrame | None,
     forecasts: Mapping[str, str],
@@ -166,7 +213,7 @@ def _forecast_data(
     cycles: Sequence[int],
     periods: int,
     reject: _Reject,
-) -> dict[str, np.ndarray]:
+) -> dict[str, np.ndarray | _MissingForecast]:
     if not forecasts:
         return {}
     if frame is None:
@@ -225,29 +272,7 @@ def _forecast_data(
                 reason="forecast_keys",
             )
         ordered[i] = row
-    aligned = {}
-    for col in columns:
-        if _missing_count(table, col):
-            reject(
-                message=f"Every scheduled period needs an observed forecast in {col!r}.",
-                column=col,
-                reason="missing_forecast",
-            )
-        if not _numeric_values(table, col):
-            reject(
-                message=f"Forecast column {col!r} must be numeric.",
-                column=col,
-                reason="nonnumeric_forecast",
-            )
-        values = table[col].to_list()
-        if not all(map(_finite, values)):
-            reject(
-                message=f"Forecast column {col!r} must be finite.",
-                column=col,
-                reason="nonfinite_forecast",
-            )
-        aligned[col] = np.asarray([values[i] for i in ordered], dtype=object).reshape(shape)
-    return aligned
+    return {col: _forecast_values(table, col, keys, ordered, shape, reject) for col in columns}
 
 
 def _arm_averages(
@@ -299,7 +324,7 @@ def reduce_joint_metrics(
     cycles: Sequence[int],
     metadata: Mapping[str, Any],
     reject: _Reject,
-) -> dict[str, SwitchbackMetricStats]:
+) -> dict[str, SwitchbackMetricStats | UnavailableContrastStats]:
     forecasts = _forecast_data(
         forecast_frame,
         forecast_columns,
@@ -309,17 +334,20 @@ def reduce_joint_metrics(
         periods=assignment.periods_per_cycle,
         reject=reject,
     )
-    arm_levels = {
-        col: _arm_averages(data.reshape(treated.shape), treated, assignment)
-        for col, data in totals.items()
-    }
-    signed_forecasts = {
-        col: tuple(t - c for t, c in _arm_averages(data, treated, assignment))
-        for col, data in forecasts.items()
-    }
-    results = {}
+
+    @cache
+    def arm_levels(column: str) -> list[tuple[Fraction, Fraction]]:
+        return _arm_averages(totals[column].reshape(treated.shape), treated, assignment)
+
+    @cache
+    def signed_forecast(column: str) -> tuple[Fraction, ...] | _MissingForecast:
+        data = forecasts[column]
+        if isinstance(data, _MissingForecast):
+            return data
+        return tuple(t - c for t, c in _arm_averages(data, treated, assignment))
+
+    results: dict[str, SwitchbackMetricStats | UnavailableContrastStats] = {}
     for spec in specs:
-        y = arm_levels[spec.y_column]
         if spec.type == "ratio":
             assert spec.denominator is not None
             results[spec.name] = SwitchbackMetricStats(
@@ -328,17 +356,36 @@ def reduce_joint_metrics(
                 **metadata,
                 ratio_components=tuple(
                     (yt, dt, yc, dc)
-                    for (yt, yc), (dt, dc) in zip(y, arm_levels[spec.denominator], strict=True)
+                    for (yt, yc), (dt, dc) in zip(
+                        arm_levels(spec.y_column), arm_levels(spec.denominator), strict=True
+                    )
                 ),
             )
         else:
             col = forecast_columns[spec.name]
+            predictor = signed_forecast(col)
+            if isinstance(predictor, _MissingForecast):
+                results[spec.name] = UnavailableContrastStats(
+                    metric=spec.name,
+                    aggregation="sum",
+                    forecast_column=col,
+                    failure_code="source.frame.switchback.metric",
+                    failure_context={
+                        "metric": spec.name,
+                        "column": col,
+                        "reason": "missing_forecast",
+                        "missing_count": predictor.count,
+                        "first_missing_key": predictor.first_key,
+                    },
+                    **metadata,
+                )
+                continue
             results[spec.name] = SwitchbackMetricStats(
                 metric=spec.name,
                 aggregation="sum",
                 forecast_column=col,
-                cuped_outcomes=tuple(t - c for t, c in y),
-                cuped_predictors=signed_forecasts[col],
+                cuped_outcomes=tuple(t - c for t, c in arm_levels(spec.y_column)),
+                cuped_predictors=predictor,
                 **metadata,
             )
     return results

@@ -376,6 +376,14 @@ def contrast_results_to_readout(
     for result in results:
         estimate = result.estimate
         stat_sig = contrast_stat_sig(result)
+        # Paired tables historically display False for a zero-SE t test. Availability,
+        # unlike this display flag, records whether a test was actually evaluated.
+        if (
+            result.randomization_law != "fixed_count"
+            and result.failure_context is not None
+            and result.failure_context.get("reason") == "zero_standard_error"
+        ):
+            stat_sig = False
         lower = None if estimate is None else estimate.lb
         upper = None if estimate is None else estimate.ub
         rows.append(
@@ -467,7 +475,11 @@ def contrast_results_to_readout(
             )
         if result.forecast_column is not None:
             rows[-1]["forecast_column"] = result.forecast_column
-        if result.aggregation == "ratio" or result.forecast_column is not None:
+        if (
+            result.randomization_law == "fixed_count"
+            or result.aggregation == "ratio"
+            or result.forecast_column is not None
+        ):
             rows[-1]["p_value"] = contrast_p_value(result)
         if result.failure_code is not None:
             rows[-1].update(

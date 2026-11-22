@@ -31,7 +31,12 @@ from increment.estimation.readout_types import (
     refuse_readout,
     validate_collection,
 )
-from increment.estimation.results import Estimate, RejectionSide, contrast_p_value
+from increment.estimation.results import (
+    Estimate,
+    RejectionSide,
+    contrast_p_value,
+    contrast_stat_sig,
+)
 from increment.semantics.unit_cycle import (
     ProspectiveAssumptionProvenance,
     UnitCycleReference,
@@ -149,21 +154,39 @@ _REFUSALS = {
 }
 
 
-def _valid_missing_response(
-    context: Mapping[str, object], metric: str, control: str, treatment: str
+def _valid_missing_key(
+    context: Mapping[str, object], metric: str, reason: str, key_length: int
 ) -> bool:
     count = context.get("missing_count")
     key = context.get("first_missing_key")
     return (
         context.get("metric") == metric
-        and context.get("reason") == "unobserved_response"
-        and context.get("arm") in (control, treatment)
+        and context.get("reason") == reason
         and type(count) is int
         and count > 0
         and isinstance(key, (tuple, list))
-        and len(key) == 4
+        and len(key) == key_length
         and isinstance(key[0], str)
         and all(type(index) is int for index in key[1:])
+    )
+
+
+def _valid_missing_response(
+    context: Mapping[str, object], metric: str, control: str, treatment: str
+) -> bool:
+    return _valid_missing_key(context, metric, "unobserved_response", 4) and context.get("arm") in (
+        control,
+        treatment,
+    )
+
+
+def _valid_missing_forecast(
+    context: Mapping[str, object], metric: str, forecast_column: str | None
+) -> bool:
+    return (
+        forecast_column is not None
+        and context.get("column") == forecast_column
+        and _valid_missing_key(context, metric, "missing_forecast", 3)
     )
 
 
@@ -323,8 +346,8 @@ class ContrastResult(_FixedCountMetadata):
     refusal_probability_upper: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     residual_cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     residual_p_value: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
-    #: Sign of the exact residual the envelope p-value tests; "split" when it is zero.
-    #: Left out of t-reference dumps, whose wire form predates it.
+    #: Sign of the tested residual before point rounding; "split" when it is zero.
+    #: Omitted for historical paired t references.
     residual_side: RejectionSide | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -371,7 +394,7 @@ class ContrastResult(_FixedCountMetadata):
         return self.failure_context
 
     def _check_metric_result(self, replicates: int) -> bool:
-        """Validate fitted references and missing-response rows without inventing uncertainty."""
+        """Validate fitted references and unavailable tests without inventing uncertainty."""
         estimate = self.estimate
         reason = None if self.failure_context is None else self.failure_context.get("reason")
         adjusted = self.forecast_column is not None
@@ -428,6 +451,18 @@ class ContrastResult(_FixedCountMetadata):
                     else None
                 )
             )
+        if reason == "zero_standard_error":
+            return (
+                not (ratio or adjusted)
+                and self.method in ("switchback_unit_t_approximation", "switchback_block_t")
+                and self.failure_code == "evidence.p_value.unavailable"
+                and self.failure_context == {"metric": self.metric, "reason": reason}
+                and estimate is not None
+                and estimate.lb is None
+                and estimate.ub is None
+                and self.standard_error == 0
+                and self.dof == replicates - 1
+            )
         if (
             self.failure_context is None
             or self.failure_context.get("metric") != self.metric
@@ -443,6 +478,12 @@ class ContrastResult(_FixedCountMetadata):
                 and _valid_missing_response(
                     self.failure_context, self.metric, self.control_group, self.treatment_group
                 )
+            )
+        if reason == "missing_forecast":
+            return (
+                self.failure_code == "source.frame.switchback.metric"
+                and estimate is None
+                and _valid_missing_forecast(self.failure_context, self.metric, self.forecast_column)
             )
         if self.failure_code != "evidence.p_value.unavailable" or not (adjusted or ratio):
             return False
@@ -597,6 +638,24 @@ class ContrastResult(_FixedCountMetadata):
             or self.dof != replicates - 1
             or self.standard_error is None
             or self.dof_unavailable_reason is not None
+            or (self.residual_side is None) != (self.residual_p_value is None)
+            or (
+                self.residual_p_value is not None
+                and (
+                    self.randomization_law != "fixed_count"
+                    or self.standard_error == 0
+                    or (
+                        self.residual_side == "split"
+                        and self.residual_p_value
+                        != (1.0 if self.alternative == "two-sided" else 0.5)
+                    )
+                    or (
+                        self.alternative != "two-sided"
+                        and self.residual_side != self.alternative
+                        and self.residual_p_value < 0.5
+                    )
+                )
+            )
             or any(
                 value is not None
                 for value in (
@@ -604,8 +663,6 @@ class ContrastResult(_FixedCountMetadata):
                     self.effective_alpha,
                     self.refusal_probability_upper,
                     self.residual_cutoff,
-                    self.residual_p_value,
-                    self.residual_side,
                     self.provenance,
                     self.response_meaning,
                 )
@@ -887,14 +944,18 @@ class ContrastResults(list[ContrastResult]):
 
     def _frame_data(self) -> dict[str, list[object]]:
         columns = list(CONTRAST_FRAME_COLUMNS)
-        if any(row.randomization_law == "fixed_count" for row in self):
+        fixed_count = any(row.randomization_law == "fixed_count" for row in self)
+        if fixed_count:
             columns.extend(_FixedCountMetadata.model_fields)
+            columns.append("stat_sig")
         if any(row.forecast_column is not None for row in self):
             columns.append("forecast_column")
-        if any(row.aggregation == "ratio" or row.forecast_column is not None for row in self):
+        if fixed_count or any(row.aggregation == "ratio" or row.forecast_column for row in self):
             columns.append("p_value")
         data: dict[str, list[object]] = {name: [] for name in columns}
         for result in self:
+            if "stat_sig" in data:
+                data["stat_sig"].append(contrast_stat_sig(result))
             if "p_value" in data:
                 data["p_value"].append(contrast_p_value(result))
             for name in ContrastResult.model_fields:
@@ -934,7 +995,7 @@ class ContrastResults(list[ContrastResult]):
 
         schema = {
             name: nw.Boolean()
-            if name == "decision_scope_complete"
+            if name in ("decision_scope_complete", "stat_sig")
             else nw.Float64()
             if name
             in {
@@ -1070,6 +1131,8 @@ class ContrastResults(list[ContrastResult]):
             for name, values in nullable_ints.items():
                 frame.insert(columns.index(name), name, pd.array(values, dtype="Int64"))
             frame["preferred_direction"] = pd.array(data["preferred_direction"], dtype="string")
+            if "stat_sig" in data:
+                frame["stat_sig"] = pd.array(data["stat_sig"], dtype="boolean")
         frame = (
             nw.from_native(frame, eager_only=True)
             .with_columns(

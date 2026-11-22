@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from increment._unit_cycle import (
+    _fixed_count_t_test,
     _float_outward,
     unit_cycle_admission_outcome,
     unit_cycle_envelope_cutoff,
@@ -47,6 +48,7 @@ from increment.estimation.contrast_results import (
     RandomizationLaw,
     _contrast_identity,
     _FixedCountMetadata,
+    _valid_missing_forecast,
     _valid_missing_response,
     _validate_assignment_metadata,
     _validate_order_counts,
@@ -65,6 +67,7 @@ from increment.estimation.decision_types import (
 from increment.estimation.results import (
     Estimate,
     RejectionSide,
+    _contrast_residual_p_value,
     contrast_evidence_available,
     contrast_p_value,
     contrast_rejection_side,
@@ -292,9 +295,9 @@ class ContrastPartition(CodedModel, BaseModel):
 class ContrastStats(_FixedCountMetadata):
     """Centered moments over the declared independent replicate grain.
 
-    Unit-cycle envelope evidence additionally requires ``exact_delta_total``,
-    the reduced integer numerator/denominator of the sum of raw-row HT unit
-    averages. The pair serializes as a JSON array, or null when unavailable.
+    ``exact_delta_total`` is the sum of independent replicate contrasts before
+    rounding. It is available for fixed-count panels and is required for a
+    unit-cycle envelope. The pair serializes as a JSON array.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
@@ -323,7 +326,7 @@ class ContrastStats(_FixedCountMetadata):
     tc_cycles: int | None = Field(default=None, ge=0, strict=True)
     minimum_cycles_per_unit: int | None = Field(default=None, ge=1, strict=True)
     maximum_cycles_per_unit: int | None = Field(default=None, ge=1, strict=True)
-    # Exact sum of unit HT cycle averages; divide by n_units to recover mean A.
+    # Divide by the number of independent units or shared blocks to recover the mean.
     exact_delta_total: tuple[int, int] | None = None
 
     @field_validator("exact_delta_total", mode="before")
@@ -354,7 +357,6 @@ class ContrastStats(_FixedCountMetadata):
                 for value in (
                     self.minimum_cycles_per_unit,
                     self.maximum_cycles_per_unit,
-                    self.exact_delta_total,
                 )
             ):
                 _unit_refuse("unit_cycle.sufficient_state", reason="invalid_fixed_count_metadata")
@@ -464,14 +466,20 @@ class SwitchbackMetricStats(_MetricDesign):
 class UnavailableContrastStats(_MetricDesign):
     """Complete assignment evidence with missing measurements for this metric only."""
 
-    failure_code: Literal["source.frame.switchback.response_unobserved"]
+    failure_code: Literal[
+        "source.frame.switchback.response_unobserved", "source.frame.switchback.metric"
+    ]
     failure_context: Mapping[str, object]
 
     @model_validator(mode="after")
     def _missing_measurements(self):
-        if not _valid_missing_response(
-            self.failure_context, self.metric, self.control_group, self.treatment_group
-        ):
+        if self.failure_code == "source.frame.switchback.response_unobserved":
+            valid = _valid_missing_response(
+                self.failure_context, self.metric, self.control_group, self.treatment_group
+            )
+        else:
+            valid = _valid_missing_forecast(self.failure_context, self.metric, self.forecast_column)
+        if not valid:
             _raise("estimation.contrast.metric_components", metric=self.metric)
         object.__setattr__(self, "failure_context", freeze(self.failure_context))
         return self
@@ -925,9 +933,20 @@ def _t_reference_result(
     if stats.n_cycles < 1:
         _raise("estimation.contrast.contrast_stats_n")
 
-    # This is the only point estimate reconstruction: never recover an
-    # unshifted mean by subtracting two large raw totals.
-    point = math.fsum((reference_delta, mean_residual))
+    center = None
+    if stats.randomization_law == "fixed_count":
+        # Older sufficient statistics carry only the two centered float moments.
+        center = (
+            Fraction(*stats.exact_delta_total) / replicates
+            if stats.exact_delta_total is not None
+            else Fraction(reference_delta) + Fraction(mean_residual)
+        )
+        try:
+            point = float(center)
+        except OverflowError:
+            _raise("estimation.contrast.contrast_stats_reconstructed")
+    else:
+        point = math.fsum((reference_delta, mean_residual))
     if not math.isfinite(point):
         _raise("estimation.contrast.contrast_stats_reconstructed")
 
@@ -952,32 +971,43 @@ def _t_reference_result(
     # Pass the tail itself, never `1 - alpha_eff/2`: that complement rounds to 1.0 for valid
     # alpha (1e-20 under a family correction), making the quantile inf.
     level = math.fsum((1.0, -alpha_eff))
-    if shared:
-        critical = tail_isf(
-            student_t_isf, alpha_eff / 2.0, dof, what="fixed block-t critical value"
-        )
-        half_width = critical * standard_error
-    else:
-        half_width, _ = _unit_t_reference(
-            point,
-            standard_error,
-            dof,
-            alpha=procedure.alpha,
-            alternative=procedure.alternative,
-            null_abs=procedure.null_abs,
-        )
-        half_width = float(half_width)
-    if not math.isfinite(half_width):
-        _raise("estimation.contrast.contrast_interval_half")
-
-    # Equal realized replicate contributions (units, or blocks for a shared
-    # schedule) do not establish zero population variance: the zero-SE
-    # reference carries no interval, matching its unavailable evidence.
+    lower = upper = p_value = side = None
     interval_available = standard_error > 0.0
+    if center is not None:
+        if interval_available:
+            critical = tail_isf(student_t_isf, alpha_eff / 2, dof, what="fixed-count t reference")
+            lower, upper, p_value, side = _fixed_count_t_test(
+                center,
+                standard_error,
+                dof,
+                critical,
+                null_abs=procedure.null_abs,
+                alternative=procedure.alternative,
+            )
+    else:
+        if shared:
+            critical = tail_isf(
+                student_t_isf, alpha_eff / 2.0, dof, what="fixed block-t critical value"
+            )
+            half_width = critical * standard_error
+        else:
+            half_width, _ = _unit_t_reference(
+                point,
+                standard_error,
+                dof,
+                alpha=procedure.alpha,
+                alternative=procedure.alternative,
+                null_abs=procedure.null_abs,
+            )
+            half_width = float(half_width)
+        if not math.isfinite(half_width):
+            _raise("estimation.contrast.contrast_interval_half")
+        if interval_available:
+            lower, upper = point - half_width, point + half_width
     estimate = Estimate(
         value=point,
-        lb=point - half_width if interval_available else None,
-        ub=point + half_width if interval_available else None,
+        lb=lower,
+        ub=upper,
         level=level if interval_available else None,
         # level rounds to exactly 1.0 for a small but valid alpha, which Estimate
         # refuses on its own precisely because the level would then misstate the
@@ -1021,6 +1051,8 @@ def _t_reference_result(
         tc_cycles=stats.tc_cycles,
         dof=dof,
         reference_spec=procedure.reference,
+        residual_p_value=p_value,
+        residual_side=side,
         washout_steps=stats.washout_steps,
         mean_slope=stats.mean_slope,
         minimum_cycles_per_unit=stats.minimum_cycles_per_unit,
@@ -1165,12 +1197,12 @@ def estimate_contrast(
             "evidence.p_value.unavailable",
             {"metric": result.metric, "reason": "zero_standard_error"},
         )
-        return DecisionComputation(results=(result,), evidence={}, failures={hypothesis: failure})
-    if result.method == "switchback_unit_variance_envelope":
-        assert result.residual_p_value is not None
-        evidence = PValueEvidence(
-            hypothesis, result.method, result.residual_p_value, result.reference
+        result = result.model_copy(
+            update={"failure_code": failure.code, "failure_context": failure.context}
         )
+        return DecisionComputation(results=(result,), evidence={}, failures={hypothesis: failure})
+    if (residual_p := _contrast_residual_p_value(result)) is not None:
+        evidence = PValueEvidence(hypothesis, result.method, residual_p, result.reference)
         return DecisionComputation(results=(result,), evidence={hypothesis: evidence}, failures={})
     assert result.standard_error is not None and result.dof is not None
     assert result.estimate is not None

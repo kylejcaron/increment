@@ -29,7 +29,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from scipy.special import betainccinv, betaincinv
 from scipy.stats import binomtest
 
-from increment._unit_cycle import _float_outward, unit_cycle_admission_outcome
+from increment._unit_cycle import (
+    _fixed_count_moments,
+    _fixed_count_t_test,
+    _float_outward,
+    unit_cycle_admission_outcome,
+)
 from increment.errors import CodedModel, InvalidRequestError
 from increment.estimation._tails import student_t_isf, tail_isf
 from increment.estimation.decision_types import ContrastDecisionProcedure, exact_fraction
@@ -389,9 +394,6 @@ def _assignments(b: _Baseline, rng: np.random.Generator, batch: int, n: int) -> 
 
 @dataclass(frozen=True, slots=True)
 class _Draws:
-    point: np.ndarray
-    se: np.ndarray
-    df: int
     reason: np.ndarray
     rejected: np.ndarray
 
@@ -401,15 +403,61 @@ def _critical(df: int, tail: float) -> float:
     return tail_isf(student_t_isf, tail, df, what="switchback t reference")
 
 
-def _decide(
-    x: np.ndarray, admitted: np.ndarray, procedure: ContrastDecisionProcedure, admission_reason: str
+def _fixed_count_draws(
+    numerator: np.ndarray,
+    denominator: int,
+    shift: Fraction,
+    admitted: np.ndarray,
+    procedure: ContrastDecisionProcedure,
+) -> _Draws:
+    """Apply the reported fixed-count test to each admitted schedule."""
+    batch, n = numerator.shape
+    df = n - 1
+    root_df, root_n = math.sqrt(df), math.sqrt(n)
+    reason = np.full(batch, None, dtype=object)
+    reason[~admitted] = "missing_position_support"
+    rejected = np.zeros(batch, dtype=bool)
+    tail = procedure.alpha / 2 if procedure.alternative == "two-sided" else procedure.alpha
+    try:
+        critical = _critical(df, tail)
+    except InvalidRequestError:
+        reason[admitted] = "decision_failure"
+        return _Draws(reason, rejected)
+    for i in np.flatnonzero(admitted):
+        try:
+            row = numerator[i]
+            # Conversion counts are fixed-width integers; trajectories are already rational.
+            total, m2 = _fixed_count_moments(
+                row if numerator.dtype.kind == "O" else map(int, row), n, denominator
+            )
+            center = total / n + shift
+            if not m2:
+                reason[i] = "zero_se" if math.isfinite(_as_float(center)) else "decision_failure"
+            else:
+                se = math.sqrt(m2) / root_df / root_n
+                _, _, p, _ = _fixed_count_t_test(
+                    center,
+                    se,
+                    df,
+                    critical,
+                    null_abs=procedure.null_abs,
+                    alternative=procedure.alternative,
+                )
+                rejected[i] = p < procedure.alpha
+        except (InvalidRequestError, OverflowError, ValueError):
+            reason[i] = "decision_failure"
+    return _Draws(reason, rejected)
+
+
+def _paired_decisions(
+    x: np.ndarray, admitted: np.ndarray, procedure: ContrastDecisionProcedure
 ) -> _Draws:
     batch, n = x.shape
     df = n - 1
     point = np.full(batch, np.nan)
     se = np.full(batch, np.nan)
     reason = np.full(batch, None, dtype=object)
-    reason[~admitted] = admission_reason
+    reason[~admitted] = "paired_order_split"
     for i in np.flatnonzero(admitted):
         try:
             reference = float(x[i, 0])
@@ -425,7 +473,7 @@ def _decide(
         critical = _critical(df, tail)
     except InvalidRequestError:
         reason[admitted] = "decision_failure"
-        return _Draws(point, se, df, reason, np.zeros(batch, dtype=bool))
+        return _Draws(reason, np.zeros(batch, dtype=bool))
     with np.errstate(over="ignore", invalid="ignore"):
         half = critical * se
         lower, upper = point - half, point + half
@@ -437,7 +485,7 @@ def _decide(
         reject |= lower > procedure.null_abs
     if procedure.alternative != "greater":
         reject |= upper < procedure.null_abs
-    return _Draws(point, se, df, reason, reject & admitted & finite & (se > 0))
+    return _Draws(reason, reject & admitted & finite & (se > 0))
 
 
 def _as_float(value: Fraction) -> float:
@@ -477,11 +525,7 @@ def _trajectory_draws(
     # X = delta + [K sum_T Y0 - m sum_all Y0] / [g m (K-m)].
     numerator = k * selected - m * table.total[indices]
     denom = z.shape[2] * m * (k - m)
-    shift = Fraction(delta)
-    x = np.fromiter(
-        (_as_float(v / denom + shift) for v in numerator.flat), dtype=float, count=numerator.size
-    ).reshape(indices.shape)
-    return _decide(x, _admission(b, z), p, "missing_position_support")
+    return _fixed_count_draws(numerator, denom, Fraction(delta), _admission(b, z), p)
 
 
 def _conversion_draws(
@@ -505,27 +549,21 @@ def _conversion_draws(
     if seq.scheme == "fixed_count":
         m = seq.treated_periods
         numerator = k * (arm & y).sum(axis=(2, 3)) - m * y.sum(axis=(2, 3))
-        x = numerator / (m * (k - m) * g)
-    else:
-        # Exact counts in each branch, then round the weighted replicate only once.
-        ct = arm[..., 1]
-        diff = y[..., 1].astype(np.int8) - y[..., 0]
-        sums = np.stack(((ct * diff).sum(axis=2), ((~ct) * -diff).sum(axis=2)), axis=-1)
-        pairs, inverse = np.unique(sums.reshape(-1, 2), axis=0, return_inverse=True)
-        prob = Fraction(seq.probability_ct)
-        wct, wtc = 1 / (2 * g * prob), 1 / (2 * g * (1 - prob))
-        values = np.array([_as_float(int(a) * wct + int(c) * wtc) for a, c in pairs])
-        x = values[inverse].reshape(shape[:2])
-        # Runtime also requires the realized inverse order weights to be representable.
-        for branch, weight in ((ct, wct), (~ct, wtc)):
-            if not math.isfinite(_as_float(weight * g)):
-                x[branch.any(axis=2)] = np.nan
-    return _decide(
-        x,
-        _admission(b, z),
-        proc,
-        "missing_position_support" if seq.scheme == "fixed_count" else "paired_order_split",
-    )
+        return _fixed_count_draws(numerator, m * (k - m) * g, Fraction(0), _admission(b, z), proc)
+    # Exact counts in each branch, then round the weighted replicate only once.
+    ct = arm[..., 1]
+    diff = y[..., 1].astype(np.int8) - y[..., 0]
+    sums = np.stack(((ct * diff).sum(axis=2), ((~ct) * -diff).sum(axis=2)), axis=-1)
+    pairs, inverse = np.unique(sums.reshape(-1, 2), axis=0, return_inverse=True)
+    prob = Fraction(seq.probability_ct)
+    wct, wtc = 1 / (2 * g * prob), 1 / (2 * g * (1 - prob))
+    values = np.array([_as_float(int(a) * wct + int(c) * wtc) for a, c in pairs])
+    x = values[inverse].reshape(shape[:2])
+    # Runtime also requires the realized inverse order weights to be representable.
+    for branch, weight in ((ct, wct), (~ct, wtc)):
+        if not math.isfinite(_as_float(weight * g)):
+            x[branch.any(axis=2)] = np.nan
+    return _paired_decisions(x, _admission(b, z), proc)
 
 
 def _tail_allocation(mc_error: float, cells: int) -> float:

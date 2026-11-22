@@ -14,6 +14,7 @@ from increment.frame import MetricSpec
 from increment.result_envelope import render
 from increment.results import ReadoutResults
 from increment.semantics.assignment import (
+    FixedCountOrder,
     IndependentBernoulliOrder,
     SwitchbackAssignment,
     SwitchbackWindow,
@@ -102,8 +103,14 @@ def test_unavailable_ratios_keep_their_point_status_and_valid_siblings_in_storag
     with reader:
         saved = run(experiment, reader, results_store=store)
         (alone,) = run(experiment, reader, metrics=["orders"]).decisions.cells
-    frame = saved.readout().to_frame(backend="polars")
+    frame = saved.to_frame(backend="polars")
     assert isinstance(frame, pl.DataFrame)
+    columns = ["metric", "forecast_column", "p_value"]
+    selected = saved.to_frame(backend="polars", columns=columns)
+    assert isinstance(selected, pl.DataFrame)
+    assert selected.equals(
+        frame.select("scope_view", "scope_values", "scope_key", *columns, "view_partial")
+    )
     rows = {r["metric"]: r for r in frame.to_dicts()}
     assert {metric: r["estimate"] for metric, r in rows.items()} == {
         "orders": 7,
@@ -171,6 +178,83 @@ def test_unavailable_ratios_keep_their_point_status_and_valid_siblings_in_storag
             assert all(view[name] is None for name in ("lower", "upper", "se", "df"))
         assert row["p_value"] is None
         assert reason in report
+
+
+@pytest.mark.integration
+def test_constant_fixed_count_effect_keeps_point_but_not_a_test_in_saved_reports(tmp_path):
+    panel = pl.DataFrame(
+        {
+            "u": "store",
+            "c": block,
+            "p": slot,
+            "s": 0,
+            "arm": "B" if slot == block % 3 else "A",
+            "constant": 2 if slot == block % 3 else 0,
+            "varying": 10 + block if slot == block % 3 else 0,
+        }
+        for block in range(9)
+        for slot in range(3)
+    )
+    experiment, reader = from_switchback_frame(
+        panel,
+        unit="u",
+        cycle="c",
+        period="p",
+        step="s",
+        group="arm",
+        metrics={"constant": "mean", "varying": "mean"},
+        experiment_id="blocks",
+        assignment=SwitchbackAssignment(
+            periods_per_cycle=3,
+            sequence=FixedCountOrder(treated_periods=1, independence_unit="shared_block"),
+            window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+        ),
+        identification=Randomized(control_group="A", allocation={"A": 2 / 3, "B": 1 / 3}),
+    )
+    store = ParquetResultsStore(tmp_path)
+    with reader:
+        saved = run(experiment, reader, results_store=store)
+    frame = saved.to_frame(backend="polars")
+    assert isinstance(frame, pl.DataFrame)
+    flat, varied = frame.sort("metric").to_dicts()
+    assert flat["estimate"] == 2 and flat["point_available"]
+    assert not flat["sampling_available"]
+    assert flat["lb"] is flat["ub"] is flat["p_value"] is flat["stat_sig"] is None
+    assert varied["sampling_available"] and varied["stat_sig"] and varied["standard_error"] > 0
+    code = "evidence.p_value.unavailable"
+    context = {"metric": "constant", "reason": "zero_standard_error"}
+    assert (flat["failure_code"], json.loads(flat["failure_context"])) == (code, context)
+    assert not flat["decision_scope_complete"] and not varied["decision_scope_complete"]
+    assert (
+        flat["available_cell_count"],
+        flat["unavailable_cell_count"],
+        flat["required_cell_count"],
+    ) == (1, 1, 2)
+    assert {"periods_per_cycle", "treated_periods", "treatment_probability"} <= set(frame.columns)
+    selected = saved.to_frame(backend="polars", columns=frame.columns)
+    assert isinstance(selected, pl.DataFrame) and selected.equals(frame)
+
+    report = ReadoutResults.model_validate_json(saved.readout().model_dump_json())
+    row = next(r for r in estimates_to_readout(report) if r["metric"] == "constant")
+    assert row["lift"] == 2
+    assert row["lower"] is row["higher"] is row["stat_sig"] is row["p_value"] is None
+    assert row["available_cell_count"] == 1 and row["decision_scope_complete"] is False
+    assert isinstance(row["failure_context"], str) and json.loads(row["failure_context"]) == context
+    envelope = store.open_run("blocks", saved.run.analysis_spec_hash, saved.run.run_id).envelope()
+    assert envelope.metadata is not None
+    (source,) = envelope.metadata.scope.by_source.values()
+    assert not source.decision_complete_by_population["assigned"]
+    assert len(source.decision_cells) == 2
+    cells = {cell.identity.key.metric: cell for cell in envelope.cells}
+    cell = cells["constant"]
+    status, _ = cell.components["sampling"]
+    assert (status.state, status.code, status.context) == ("unavailable", code, context)
+    assert cell.summary is not None and cell.summary.point == 2
+    assert cell.summary.lower is cell.summary.upper is None
+    verdicts = {v.identity_hash: v for v in saved.decisions.cells}
+    verdict = verdicts[cell.identity.hash()]
+    assert (verdict.status, verdict.reason_codes) == ("not_evaluated", (code,))
+    assert verdicts[cells["varying"].identity.hash()].status == "reject"
 
 
 @pytest.mark.integration

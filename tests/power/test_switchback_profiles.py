@@ -13,6 +13,7 @@ from scipy.stats import t
 
 from increment import from_switchback_frame
 from increment.errors import InvalidRequestError
+from increment.estimation.contrast import estimate_contrast
 from increment.estimation.decision_types import ContrastDecisionProcedure
 from increment.estimation.results import contrast_stat_sig
 from increment.power.switchback import SwitchbackBaseline
@@ -26,7 +27,7 @@ from increment.semantics.assignment import SwitchbackAssignment
 from increment.semantics.design import Randomized
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.workflows import planning_baseline
-from tests.analysis_factory import contrast_rows, view_readout
+from tests.analysis_factory import bound_source, contrast_rows, view_readout
 
 
 def assignment(k=5, m=4, shared=True, p=None):
@@ -347,6 +348,65 @@ def test_trajectory_pilot_reconstruction_preserves_offsets_and_roundtrips():
     assert plan(pilot(y - 2**55)).points == high.points
     assert b.profile_source == "pilot_estimated"
     assert b.assignment.window.observation_steps == 4
+
+
+@pytest.mark.parametrize("shared", [True, False], ids=["blocks", "units"])
+def test_shifted_pilot_and_runtime_agree_at_a_large_null(shared):
+    # Removing the pilot shift D leaves position effects (-2, 0, 2).
+    # With one treated position the corresponding contrasts are (-3, 0, 3).
+    # Every admitted three-replicate schedule is a permutation of those three.
+    d = 2**55
+    a = assignment(3, 1, shared=shared)
+    roster = ("a",) if shared else ("a", "b", "c")
+    pilot_z = np.eye(3, dtype=bool).reshape(len(roster), -1, 3)
+    position = np.array([-2, 0, 2])
+    baseline = SwitchbackTrajectoryBaseline.from_pilot(
+        assignment=a,
+        metric="outcome",
+        control_group="C",
+        treatment_group="T",
+        roster=roster,
+        observed=position + d * pilot_z,
+        treated=pilot_z,
+        delta_ref=d,
+    )
+    shift = d + 8
+    proc = procedure(a, null_abs=d)
+    (planned,) = switchback_profile_plan(
+        baseline, proc, sizes=[3], effects=[shift], repetitions=128, seed=41
+    ).points
+    assert 0 < planned.rejected == planned.attempts - planned.admission_failures
+
+    # Rotate the assignments and apply the new shift to the pilot's untreated totals.
+    schedule = np.roll(pilot_z, 1, axis=2)
+    rows = [
+        {
+            "u": roster[u],
+            "c": c,
+            "p": p,
+            "s": s,
+            "arm": "T" if schedule[u, c, p] else "C",
+            "outcome": int(position[p] + shift * schedule[u, c, p]) if s == 2 else 0,
+        }
+        for u, c, p in np.ndindex(schedule.shape)
+        for s in range(5)
+    ]
+    _, reader = from_switchback_frame(
+        pl.DataFrame(rows),
+        unit="u",
+        cycle="c",
+        period="p",
+        step="s",
+        group="arm",
+        metrics={"outcome": "mean"},
+        assignment=a,
+        identification=Randomized(control_group="C", allocation={"C": 2 / 3, "T": 1 / 3}),
+    )
+    source = bound_source(reader)
+    (row,) = estimate_contrast(source.contrast_stats(source.metrics[0]), proc).results
+    assert row.standard_error == pytest.approx(math.sqrt(3))
+    assert row.estimate is not None and row.estimate.lb == d
+    assert contrast_stat_sig(row) is True  # 8/sqrt(3) exceeds t(.975, 2).
 
 
 def test_whole_unit_bootstrap_preserves_cycles_and_shared_roster_dependence():

@@ -39,12 +39,14 @@ name that same metric. A recorded null is unknown; denominators and forecasts
 are never supplied by this rule. There is no complete-case comparison.
 
 **Separate forecast table.** For scalar mean CUPED, `pre_assignment_forecasts`
-needs exactly one finite numeric forecast per unit × cycle × period.
-Use the builder's key column names. `forecast_at` and `assigned_at` must
-both be dates, or both datetimes with the same time zone. The latest
-forecast must strictly precede the first assignment, not merely the
-response. Name the predictor in
-`MetricSpec(..., decision_method=Method.cuped(covariates="forecast"))`.
+needs exactly one row per unit × cycle × period, using the builder's key
+column names. `forecast_at` and `assigned_at` must both be dates, or both
+datetimes with the same time zone. The latest forecast must strictly precede
+the first assignment. A missing key, repeated key or late forecast invalidates
+the table. A missing **value** at a valid key makes only metrics using that
+forecast unavailable (`missing_forecast`). Other metrics keep the full roster
+and their original share of alpha. Use finite numeric values; declare the
+predictor with `MetricSpec(..., decision_method=Method.cuped(covariates="forecast"))`.
 
 The retained window is defined in the guide's
 [washout and carryover section](../guides/switchback.md#washout-and-carryover).
@@ -99,6 +101,23 @@ the contrast is 1 when the first slot is treated and −1/2 otherwise. It
 averages to zero under uniform drawing but to 1/4 if the first slot is
 treated half the time. Seeing both arms at every position is required to
 analyze the schedule; it does not establish uniform randomization.
+
+**Why a block minimum isn't a coverage guarantee.** Consider one store and
+48 independent five-period blocks, each with one control slot drawn uniformly.
+Suppose orders are always 100, 100, 100, 100 and 120 by position, regardless
+of treatment. The block contrast is −20 if the busy slot gets control, +5
+otherwise. At two-sided alpha .05, **7.14% of all assignments** falsely
+report a difference. An interval is available in 99.989% of assignments;
+of those, 92.86% include the true zero. This is an exact calculation for
+one calendar, not a simulated rate or a prediction for another store.
+
+To reproduce: for each number `h` of blocks with the busy slot in control,
+the average is `5 − 25h/48` and its standard error is
+`25 × sqrt((h/48)(1−h/48)/47)`. Give each admitted schedule weight `1/5^48`.
+There are `choose(48,h) × Σ[j=0..4] (−1)^j choose(4,j)(4−j)^(48−h)` such
+schedules for `1 ≤ h ≤ 44`: every ordinary slot must also have appeared in
+control. Count a false call when the absolute average exceeds the standard
+error times the 97.5th percentile of a t distribution with 47 degrees of freedom.
 
 ### Ratios and forecast-adjusted means
 

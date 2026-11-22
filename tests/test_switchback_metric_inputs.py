@@ -1,19 +1,22 @@
 """Switchback measures and forecasts retain their randomized replication grain."""
 
+import json
 from datetime import date
+from decimal import Decimal
 from fractions import Fraction
 from statistics import covariance
 
 import polars as pl
 import pytest
 
-from increment import from_switchback_frame
+from increment import SwitchbackObservationSchedule, from_switchback_frame, run
 from increment.declarations import Method
 from increment.errors import CapabilityError, InvalidRequestError
-from increment.estimation.contrast import SwitchbackMetricStats
+from increment.estimation.contrast import SwitchbackMetricStats, UnavailableContrastStats
 from increment.frame import MetricSpec, from_switchback_panel
 from increment.semantics.assignment import FixedCountOrder, SwitchbackAssignment, SwitchbackWindow
 from increment.semantics.design import Randomized
+from increment.semantics.models import AnalysisPlan
 from increment.workflows import planning_baseline
 from tests.test_frame_switchback import _assignment, _identification, _shared_assignment
 
@@ -21,9 +24,9 @@ _RATIO = MetricSpec(name="rate", type="ratio", numerator="sales", denominator="v
 _ADJUSTED = MetricSpec(name="sales", decision_method=Method.cuped(covariates="forecast"))
 
 
-def _paired():
+def _paired(units=("a", "b")):
     rows, forecasts = [], []
-    for i, unit in enumerate(("a", "b")):
+    for i, unit in enumerate(units):
         for cycle in (0, 1):
             for period in (0, 1):
                 treated = (cycle + period) % 2 == 1
@@ -191,12 +194,93 @@ def test_forecast_deadline_compares_exact_instants(
         assert caught.value.context["reason"] == "forecast_not_pre_assignment"
 
 
+def test_missing_forecast_withholds_only_its_consumers_at_the_declared_alpha():
+    rows, forecasts = _paired(("a", "b", "c", "d"))
+    bonus = ((pl.col("unit") == "a") & (pl.col("arm") == "treatment")).cast(pl.Int64)
+    rows = rows.with_columns((pl.col("sales") - 2**55 + bonus).alias("sales"))
+    forecasts = forecasts.with_columns((pl.col("forecast") - 2**55).alias("forecast"))
+    missing = (pl.col("unit") == "b") & (pl.col("cycle") == 1) & (pl.col("period") == 0)
+    forecasts = forecasts.with_columns(
+        pl.when(missing).then(None).otherwise(pl.col("forecast")).alias("partial")
+    ).reverse()
+    specs = [
+        _ADJUSTED,
+        _RATIO,
+        MetricSpec(name="ordinary", value_column="sales"),
+        *(
+            MetricSpec(
+                name=name, value_column="sales", decision_method=Method.cuped(covariates="partial")
+            )
+            for name in ("first", "second")
+        ),
+    ]
+    experiment, reader = _build(
+        rows,
+        specs,
+        forecasts,
+        builder=from_switchback_frame,
+        plan=AnalysisPlan(primary=[spec.name for spec in specs]),
+    )
+    with reader:
+        result = run(experiment, reader).readout().to_frame(backend="polars")
+        with pytest.raises(CapabilityError) as pilot:
+            planning_baseline(experiment, reader, "first")
+    assert isinstance(result, pl.DataFrame)
+    by_name = {row["metric"]: row for row in result.to_dicts()}
+    # Unit contrasts are (28, 26, 28, 30)/3 for sales, (6, 8, 10, 12)/3 for forecast.
+    for name, point in (("ordinary", 28 / 3), ("rate", 7 / 4), ("sales", 122 / 15)):
+        assert by_name[name]["estimate"] == pytest.approx(point)
+        assert by_name[name]["sampling_available"] and by_name[name]["standard_error"] > 0
+    for name in ("first", "second"):
+        row = by_name[name]
+        assert row["forecast_column"] == "partial"
+        assert row["estimate"] is row["standard_error"] is row["p_value"] is None
+        assert row["failure_code"] == pilot.value.code == "source.frame.switchback.metric"
+        assert json.loads(row["failure_context"]) == {
+            "metric": name,
+            "column": "partial",
+            "reason": "missing_forecast",
+            "missing_count": 1,
+            "first_missing_key": ["b", 1, 0],
+        }
+    assert pilot.value.context["first_missing_key"] == ("b", 1, 0)
+    for row in by_name.values():
+        assert row["alpha"] == pytest.approx(0.05 / 5)
+        assert not row["decision_scope_complete"]
+        assert (row["required_cell_count"], row["available_cell_count"]) == (5, 3)
+
+
+@pytest.mark.parametrize("payload", ["arrow-null", "polars-nan", "pandas-object"])
+def test_missing_forecast_values_keep_the_first_scheduled_key(payload):
+    rows, forecasts = _paired()
+    forecasts = forecasts.reverse()
+    if payload == "pandas-object":
+        import pandas as pd
+
+        table = forecasts.with_columns(
+            pl.col("forecast_at", "assigned_at").cast(pl.Datetime("ns"))
+        ).to_pandas()
+        table["forecast"] = [pd.NA if unit == "b" else Decimal("0.1") for unit in table["unit"]]
+        key, count = ("b", 0, 0), 4
+    elif payload == "arrow-null":
+        table = forecasts.with_columns(pl.lit(None).alias("forecast")).to_arrow()
+        key, count = ("a", 0, 0), 8
+    else:
+        table = forecasts.with_columns(pl.lit(float("nan")).alias("forecast"))
+        key, count = ("a", 0, 0), 8
+    source = _build(rows, [_ADJUSTED], table)
+    stats = source.contrast_stats(source.metrics[0])
+    assert isinstance(stats, UnavailableContrastStats)
+    assert stats.failure_context["first_missing_key"] == key
+    assert stats.failure_context["missing_count"] == count
+
+
 @pytest.mark.parametrize(
     "defect,reason",
     [
         ("observations_only", "pre_assignment_forecasts_required"),
         ("late", "forecast_not_pre_assignment"),
-        ("null", "missing_forecast"),
+        ("infinite", "nonfinite_forecast"),
         ("duplicate", "forecast_keys"),
         ("absent", "forecast_keys"),
         ("text", "nonnumeric_forecast"),
@@ -204,25 +288,34 @@ def test_forecast_deadline_compares_exact_instants(
 )
 def test_only_complete_pre_assignment_measurements_can_adjust_a_mean(defect, reason):
     rows, forecasts = _paired()
+    options = {}
     if defect == "observations_only":
         forecasts = None
     elif defect == "late":
+        options["schedule"] = SwitchbackObservationSchedule(
+            assignments=rows.select("unit", "cycle", "period", "arm"), units=("a", "b"), cycles=2
+        )
+        rows = rows.with_columns(pl.lit(None).alias("sales"))
         forecasts = forecasts.with_columns(
             pl.when(pl.col("unit") == "b")
             .then(pl.col("assigned_at"))
             .otherwise(pl.col("forecast_at"))
             .alias("forecast_at")
         )
-    elif defect == "null":
-        forecasts = forecasts.with_columns(pl.lit(None, dtype=pl.Float64).alias("forecast"))
+    elif defect == "infinite":
+        forecasts = forecasts.with_columns(
+            pl.when(pl.col("unit") == "a").then(None).otherwise(float("inf")).alias("forecast")
+        )
     elif defect == "duplicate":
-        forecasts = pl.concat([forecasts, forecasts.head(1)])
+        forecasts = pl.concat([forecasts.slice(1), forecasts.tail(1)])
     elif defect == "absent":
         forecasts = forecasts.slice(1)
     else:
-        forecasts = forecasts.with_columns(pl.lit("3").alias("forecast"))
+        forecasts = forecasts.with_columns(
+            pl.when(pl.col("unit") == "a").then(None).otherwise(pl.lit("3")).alias("forecast")
+        )
     with pytest.raises((CapabilityError, InvalidRequestError)) as caught:
-        _build(rows, [_ADJUSTED], forecasts)
+        _build(rows, [_ADJUSTED], forecasts, **options)
     assert caught.value.context["reason"] == reason
     if defect == "observations_only":
         from tests.capability_consumers_scalar import SWITCHBACK_FORECAST

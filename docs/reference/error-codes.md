@@ -3162,6 +3162,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment.semantics.assignment`
 
+<span id="definition.assignment.fixed_count"></span>
+
+### `definition.assignment.fixed_count`
+
+**Cause and message:**
+
+<p>Cannot choose {treated_periods} treated positions in a fixed-count cycle of {periods_per_cycle} periods: use at least three periods and leave both arms present. For two periods use IndependentBernoulliOrder or SharedScheduleOrder with probability_ct=0.5.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `periods_per_cycle`, `treated_periods`
+
+**Registering modules:** `increment.semantics.assignment`
+
 <span id="definition.assignment.reject_bool"></span>
 
 ### `definition.assignment.reject_bool`
@@ -8690,6 +8706,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment.estimation.contrast`
 
+<span id="estimation.contrast.exposure"></span>
+
+### `estimation.contrast.exposure`
+
+**Cause and message:**
+
+<p>The stored exposure does not match the declared switchback law.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** —
+
+**Registering modules:** `increment.estimation.contrast_results`
+
 <span id="estimation.contrast.legacy_envelope"></span>
 
 ### `estimation.contrast.legacy_envelope`
@@ -8705,6 +8737,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 **Context keys:** `missing_fields`, `remedy`
 
 **Registering modules:** `increment.estimation.contrast_results`
+
+<span id="estimation.contrast.metric_components"></span>
+
+### `estimation.contrast.metric_components`
+
+**Cause and message:**
+
+<p>The retained components for {metric!r} must match the declared metric and independent replicate count.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `metric`
+
+**Registering modules:** `increment.estimation.contrast`
 
 <span id="estimation.contrast.one_sided_alpha"></span>
 
@@ -16016,7 +16064,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/builders.py#L49).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/builders.py#L50).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -19024,7 +19072,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/decision.py#L194).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/decision.py#L198).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -19040,7 +19088,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/decision.py#L209).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/decision.py#L213).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -19168,7 +19216,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/decision.py#L183).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/decision.py#L187).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -22556,7 +22604,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_evidence_dispatch.py#L31).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_evidence_dispatch.py#L36).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24808,7 +24856,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24818,13 +24866,29 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment.switchback`
 
+<span id="source.frame.switchback.assignment_unrecorded"></span>
+
+### `source.frame.switchback.assignment_unrecorded`
+
+**Cause and message:**
+
+<p>No assigned arm was recorded for unit {unit!r}, cycle {cycle}, period {period}. Supply the assignment log for the complete roster and cycle horizon.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `cycle`, `missing_cells`, `period`, `unit`
+
+**Registering modules:** `increment._frame_switchback_observations`
+
 <span id="source.frame.switchback.columns"></span>
 
 ### `source.frame.switchback.columns`
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24840,7 +24904,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24849,6 +24913,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 **Context keys:** `message`
 
 **Registering modules:** `increment.switchback`
+
+<span id="source.frame.switchback.event_coverage"></span>
+
+### `source.frame.switchback.event_coverage`
+
+**Cause and message:**
+
+<p>Metric {metric!r}: counting an absent event as zero requires both missing=&#x27;zero&#x27; and a complete event feed for that metric over every scheduled retained step.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `CapabilityError`
+
+**Context keys:** `metric`, `reason`
+
+**Registering modules:** `increment._frame_switchback_observations`
 
 <span id="source.frame.switchback.identification"></span>
 
@@ -24872,7 +24952,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24888,7 +24968,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24904,7 +24984,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24913,6 +24993,22 @@ The cause depends on the supplied context; read the raised message. [Message rul
 **Context keys:** `message`
 
 **Registering modules:** `increment.switchback`
+
+<span id="source.frame.switchback.observation_design"></span>
+
+### `source.frame.switchback.observation_design`
+
+**Cause and message:**
+
+<p>Invalid switchback observation schedule: {reason} ({field}).</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `InvalidRequestError`
+
+**Context keys:** `field`, `reason`
+
+**Registering modules:** `increment._frame_switchback_observations`
 
 <span id="source.frame.switchback.plan"></span>
 
@@ -24930,13 +25026,29 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Registering modules:** `increment.decision`
 
+<span id="source.frame.switchback.response_unobserved"></span>
+
+### `source.frame.switchback.response_unobserved`
+
+**Cause and message:**
+
+<p>Metric {metric!r} cannot supply a complete planning pilot: {missing_count} retained steps lack a measurement. The first is {first_missing_key!r}, assigned to {arm!r}.</p>
+
+**Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
+
+**Error class:** `CapabilityError`
+
+**Context keys:** `arm`, `first_missing_key`, `metric`, `missing_count`, `reason`
+
+**Registering modules:** `increment._frame_switchback_observations`
+
 <span id="source.frame.switchback.schedule"></span>
 
 ### `source.frame.switchback.schedule`
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -24952,7 +25064,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L75).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/switchback.py#L93).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25792,7 +25904,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/tables.py#L103).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/tables.py#L104).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25876,7 +25988,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25892,7 +26004,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25908,7 +26020,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25924,7 +26036,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25940,7 +26052,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25956,7 +26068,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 
@@ -25972,7 +26084,7 @@ The cause depends on the supplied context; read the raised message. [Message rul
 
 **Cause and message:**
 
-The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L29).
+The cause depends on the supplied context; read the raised message. [Message rule](https://github.com/kylejcaron/increment/blob/main/increment/_unit_cycle.py#L30).
 
 **Action:** Check the named inputs against the message before retrying. [Recovery guidance](../guides/refusals.md#find-the-next-step-by-code-family).
 

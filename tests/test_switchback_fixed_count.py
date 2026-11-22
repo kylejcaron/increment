@@ -13,10 +13,13 @@ import pytest
 from increment import from_switchback_frame
 from increment.errors import InvalidRequestError
 from increment.estimation.contrast_results import ContrastResult
+from increment.estimation.decision_types import ContrastDecisionProcedure, PValueEvidence
+from increment.estimation.results import contrast_p_value, contrast_rejection_side
 from increment.estimators import FixedCountOrder, SwitchbackAssignment, SwitchbackWindow
 from increment.semantics.design import Randomized
+from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.workflows import assignment_diagnostic
-from tests.analysis_factory import contrast_rows, view_readout
+from tests.analysis_factory import bound_source, contrast_rows, view_readout
 
 
 def _assignment(k, m, grain):
@@ -209,6 +212,61 @@ def test_fixed_count_preserves_small_contrasts_between_large_integer_totals():
     assert result.estimate is not None
     assert result.estimate.value == 2
     assert result.standard_error == pytest.approx(1 / math.sqrt(3))
+
+
+@pytest.mark.parametrize(
+    ("grain", "offsets", "mean_offset"),
+    [
+        ("shared_block", (-1, 0, 1), 0),
+        ("unit_cycle", (1, 0, -1), 0),
+        ("shared_block", (4, 3, 2), 3),
+    ],
+)
+def test_sub_ulp_replicate_differences_retain_the_null_test(grain, offsets, mean_offset):
+    from scipy.stats import t
+
+    from increment.estimation.contrast import estimate_contrast
+
+    d = 2**55
+    rows = [
+        {
+            "u": f"unit-{i}" if grain == "unit_cycle" else "one",
+            "c": 0 if grain == "unit_cycle" else i,
+            "p": p,
+            "s": s,
+            "arm": "B" if p == i else "A",
+            "response": d + offset if s == 2 and p == i else 0,
+        }
+        for i, offset in enumerate(offsets)
+        for p in range(3)
+        for s in range(4)
+    ]
+    _, reader = _build(rows, _assignment(3, 1, grain))
+    source = bound_source(reader)
+    computed = estimate_contrast(
+        source.contrast_stats(source.metrics[0]),
+        ContrastDecisionProcedure(
+            reference=UnitCycleTApproximation() if grain == "unit_cycle" else None,
+            metric="response",
+            role="primary",
+            alternative="two-sided",
+            null_abs=d,
+            alpha=0.05,
+        ),
+    )
+
+    # All three integers round to d, but M2 = (-1)**2 + 0**2 + 1**2.
+    (result,) = computed.results
+    assert result.standard_error == pytest.approx(1 / math.sqrt(3))
+    assert result.estimate is not None and result.estimate.value == d
+    assert result.estimate.lb == (d if mean_offset else math.nextafter(d, -math.inf))
+    assert result.estimate.ub == math.nextafter(d, math.inf)
+    expected_p = 2 * t.sf(mean_offset * math.sqrt(3), 2)
+    (evidence,) = computed.evidence.values()
+    assert isinstance(evidence, PValueEvidence) and evidence.p_value == pytest.approx(expected_p)
+    restored = ContrastResult.model_validate_json(result.model_dump_json())
+    assert contrast_p_value(restored) == pytest.approx(expected_p)
+    assert contrast_rejection_side(restored) == ("greater" if mean_offset else None)
 
 
 def test_fixed_count_ledger_keeps_all_assigned_cells_without_a_paired_order_test():
