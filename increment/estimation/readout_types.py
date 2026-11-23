@@ -396,6 +396,11 @@ class FamilyScope(_ReadoutModel):
     members: tuple[CellKey, ...]
     complete: bool
 
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Older saved families had no registered policy interval."""
+        super().__setstate__(state)
+        self.__dict__.setdefault("policy_interval", None)
+
     @field_validator("identity_look", mode="before")
     @classmethod
     def _decode_identity_look(cls, value):
@@ -657,6 +662,11 @@ class ReadoutMetadata(_ReadoutModel):
         default_factory=dict, exclude_if=lambda value: not value
     )
     captures: tuple[ReadoutCapture, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Older saved reports had no spillover registration."""
+        super().__setstate__(state)
+        self.__dict__.setdefault("registration_hash", None)
 
     @field_validator("effective_modes", mode="before")
     @classmethod
