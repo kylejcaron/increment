@@ -1057,6 +1057,7 @@ _DISPOSITION_RECORDS += tuple(
 
 # The stored panels predate ratio contrasts and period-level forecast adjustment.
 _SWITCHBACK_PANEL = "from_switchback_panel"
+UNIT_T_CAPTURE = ("audit-switchback-neighboring-integers", _SWITCHBACK_PANEL)
 _DISPOSITION_RECORDS += tuple(
     ExpectedDifference(
         scenario=scenario,
@@ -1405,6 +1406,19 @@ READOUT_IDENTITY_DIFFERENCES += (
         for metric, frozen, current in _MIXED_LOCAL_MOMENTS
     ),
 )
+
+
+def without_unit_t_advisory(metadata: Any) -> dict[str, Any]:
+    """Validate the warning added to the frozen unit-t result before comparing its old fields."""
+    (record,) = metadata["cells"]
+    assert record["cell"]["method"] == "switchback_unit_t_approximation"
+    assert record["failure"] is None
+    (warning,) = record["advisories"]
+    assert warning["code"] == "estimation.contrast.approximate_t"
+    assert warning["context"] == {"reference": "unit_t_approximation"}
+    assert warning["severity"] == "warning"
+    assert isinstance(warning["message"], str) and warning["message"].strip()
+    return {**metadata, "cells": [{**record, "advisories": []}]}
 
 
 def without_guardrail_segments(rows: Any, metric: str, *, dropped: int) -> Any:

@@ -3821,7 +3821,11 @@ def _rebind_metadata_artifact_provenance(expected, provenance, transcript, recor
 
 def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *, merged):
     from increment.result_envelope import AnalysisEnvelope
-    from tests.parity_harness.expected_differences import without_relative_late_p_value
+    from tests.parity_harness.expected_differences import (
+        UNIT_T_CAPTURE,
+        without_relative_late_p_value,
+        without_unit_t_advisory,
+    )
     from tests.test_evidence_identity_parity import (
         _compare,
         _metadata_without_modes,
@@ -3869,6 +3873,8 @@ def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *
     comparable = _post_capture_row_projection(expected, _metadata_without_modes(actual))
     comparable = _project_post_capture_artifact_digests(expected, comparable)
     comparable = without_relative_late_p_value(expected, comparable, results)
+    if (transcript.scenario_id, transcript.ingress) == UNIT_T_CAPTURE:
+        comparable = without_unit_t_advisory(comparable)
     try:
         _compare(_metadata_without_modes(expected), comparable)
     except AssertionError as error:

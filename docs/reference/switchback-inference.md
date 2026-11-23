@@ -147,12 +147,12 @@ same order weights as the outcome. Regress the outcome contrasts on the
 forecast contrasts with an intercept. The adjusted point is the intercept
 at forecast contrast zero, its *randomization* expectation; subtracting
 the observed forecast mean would change the answer. Refit without each
-independent unit or block in turn. The jackknife standard error uses the
-variation in those intercepts, with a t reference on `n-2` degrees of
-freedom. A constant predictor gives no adjusted point (`rank_deficient`);
-if deleting one replicate makes the slope unidentified, the full-fit point
-is descriptive only (`high_leverage`). Neither fit falls back to an
-unadjusted decision.
+independent unit or block in turn. The variation in those intercepts gives
+the jackknife standard error; reordering the units or blocks does not change
+it. The t reference has `n-2` degrees of freedom. A constant predictor gives
+no adjusted point (`rank_deficient`). If deleting one replicate makes the
+slope unidentified, the full-fit point is descriptive only (`high_leverage`).
+Neither fit falls back to an unadjusted decision.
 
 For both metrics, the test subtracts the declared threshold before rounding
 the effect for display. This matters when a guardrail sits within a few

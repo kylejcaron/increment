@@ -109,6 +109,16 @@ def test_cuped_refits_slope_on_each_deletion_even_at_large_offset(exponent):
     assert fit.se == pytest.approx(ldexp(expected_se, exponent), rel=1e-12, abs=0.0)
 
 
+def test_cuped_uncertainty_does_not_depend_on_replicate_order():
+    x = [0, 1, 0, 1, 0, 1]
+    y = [-4, -5, 5, -1, -1, -8]
+    # Dropping an x=0 row gives intercepts 2, -5/2 and 1/2; the other three give 0.
+    forward = switchback_cuped(y, x)
+    backward = switchback_cuped(y[::-1], x[::-1])
+    assert forward.se == pytest.approx(sqrt(35 / 4))
+    assert backward.se == forward.se
+
+
 def test_exact_ht_inputs_retain_adjusted_effect_after_removing_large_slope():
     # Rescaling x by 1/3 and adding any multiple of x to y leaves the
     # intercept unchanged in both the full data and every separate refit.

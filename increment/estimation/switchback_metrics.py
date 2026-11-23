@@ -194,7 +194,9 @@ def _jackknife_variance(deleted: list[Fraction], unit: Fraction) -> Fraction:
     # rounding, rather than growing their common denominator with sample size.
     scaled = np.fromiter((float((v - low) / span) for v in deleted), dtype=float, count=n)
     scaled -= math.fsum(scaled) / n
-    return Fraction(float(scaled @ scaled)) * Fraction(n - 1, n) * (span * unit) ** 2
+    # BLAS can sum these squares in a different order for the same replicates.
+    np.square(scaled, out=scaled)
+    return Fraction(math.fsum(scaled)) * Fraction(n - 1, n) * (span * unit) ** 2
 
 
 def _adjusted_fit(x: np.ndarray, y: np.ndarray, unit: Fraction) -> SwitchbackMetricFit:
