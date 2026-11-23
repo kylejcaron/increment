@@ -172,6 +172,10 @@ gates, not observed results.
   [reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
   [Measured coverage with few units or blocks](reference/switchback-inference.md#coverage-with-few-units-or-blocks)
   separates returned intervals from all attempted experiments.
+  [Ratio and forecast-adjustment checks](reference/validation-evidence.md#switchback-unit-cycle-t)
+  verify their calculations separately; they do not inherit the unadjusted
+  mean's measured coverage. [Pilot-profile planning checks](reference/validation-evidence.md#switchback-planning)
+  verify simulated power under the chosen model, not the model's fit to a future experiment.
 - **Two-stage offers, rejected method:** With 40 groups per offer level,
   one influential untreated outcome per group, and 99% versus 1% treated,
   a proposed 5% Normal test called a change on **22.15%** of assignments

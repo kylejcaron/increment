@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 
 def _cell_record(cell: CellKey, row: ContrastResult, snapshot_id: str) -> CellRecord:
-    if row.failure_code is None:
+    if row.sampling_available:
         note = row.reference_qualification
         advisories = (
             ()
@@ -50,16 +50,13 @@ def _cell_record(cell: CellKey, row: ContrastResult, snapshot_id: str) -> CellRe
             )
         )
         return CellRecord(cell=cell, source_snapshot_id=snapshot_id, advisories=advisories)
-    assert row.failure_context is not None
+    code, context = row.sampling_reason_code, row.sampling_reason_context
+    assert code is not None and context is not None
     return CellRecord(
         cell=cell,
         source_snapshot_id=snapshot_id,
-        failure=CellFailure(
-            hypothesis=cell.hypothesis(), code=row.failure_code, context=row.failure_context
-        ),
-        sampling=SamplingInference(
-            available=False, reason_code=row.failure_code, reason_context=row.failure_context
-        ),
+        failure=CellFailure(hypothesis=cell.hypothesis(), code=code, context=context),
+        sampling=SamplingInference(available=False, reason_code=code, reason_context=context),
     )
 
 
@@ -143,7 +140,7 @@ def scope_contrast_results(
     )
 
     metric_types = declared_metric_types(metrics)
-    unavailable = tuple(sorted(row.metric for row in results if row.failure_code is not None))
+    unavailable = tuple(sorted(row.metric for row in results if not row.sampling_available))
     complete = not unavailable
     scope_reason = {"unavailable_metrics": unavailable} if unavailable else None
     stamped = [

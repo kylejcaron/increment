@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
@@ -84,7 +84,7 @@ _TYPED_REPORT_MODELS = {
 
 
 def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
-    if identity.key.kind == "contrast" and getattr(row, "failure_code", None) is not None:
+    if identity.key.kind == "contrast" and getattr(row, "sampling_available", None) is False:
         return project_effect(row)
     if hasattr(row, "lift"):
         effect = project_effect(row)
@@ -317,6 +317,13 @@ class ResultCell:
     row_kind: str = "lift_estimate"
     row_payload: Mapping[str, JsonValue] | None = None
     posterior_queries: tuple[_PosteriorQueryProjection, ...] = ()
+    # Keep historical serialized projections for manifest checks, not for current reporting.
+    _saved_projection: tuple[Component, EffectEstimate | None] | None = field(
+        default=None, repr=False, compare=False
+    )
+    _derived_projection: tuple[Component, EffectEstimate | None] | None = field(
+        default=None, repr=False, compare=False
+    )
     supports: Mapping[Literal["sampling", "posterior", "sequential"], frozenset[Operation]] = field(
         init=False
     )
@@ -935,6 +942,14 @@ class ResultCell:
         )
 
     def to_payload(self) -> dict[str, JsonValue]:
+        summary = self.summary
+        saved_projection = (
+            self._saved_projection
+            if self._derived_projection == (self.components["sampling"], summary)
+            else None
+        )
+        if saved_projection is not None:
+            summary = saved_projection[1]
         sampling_state = self.components["sampling"][1]
         if sampling_state is None:
             row_payload = None
@@ -942,6 +957,8 @@ class ResultCell:
             row_payload = _plain(sampling_state.fields)
         comps: dict[str, JsonValue] = {}
         for name, (status, state) in self.components.items():
+            if name == "sampling" and saved_projection is not None:
+                status, state = saved_projection[0]
             component: dict[str, JsonValue] = {
                 "status": {
                     "state": status.state,
@@ -993,19 +1010,7 @@ class ResultCell:
                     self.provenance.source_declaration_identity_unavailable_reason
                 ),
             },
-            "summary": None
-            if self.summary is None
-            else {
-                "point": self.summary.point,
-                "lower": self.summary.lower,
-                "upper": self.summary.upper,
-                "alpha": self.summary.alpha,
-                "value_scale": self.summary.value_scale,
-                "reason": self.summary.reason,
-                "geometry": self.summary.geometry,
-                "intervals": self.summary.intervals,
-                "qualification": self.summary.qualification,
-            },
+            "summary": None if summary is None else asdict(summary),
         }
 
     @classmethod
@@ -1119,6 +1124,7 @@ class ResultCell:
             summary_data["intervals"] = tuple(
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
+        saved_projection = derived_projection = None
         if row is not None:
             sampling_state = components["sampling"][0].state
             sequential_state = components["sequential"][0].state
@@ -1130,6 +1136,27 @@ class ResultCell:
         elif row_payload is not None and row_kind in _TYPED_REPORT_MODELS:
             typed_row = _restore_typed_report_row(row_kind, row_payload)
             summary = _report_summary(typed_row, identity)
+            if (
+                identity.key.kind == "contrast"
+                and not typed_row.sampling_available
+                and typed_row.failure_code is None
+            ):
+                saved_projection = (
+                    components["sampling"],
+                    None if summary_data is None else EffectEstimate(**summary_data),
+                )
+                code = typed_row.sampling_reason_code
+                context = typed_row.sampling_reason_context
+                components["sampling"] = (
+                    ComponentStatus(
+                        "unavailable",
+                        code=code,
+                        reason=_failure_text(code, context, typed_row.metric),
+                        context=context,
+                    ),
+                    None,
+                )
+                derived_projection = (components["sampling"], summary)
         else:
             summary = None if summary_data is None else EffectEstimate(**summary_data)
         return cls(
@@ -1145,6 +1172,8 @@ class ResultCell:
             projection_fields=saved.get("projection_fields") or {},
             row_kind=row_kind,
             row_payload=row_payload,
+            _saved_projection=saved_projection,
+            _derived_projection=derived_projection,
             posterior_queries=tuple(
                 _PosteriorQueryProjection.model_validate(query)
                 for query in saved.get("posterior_queries", ())
@@ -1164,7 +1193,7 @@ class ResultCell:
                 "family": None if cell.family is None else _json(cell.family),
                 "source_snapshot_id": cell.source_snapshot_id,
                 "provenance": _json(payload["provenance"]),
-                "summary": None if cell.summary is None else _json(payload["summary"]),
+                "summary": None if cell.summary is None else _json(asdict(cell.summary)),
                 "point": None if cell.summary is None else cell.summary.point,
                 "lower": None if cell.summary is None else cell.summary.lower,
                 "upper": None if cell.summary is None else cell.summary.upper,

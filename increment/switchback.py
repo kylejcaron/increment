@@ -1792,6 +1792,9 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
 
     window = assignment.window
     total_steps = window.washout_steps + window.observation_steps
+    step_domain = range(
+        0 if schedule is None else window.washout_steps + window.carryover_order, total_steps
+    )
 
     nwf, missing = reconcile_switchback_observations(
         eager_frame(frame),
@@ -1820,7 +1823,7 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
         cycle=cycle,
         period=period,
         step=step,
-        total_steps=total_steps,
+        step_domain=step_domain,
         periods_per_cycle=assignment.periods_per_cycle,
         reject_missingness=_reject_missingness,
         reject_domain=_reject_domain,
@@ -1834,19 +1837,14 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
     available = [spec for spec in specs if spec.name not in missing]
     ordinary = [spec for spec in available if spec.type != "ratio" and spec.name not in forecasts]
     joint = [spec for spec in available if spec.type == "ratio" or spec.name in forecasts]
-    measured = (
-        nwf
-        if schedule is None
-        else nwf.filter(nw.col(step) >= window.washout_steps + window.carryover_order)
-    )
     _validate_switchback_metric_values(
-        measured,
+        nwf,
         ordinary,
         reject_missingness=_reject_missingness,
         reject_numeric=_reject_numeric,
     )
     validate_metric_columns(
-        measured, joint, reject_numeric=_reject_numeric, reject_missingness=_reject_missingness
+        nwf, joint, reject_numeric=_reject_numeric, reject_missingness=_reject_missingness
     )
     units = set(nwf[unit].unique().to_list())
     sequence = assignment.sequence
@@ -1870,7 +1868,7 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
         control=control,
         treatment=treatment,
         cycles=cycles,
-        total_steps=total_steps,
+        step_domain=step_domain,
         periods_per_cycle=assignment.periods_per_cycle,
         treated_periods=sequence.treated_periods if isinstance(sequence, FixedCountOrder) else 1,
         reject_missingness=_reject_missingness,
@@ -1964,6 +1962,7 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
             reject_units=_reject_units,
         )
 
+    scheduled_periods = len(units) * len(cycles) * assignment.periods_per_cycle
     diagnostics = SwitchbackAssignmentDiagnostic(
         probability_ct=None if isinstance(sequence, FixedCountOrder) else sequence.probability_ct,
         periods_per_cycle=assignment.periods_per_cycle
@@ -1984,11 +1983,9 @@ def from_switchback_panel(  # noqa: PLR0913, PLR0915
         washout_steps=window.washout_steps,
         observation_steps=window.observation_steps,
         retained_steps=window.observation_steps - window.carryover_order,
-        washout_rows=int(nwf.filter(nw.col(step) < window.washout_steps).shape[0]),
-        observation_rows=int(nwf.filter(nw.col(step) >= window.washout_steps).shape[0]),
-        retained_rows=int(
-            nwf.filter(nw.col(step) >= window.washout_steps + window.carryover_order).shape[0]
-        ),
+        washout_rows=scheduled_periods * window.washout_steps,
+        observation_rows=scheduled_periods * window.observation_steps,
+        retained_rows=scheduled_periods * (window.observation_steps - window.carryover_order),
         carryover_order=window.carryover_order,
         integrity_failures=(),
     )

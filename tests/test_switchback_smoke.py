@@ -104,7 +104,7 @@ def test_zero_variance_contrast_is_not_stat_sig():
     assert result.standard_error == 0.0
     assert result.estimate.lb is None and result.estimate.ub is None
     row = contrast_results_to_readout([result])[0]
-    assert row["stat_sig"] is False
+    assert row["stat_sig"] is None
     assert result.sampling_available is False and result.decision_scope_complete is False
     (cell,) = saved.cells
     status, _ = cell.components["sampling"]
@@ -240,7 +240,7 @@ def test_shared_schedule_zero_variance_contrast_is_not_stat_sig():
     assert flags.row(0) == (False, False, 0)
     row = contrast_results_to_readout([result])[0]
     assert (row["lower"], row["higher"], row["level"]) == (None, None, None)
-    assert row["stat_sig"] is False
+    assert row["stat_sig"] is None
     assert row["n_blocks"] == 2
 
 

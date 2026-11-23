@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 from datetime import date
+from pathlib import Path
+from shutil import copytree
 
 import polars as pl
 import pytest
@@ -273,6 +275,89 @@ def test_constant_fixed_count_effect_keeps_point_but_not_a_test_in_saved_reports
     from increment.tables import readout_table
 
     assert advisory.message in readout_table(report).gt().as_raw_html()
+
+
+@pytest.mark.integration
+def test_legacy_zero_se_report_preserves_identity_without_claiming_sampling(tmp_path):
+    from increment.estimation.contrast_results import ContrastResult, ContrastResults
+    from increment.estimation.results import contrast_p_value, contrast_stat_sig
+    from increment.result_envelope import AnalysisEnvelope
+    from increment.tables import readout_table
+
+    # Public paired CT/TC run at 77ab667b227b2005e18bcc3d0f56c23b6aaec651:
+    # Two units, one cycle, control 0, treatment 2. JSON adds only a final newline.
+    fixture = Path(__file__).parent / "fixtures" / "switchback_legacy"
+    saved_json = (fixture / "base-readout.json").read_text()
+    original = json.loads(saved_json)
+    row_json = json.dumps(original["rows"][0], separators=(",", ":"))
+    row = ContrastResult.model_validate_json(row_json)
+    report = ReadoutResults.model_validate_json(saved_json)
+    code = "evidence.p_value.unavailable"
+    context = {"metric": "y", "reason": "zero_standard_error"}
+    assert row.estimate is not None and row.estimate.value == 2
+    assert row.estimate.lb is row.estimate.ub is None
+    assert contrast_p_value(row) is contrast_stat_sig(row) is None
+    assert not row.sampling_available
+    assert (row.sampling_reason_code, row.sampling_reason_context) == (code, context)
+    assert row.model_dump_json() == row_json
+    assert json.loads(report.model_dump_json()) == original
+
+    (frame,) = report.to_frame(backend="polars").to_dicts()
+    (table,) = estimates_to_readout(report)
+    for projection in (frame, table):
+        assert projection["point_available"] and not projection["sampling_available"]
+        assert projection["decision_scope_complete"] is False
+        assert projection["failure_code"] == code
+        failure_context = projection["failure_context"]
+        assert isinstance(failure_context, str)
+        assert json.loads(failure_context) == context
+        assert (
+            projection["required_cell_count"],
+            projection["available_cell_count"],
+            projection["unavailable_cell_count"],
+        ) == (1, 0, 1)
+    assert frame["estimate"] == table["lift"] == 2
+    assert table["lower"] is table["higher"] is table["level"] is table["stat_sig"] is None
+
+    store_path = copytree(fixture / "store", tmp_path / "store")
+    (stored_path,) = store_path.glob("*.parquet")
+    original_bytes = stored_path.read_bytes()
+    import pyarrow.parquet as pq
+
+    manifest = json.loads(pq.read_schema(stored_path).metadata[b"increment.run_manifest.v2"])
+    store = ParquetResultsStore(store_path)
+    handle = store.open_run(
+        manifest["experiment_id"], manifest["analysis_spec_hash"], manifest["run_id"]
+    )
+    assert handle.run.manifest_hash == manifest["manifest_hash"]
+    assert handle.run.registration_hash == manifest["registration_hash"]
+    assert handle.run.execution_identity_hash == manifest["execution_identity_hash"]
+    envelope = handle.envelope()
+    (stored_cell,) = envelope.cells
+    assert stored_cell.identity.hash() == manifest["cell_scope_hashes"][0][0]
+    assert stored_cell.row_payload is not None
+    assert stored_cell.row_payload["data"] == row.model_dump(mode="json")
+    (cell,) = ContrastResults([row]).as_cells()
+    for restored in (cell, stored_cell, AnalysisEnvelope.from_arrow(envelope.to_arrow()).cells[0]):
+        status, _ = restored.components["sampling"]
+        assert (status.state, status.code, status.context) == ("unavailable", code, context)
+        assert restored.summary is not None and restored.summary.point == 2
+        assert restored.summary.lower is restored.summary.upper is restored.summary.alpha is None
+        assert restored.summary.reason == "zero_standard_error"
+    (query,) = store.query(
+        manifest["experiment_id"], manifest["analysis_spec_hash"], manifest["run_id"]
+    ).to_pylist()
+    assert query["point"] == 2 and query["reason_code"] == code
+    assert query["lower"] is query["upper"] is query["alpha"] is None
+    for rendered in (
+        str(report),
+        render(envelope, audience="brief"),
+        render(envelope, audience="full"),
+        readout_table(envelope).gt().as_raw_html(),
+    ):
+        assert code in rendered or "zero_standard_error" in rendered
+        assert "95%" not in rendered and "95.0%" not in rendered
+    assert stored_path.read_bytes() == original_bytes
 
 
 @pytest.mark.integration

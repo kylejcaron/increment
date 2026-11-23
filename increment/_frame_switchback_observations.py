@@ -362,16 +362,19 @@ def _align(
     indices: dict[_Step, int],
     retained: range,
 ) -> nw.DataFrame[Any]:
-    total = retained.stop
-    if len(indices) == len(arms) * total:
-        if axes.group in frame.columns:
-            return frame
-        return frame.with_columns(
+    expected_rows = len(arms) * (retained.stop - retained.start)
+    observed = frame.filter(nw.col(axes.step) >= retained.start) if retained.start else frame
+    if len(observed) == expected_rows:
+        if axes.group in observed.columns:
+            return observed
+        return observed.with_columns(
             nw.new_series(
-                axes.group, [arms[u, c, p] for u, c, p, _ in indices], backend=frame.implementation
+                axes.group,
+                [arms[u, c, p] for u, c, p in observed.select(*axes.keys[:3]).iter_rows()],
+                backend=frame.implementation,
             )
         )
-    if len(arms) * total > sys.maxsize // 8:
+    if expected_rows > sys.maxsize // 8:
         refuse(
             _INVALID_DESIGN, field="steps", reason="the scheduled panel exceeds the row count limit"
         )
@@ -399,7 +402,7 @@ def _align(
         },
         backend=backend,
     )
-    grid = cells.join(nw.from_dict({axes.step: range(total)}, backend=backend), how="cross")
+    grid = cells.join(nw.from_dict({axes.step: retained}, backend=backend), how="cross")
     idx = "__observation_row"
     while idx in frame.columns or idx in grid.columns:
         idx += "_"
@@ -412,7 +415,7 @@ def _align(
     else:
         payload = payload.with_row_index(idx).with_columns(nw.col(idx).cast(nw.Int64))
         aligned = grid.join(payload, on=idx, how="left")
-    absent = (nw.col(idx) == -1) & (nw.col(axes.step) >= retained.start)
+    absent = nw.col(idx) == -1
     zeros = []
     schema = frame.schema
     for col in dict.fromkeys(spec.y_column for spec in specs if spec.missing == "zero"):

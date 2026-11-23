@@ -383,15 +383,23 @@ class ContrastResult(_FixedCountMetadata):
 
     @property
     def sampling_available(self) -> bool:
-        return self.failure_code is None
+        return self.sampling_reason_code is None
 
     @property
     def sampling_reason_code(self) -> str | None:
-        return self.failure_code
+        if self.failure_code is not None:
+            return self.failure_code
+        if self.method != "switchback_unit_variance_envelope" and self.standard_error == 0:
+            return "evidence.p_value.unavailable"
+        return None
 
     @property
     def sampling_reason_context(self) -> Mapping[str, object] | None:
-        return self.failure_context
+        if self.failure_context is not None:
+            return self.failure_context
+        if self.sampling_reason_code is not None:
+            return freeze({"metric": self.metric, "reason": "zero_standard_error"})
+        return None
 
     @property
     def reference_qualification(self) -> str | None:
@@ -718,7 +726,8 @@ class ContrastResult(_FixedCountMetadata):
             f"randomization_law={self.randomization_law!r}, "
             f"independence_grain={self.independence_grain!r}, "
             f"carryover_order={self.carryover_order}, retained_steps={self.retained_steps}, "
-            f"reference={self.reference!r}, decision_scope={self.decision_scope_complete!r})"
+            f"reference={self.reference!r}, "
+            f"decision_scope={self.decision_scope_complete if self.sampling_available else False!r})"
         )
 
     __str__ = __repr__
@@ -997,6 +1006,8 @@ class ContrastResults(list[ContrastResult]):
                         if value is None
                         else json.dumps(thaw(value), sort_keys=True, separators=(",", ":"))
                     )
+                elif name == "decision_scope_complete" and not result.sampling_available:
+                    data[name].append(False)
                 else:
                     data[name].append(getattr(result, name))
         return data

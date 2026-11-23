@@ -2775,13 +2775,13 @@ def contrast_p_value(result: ContrastResult) -> float | None:
 
 def contrast_stat_sig(result: ContrastResult) -> bool | None:
     """Return the contrast's table/readout decision verdict."""
-    if result.failure_code is not None:
+    if not result.sampling_available:
         return None
     if result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t"):
         p = contrast_p_value(result)
         return None if p is None else p < result.alpha
     if not contrast_evidence_available(result):
-        return False
+        return None
     estimate = result.estimate
     assert estimate is not None
     if (p := _contrast_residual_p_value(result)) is not None:

@@ -2222,18 +2222,18 @@ def _range_cardinality(values: range) -> int:
     return 0 if distance <= 0 else (distance - 1) // step + 1
 
 
-def _first_missing_switchback_step(observed_steps: set[int], total_steps: int) -> int | None:
-    """Find the first missing nonnegative step without scanning the whole range."""
-    candidate = 0
+def _first_missing_switchback_step(observed_steps: set[int], step_domain: range) -> int | None:
+    """Find the first missing step without scanning the contiguous domain."""
+    candidate = step_domain.start
     for current_step in sorted(observed_steps):
         if current_step < candidate:
             continue
-        if current_step >= total_steps:
+        if current_step >= step_domain.stop:
             break
         if current_step > candidate:
             return candidate
         candidate += 1
-    return candidate if candidate < total_steps else None
+    return candidate if candidate < step_domain.stop else None
 
 
 def _switchback_integral_domain(
@@ -2317,7 +2317,7 @@ def _validate_switchback_domains(
     cycle: str,
     period: str,
     step: str,
-    total_steps: int,
+    step_domain: range,
     periods_per_cycle: int = 2,
     reject_missingness: Callable[..., NoReturn],
     reject_domain: Callable[..., NoReturn],
@@ -2353,7 +2353,7 @@ def _validate_switchback_domains(
     steps = _switchback_integral_domain(
         frame,
         column=step,
-        expected=range(total_steps),
+        expected=step_domain,
         label="step",
         reject=reject_domain,
     )
@@ -2389,7 +2389,7 @@ def _validate_switchback_schedule(
     control: str,
     treatment: str,
     cycles: Sequence[int],
-    total_steps: int,
+    step_domain: range,
     periods_per_cycle: int = 2,
     treated_periods: int = 1,
     reject_missingness: Callable[..., NoReturn],
@@ -2425,7 +2425,7 @@ def _validate_switchback_schedule(
 
     ordered_units = sorted(observed_by_unit, key=repr)
     cycle_count = _range_cardinality(cycles) if isinstance(cycles, range) else len(cycles)
-    expected_per_unit = cycle_count * periods_per_cycle * total_steps
+    expected_per_unit = cycle_count * periods_per_cycle * _range_cardinality(step_domain)
     missing_by_unit = {
         value: expected_per_unit - observed_by_unit[value]
         for value in ordered_units
@@ -2449,7 +2449,7 @@ def _validate_switchback_schedule(
                 for current_period in range(periods_per_cycle):
                     missing_step = _first_missing_switchback_step(
                         unit_steps.get((current_cycle, current_period), set()),
-                        total_steps,
+                        step_domain,
                     )
                     if missing_step is not None:
                         missing_examples.append(

@@ -56,7 +56,7 @@ def _observed() -> pl.DataFrame:
     )
 
 
-def _build(rows, schedule, *metrics):
+def _build(rows, schedule, *metrics, assignment=None):
     return from_switchback_frame(
         rows,
         schedule=schedule,
@@ -67,8 +67,38 @@ def _build(rows, schedule, *metrics):
         group="arm",
         metrics=metrics or {"orders": "mean"},
         identification=_identification(),
-        assignment=_assignment(p_ct=0.5, carryover_order=1),
+        assignment=assignment or _assignment(p_ct=0.5, carryover_order=1),
     )
+
+
+@pytest.mark.parametrize("discard", ["washout", "carryover"])
+def test_sparse_events_with_large_discarded_window_keep_estimates_and_schedule_counts(discard):
+    discarded = 2**52
+    washout = discarded if discard == "washout" else 0
+    carryover = discarded - washout
+    assignment = _assignment(
+        washout=washout, observation=carryover + 1, carryover_order=carryover, p_ct=0.5
+    )
+    cycles = pl.DataFrame({"cycle": range(64)})
+    log = _log().filter(pl.col("cycle") == 0).drop("cycle").join(cycles, how="cross")
+    schedule = replace(_schedule("orders"), assignments=log, cycles=64)
+    rows = (
+        _observed()
+        .filter((pl.col("cycle") == 0) & (pl.col("step") == 2) & (pl.col("orders") != 0))
+        .with_columns(pl.lit(discarded).alias("step"))
+        .drop("cycle")
+        .join(cycles, how="cross")
+    )
+    events = MetricSpec(name="orders", missing="zero")
+    experiment, reader = _build(rows, schedule, events, assignment=assignment)
+    with reader:
+        (result,) = view_readout(experiment, reader)
+        diagnostic = workflows.assignment_diagnostic(experiment, reader)
+    assert (result.estimate.value, result.standard_error) == pytest.approx((3, 1))
+    assert (result.n_units, result.n_cycles, result.retained_steps) == (2, 128, 1)
+    assert diagnostic.washout_rows == 256 * washout
+    assert diagnostic.observation_rows == 256 * (carryover + 1)
+    assert diagnostic.retained_rows == 256
 
 
 @pytest.mark.parametrize(
@@ -181,24 +211,29 @@ def test_observation_keys_and_labels_corroborate_the_log_even_in_washout(defect)
 
 @pytest.mark.parametrize("dtype", ["Int64", "UInt64"])
 def test_pandas_sparse_event_alignment_preserves_neighboring_integers(dtype):
-    rows = _observed().slice(1).drop("arm").reverse().to_pandas()
+    rows = _observed().filter(pl.col("step") == 2).drop("arm").reverse().to_pandas()
     rows["orders"] = (2**55 + rows["orders"].astype("int64") // 2).astype(dtype)
     metric = MetricSpec(name="events", value_column="orders", missing="zero")
-    schedule = replace(_schedule("events"), units=("b", "a"), assignments=_log().reverse())
+    absent_unit = _log().filter(pl.col("unit") == "a").with_columns(pl.lit("c").alias("unit"))
+    schedule = replace(
+        _schedule("events"),
+        units=("c", "b", "a"),
+        assignments=pl.concat([_log(), absent_unit]).reverse(),
+    )
     experiment, reader = _build(rows, schedule, metric)
     with reader:
         (result,) = view_readout(experiment, reader)
-    # Removing one washout row does not change unit contrasts of exactly 1 and 2.
-    assert (result.estimate.value, result.standard_error) == pytest.approx((1.5, 0.5))
-    assert (result.n_units, result.n_cycles, result.retained_steps) == (2, 4, 1)
+    # The two measured units have exact contrasts 1 and 2; the absent event feed adds 0.
+    assert (result.estimate.value, result.standard_error) == pytest.approx((1, (1 / 3) ** 0.5))
+    assert (result.n_units, result.n_cycles, result.retained_steps) == (3, 6, 1)
 
 
 def test_arrow_alignment_preserves_healthy_sibling_beside_null_payload():
-    rows = _observed().slice(1).to_arrow()
+    rows = _observed().filter(pl.col("step") == 2).slice(1).to_arrow()
     rows = rows.append_column("unknown value", pa.nulls(len(rows)))
-    measured = MetricSpec(name="sales", value_column="orders")
+    measured = MetricSpec(name="sales", value_column="orders", missing="zero")
     missing = MetricSpec(name="returns", value_column="unknown value")
-    experiment, reader = _build(rows, _schedule(), measured, missing)
+    experiment, reader = _build(rows, _schedule("sales"), measured, missing)
     with reader:
         cells = {cell.identity.key.metric: cell for cell in run(experiment, reader).cells}
     summary = cells["sales"].summary

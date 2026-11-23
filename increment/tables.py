@@ -376,14 +376,6 @@ def contrast_results_to_readout(
     for result in results:
         estimate = result.estimate
         stat_sig = contrast_stat_sig(result)
-        # Paired tables historically display False for a zero-SE t test. Availability,
-        # unlike this display flag, records whether a test was actually evaluated.
-        if (
-            result.randomization_law != "fixed_count"
-            and result.failure_context is not None
-            and result.failure_context.get("reason") == "zero_standard_error"
-        ):
-            stat_sig = False
         lower = None if estimate is None else estimate.lb
         upper = None if estimate is None else estimate.ub
         rows.append(
@@ -441,7 +433,9 @@ def contrast_results_to_readout(
                 "effective_alpha": result.effective_alpha,
                 "source_snapshot_id": result.source_snapshot_id,
                 "metric_type": result.metric_type,
-                "decision_scope_complete": result.decision_scope_complete,
+                "decision_scope_complete": (
+                    result.decision_scope_complete if result.sampling_available else False
+                ),
                 "decision_scope_reason_code": result.decision_scope_reason_code,
                 "decision_scope_reason_context": result.decision_scope_reason_context,
                 "refusal_probability_upper": result.refusal_probability_upper,
@@ -483,10 +477,10 @@ def contrast_results_to_readout(
             or result.forecast_column is not None
         ):
             rows[-1]["p_value"] = contrast_p_value(result)
-        if result.failure_code is not None:
+        if not result.sampling_available:
             rows[-1].update(
-                failure_code=result.failure_code,
-                failure_context=result.failure_context,
+                failure_code=result.sampling_reason_code,
+                failure_context=result.sampling_reason_context,
                 point_available=estimate is not None,
                 sampling_available=False,
             )

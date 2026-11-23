@@ -188,6 +188,10 @@ values.
   Saved experiments now bind the named outcome column, not its contents.
   Rebuild older switchback experiments that used a different column name
   from the metric: their saved identities cannot tell those columns apart.
+  Older saved reports also derive unavailable tests from their recorded
+  uncertainty, without changing their saved contents or identity.
+  Separate observation logs allocate only retained steps, while still
+  checking supplied observations in the discarded window.
 
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because
