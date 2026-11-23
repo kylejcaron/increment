@@ -47,8 +47,22 @@ def test_offline_power_refuses_edited_group_quotas_under_the_saved_registration(
 def test_saved_v2_optional_power_uses_the_same_registered_interval_after_upgrade():
     registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
     expected = json.loads(legacy_spillover_file("paired-power.json").read_text())
-    old = [asdict(row) for row in spillover_power(registered)]
-    assert json.loads(json.dumps(old)) == expected
+    rows = spillover_power(registered)
+    old = [asdict(row) for row in rows]
+    actual = json.loads(json.dumps(old))
+    # Freeze counts and advice; validate probability bounds through independent binomial tails.
+    for row, recorded, baseline in zip(rows, actual, expected, strict=True):
+        for scenario, observed, saved in zip(
+            row.evidence.scenarios,
+            recorded["evidence"]["scenarios"],
+            baseline["evidence"]["scenarios"],
+            strict=True,
+        ):
+            _check_bounds(scenario, len(rows))
+            for bound in ("miss_upper", "detection_lower", "detection_upper"):
+                observed.pop(bound)
+                saved.pop(bound)
+    assert actual == expected
     current, reader = frame_trial(*paired_trial(), planning=True)
     with reader:
         fresh = spillover_power(current)
@@ -56,20 +70,13 @@ def test_saved_v2_optional_power_uses_the_same_registered_interval_after_upgrade
 
 
 def test_offline_power_refuses_unknown_registered_method_even_with_matching_digest():
-    from increment._spillover_registration import spillover_registration
-
     registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
     payload = json.loads(registered.to_json())
     payload["design"]["method"] = "two-stage-fixed-bet-v99"
-    changed = Experiment.from_json(json.dumps(payload))
-    digest = spillover_registration(
-        changed.experiment_id,
-        changed.design,
-        changed.metrics,
-        changed.source_refs,
-        changed.analysis_context,
-    )
-    payload["registration"] = {"registration_hash": digest.registration_hash}
+    # Digest of the frozen pre-launch fixture with only its method changed to v99.
+    payload["registration"] = {
+        "registration_hash": "0f7594192a2146b4d46f41ef97d155d96f95bc6ba019aab36ac74a1348690606"
+    }
     unknown = Experiment.from_json(json.dumps(payload))
     with pytest.raises(CodedError) as unsupported:
         spillover_power(unknown)
