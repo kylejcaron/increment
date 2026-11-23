@@ -941,15 +941,14 @@ class ResultCell:
             **dict(projection),
         )
 
+    def _serialized_projection(self) -> tuple[Component, EffectEstimate | None]:
+        current = (self.components["sampling"], self.summary)
+        if self._saved_projection is not None and self._derived_projection == current:
+            return self._saved_projection
+        return current
+
     def to_payload(self) -> dict[str, JsonValue]:
-        summary = self.summary
-        saved_projection = (
-            self._saved_projection
-            if self._derived_projection == (self.components["sampling"], summary)
-            else None
-        )
-        if saved_projection is not None:
-            summary = saved_projection[1]
+        sampling, summary = self._serialized_projection()
         sampling_state = self.components["sampling"][1]
         if sampling_state is None:
             row_payload = None
@@ -957,8 +956,8 @@ class ResultCell:
             row_payload = _plain(sampling_state.fields)
         comps: dict[str, JsonValue] = {}
         for name, (status, state) in self.components.items():
-            if name == "sampling" and saved_projection is not None:
-                status, state = saved_projection[0]
+            if name == "sampling":
+                status, state = sampling
             component: dict[str, JsonValue] = {
                 "status": {
                     "state": status.state,
@@ -1182,9 +1181,18 @@ class ResultCell:
 
     @staticmethod
     def to_arrow(cells: Sequence[ResultCell]) -> pa.Table:
+        return ResultCell._to_arrow(cells, preserve_saved=False)
+
+    @staticmethod
+    def _to_arrow(cells: Sequence[ResultCell], *, preserve_saved: bool) -> pa.Table:
         rows = []
         for cell in cells:
             payload = cell.to_payload()
+            sampling, summary = (
+                cell._serialized_projection()
+                if preserve_saved
+                else (cell.components["sampling"], cell.summary)
+            )
             entry: dict[str, Any] = {
                 "schema_version": _SCHEMA_VERSION,
                 "row_kind": payload["row_kind"],
@@ -1193,7 +1201,7 @@ class ResultCell:
                 "family": None if cell.family is None else _json(cell.family),
                 "source_snapshot_id": cell.source_snapshot_id,
                 "provenance": _json(payload["provenance"]),
-                "summary": None if cell.summary is None else _json(asdict(cell.summary)),
+                "summary": None if summary is None else _json(asdict(summary)),
                 "point": None if cell.summary is None else cell.summary.point,
                 "lower": None if cell.summary is None else cell.summary.lower,
                 "upper": None if cell.summary is None else cell.summary.upper,
@@ -1221,6 +1229,8 @@ class ResultCell:
                 ]
             for name in ("sampling", "posterior", "sequential"):
                 status, state = cell.components[name]
+                if name == "sampling":
+                    status, state = sampling
                 entry[name] = {
                     "status": status.state,
                     "code": status.code,
@@ -1942,6 +1952,21 @@ class AnalysisEnvelope:
     cells: tuple[ResultCell, ...]
     metadata: ReadoutMetadata | None
 
+    def __post_init__(self) -> None:
+        if self.metadata is not None:
+            unavailable = tuple(
+                (cell.source_snapshot_id, cell.identity.key)
+                for cell in self.cells
+                if cell.source_snapshot_id is not None
+                and cell.components["sampling"][0].state == "unavailable"
+            )
+            if unavailable:
+                object.__setattr__(
+                    self,
+                    "metadata",
+                    self.metadata.model_copy()._qualify_sampling_scope(unavailable),
+                )
+
     def to_payload(self, *, include_capture_metadata: bool = False) -> dict[str, JsonValue]:
         metadata = None if self.metadata is None else self.metadata.model_dump(mode="json")
         if metadata is not None and not include_capture_metadata:
@@ -1973,7 +1998,12 @@ class AnalysisEnvelope:
         )
 
     def to_arrow(self, *, include_capture_metadata: bool = True) -> pa.Table:
-        table = ResultCell.to_arrow(self.cells)
+        return self._to_arrow(include_capture_metadata=include_capture_metadata)
+
+    def _to_arrow(
+        self, *, include_capture_metadata: bool = True, preserve_saved: bool = False
+    ) -> pa.Table:
+        table = ResultCell._to_arrow(self.cells, preserve_saved=preserve_saved)
         metadata = dict(table.schema.metadata or {})
         payload_metadata = self.to_payload(include_capture_metadata=include_capture_metadata)[
             "metadata"

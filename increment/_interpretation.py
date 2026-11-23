@@ -379,7 +379,11 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                         integrity_context=None if integrity is None else integrity.context,
                         decision_complete=(
                             False
-                            if any(item.visible and not item.available for item in required)
+                            if any(
+                                not item.available
+                                and (item.visible or item.failure_code is not None)
+                                for item in required
+                            )
                             else source.decision_complete_by_population.get(population)
                         ),
                         roster_complete=None if roster is None else roster.complete,

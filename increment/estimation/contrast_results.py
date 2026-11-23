@@ -24,6 +24,8 @@ from increment._unit_cycle import unit_cycle_envelope_cutoff
 from increment.declarations import freeze, thaw
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.readout_types import (
+    CellKey,
+    SamplingInference,
     _restore_collection,
     concat_collection,
     dump_collection,
@@ -822,6 +824,14 @@ class ContrastResults(list[ContrastResult]):
         self.sequential_snapshot = sequential_snapshot
         self._default_backend = default_backend
         validate_collection(self, metadata)
+        if metadata is not None:
+            unavailable = tuple(
+                (row.source_snapshot_id, CellKey.from_row(row))
+                for row in self
+                if row.source_snapshot_id is not None and not row.sampling_available
+            )
+            if unavailable:
+                self._metadata = metadata.model_copy()._qualify_sampling_scope(unavailable)
 
     @property
     def metadata(self) -> ReadoutMetadata | None:
@@ -875,6 +885,42 @@ class ContrastResults(list[ContrastResult]):
     def model_dump_json(self):
         return dump_collection(self)
 
+    def _effective_metadata(self, other=None):
+        metadata = self.metadata
+        if metadata is None:
+            return None
+        sampling = {}
+        # Own records and retained rows take precedence over knowledge from a peer.
+        for collection in (self,) if other is None else (other, self):
+            if collection.metadata is not None:
+                sampling.update(
+                    ((record.source_snapshot_id, record.cell), record.sampling)
+                    for record in collection.metadata.cells
+                    if record.sampling is not None
+                )
+            sampling.update(
+                (
+                    (row.source_snapshot_id, CellKey.from_row(row)),
+                    SamplingInference(
+                        available=row.sampling_available,
+                        reason_code=row.sampling_reason_code,
+                        reason_context=row.sampling_reason_context,
+                    ),
+                )
+                for row in collection
+            )
+        records = tuple(
+            record.model_copy(
+                update={"sampling": sampling[(record.source_snapshot_id, record.cell)]}
+            )
+            if record.sampling is None and (record.source_snapshot_id, record.cell) in sampling
+            else record
+            for record in metadata.cells
+        )
+        if records != metadata.cells:
+            metadata = metadata.model_copy(update={"cells": records})
+        return metadata
+
     @overload
     def __getitem__(self, key: SupportsIndex) -> ContrastResult: ...
 
@@ -886,7 +932,7 @@ class ContrastResults(list[ContrastResult]):
             rows = super().__getitem__(key)
             return type(self)(
                 rows,
-                metadata=partial_metadata(self.metadata, rows, "slice"),
+                metadata=partial_metadata(self._effective_metadata(), rows, "slice"),
                 source=self.source,
                 sequential_snapshot=self.sequential_snapshot,
                 default_backend=self._default_backend,
@@ -897,14 +943,29 @@ class ContrastResults(list[ContrastResult]):
         rows = [row for row in self if predicate(row)]
         return type(self)(
             rows,
-            metadata=partial_metadata(self.metadata, rows, "filter"),
+            metadata=partial_metadata(self._effective_metadata(), rows, "filter"),
             source=self.source,
             sequential_snapshot=self.sequential_snapshot,
             default_backend=self._default_backend,
         )
 
     def concat(self, other):
-        return concat_collection(self, other)
+        if type(other) is not type(self):
+            return concat_collection(self, other)
+
+        def normalized(collection, peer):
+            metadata = collection._effective_metadata(peer)
+            if metadata is collection.metadata:
+                return collection
+            return type(collection)(
+                collection,
+                metadata=metadata,
+                source=collection.source,
+                sequential_snapshot=collection.sequential_snapshot,
+                default_backend=collection._default_backend,
+            )
+
+        return concat_collection(normalized(self, other), normalized(other, self))
 
     def __repr__(self) -> str:
         from importlib import import_module
@@ -1137,6 +1198,8 @@ class ContrastResults(list[ContrastResult]):
             evidence_columns = {name: [] for name in empty_evidence}
         else:
             evidence_columns = {}
+        if self.metadata is None:
+            evidence_columns["decision_scope_complete"] = data["decision_scope_complete"]
         for name, values in evidence_columns.items():
             data[name] = values
             columns.append(name)

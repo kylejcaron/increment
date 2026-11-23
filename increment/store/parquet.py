@@ -131,7 +131,7 @@ class ParquetResultsStore:
                 "An empty metric selection cannot be saved",
                 reason=run.empty_selection_reason,
             )
-        table = AnalysisEnvelope(run.cells, run.metadata).to_arrow(include_capture_metadata=True)
+        table = AnalysisEnvelope(run.cells, run.metadata)._to_arrow(preserve_saved=True)
         metadata = dict(table.schema.metadata or {})
         metadata[b"increment.run_manifest.v2"] = json.dumps(
             {

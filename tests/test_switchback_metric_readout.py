@@ -318,6 +318,11 @@ def test_legacy_zero_se_report_preserves_identity_without_claiming_sampling(tmp_
         ) == (1, 0, 1)
     assert frame["estimate"] == table["lift"] == 2
     assert table["lower"] is table["higher"] is table["level"] is table["stat_sig"] is None
+    bare_frame = ContrastResults([row]).to_frame(backend="polars")
+    assert isinstance(bare_frame, pl.DataFrame)
+    (bare,) = bare_frame.to_dicts()
+    assert bare["decision_scope_complete"] is False
+    assert bare["point_available"] and not bare["sampling_available"]
 
     store_path = copytree(fixture / "store", tmp_path / "store")
     (stored_path,) = store_path.glob("*.parquet")
@@ -329,9 +334,15 @@ def test_legacy_zero_se_report_preserves_identity_without_claiming_sampling(tmp_
     handle = store.open_run(
         manifest["experiment_id"], manifest["analysis_spec_hash"], manifest["run_id"]
     )
-    assert handle.run.manifest_hash == manifest["manifest_hash"]
-    assert handle.run.registration_hash == manifest["registration_hash"]
-    assert handle.run.execution_identity_hash == manifest["execution_identity_hash"]
+    assert (
+        handle.run.manifest_hash,
+        handle.run.registration_hash,
+        handle.run.execution_identity_hash,
+    ) == (
+        manifest["manifest_hash"],
+        manifest["registration_hash"],
+        manifest["execution_identity_hash"],
+    )
     envelope = handle.envelope()
     (stored_cell,) = envelope.cells
     assert stored_cell.identity.hash() == manifest["cell_scope_hashes"][0][0]
@@ -358,6 +369,228 @@ def test_legacy_zero_se_report_preserves_identity_without_claiming_sampling(tmp_
         assert code in rendered or "zero_standard_error" in rendered
         assert "95%" not in rendered and "95.0%" not in rendered
     assert stored_path.read_bytes() == original_bytes
+
+
+@pytest.mark.integration
+def test_legacy_envelope_scope_preserves_payload_across_portable_views():
+    import pyarrow.parquet as pq
+
+    from increment.estimation.readout_types import ReadoutMetadata
+    from increment.result_envelope import AnalysisEnvelope
+
+    fixture = Path(__file__).parent / "fixtures" / "switchback_legacy"
+    (path,) = (fixture / "store").glob("*.parquet")
+    original_bytes = path.read_bytes()
+    table = pq.read_table(path)
+    manifest = json.loads(table.schema.metadata[b"increment.run_manifest.v2"])
+    saved_metadata = json.loads(table.schema.metadata[b"increment.readout_metadata"])
+    handle = ParquetResultsStore(fixture / "store").open_run(
+        manifest["experiment_id"], manifest["analysis_spec_hash"], manifest["run_id"]
+    )
+    envelope = handle.envelope()
+    borrowed = ReadoutMetadata.from_saved_payload(saved_metadata)
+    borrowed_json = borrowed.model_dump_json()
+    payload = envelope.to_payload(include_capture_metadata=True)
+    restored_payload = AnalysisEnvelope.from_payload(payload)
+    report = ReadoutResults.model_validate_json((fixture / "base-readout.json").read_text())
+    for metadata in (
+        report.metadata,
+        handle.run.metadata,
+        envelope.metadata,
+        restored_payload.metadata,
+        AnalysisEnvelope.from_arrow(table).metadata,
+        AnalysisEnvelope.from_arrow(envelope.to_arrow()).metadata,
+        AnalysisEnvelope(envelope.cells, borrowed).metadata,
+    ):
+        assert metadata is not None
+        assert metadata.scope.decision_complete("assigned") is False
+    assert borrowed.scope.decision_complete("assigned") is True
+    assert borrowed.model_dump_json() == borrowed_json
+    assert payload["metadata"] == saved_metadata
+    assert restored_payload.to_payload(include_capture_metadata=True) == payload
+    assert handle.run.manifest_hash == manifest["manifest_hash"]
+    assert path.read_bytes() == original_bytes
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("destination", ["parquet", "warehouse"])
+def test_copying_legacy_run_preserves_payload_and_current_sampling(tmp_path, destination):
+    import ibis
+    import pyarrow.parquet as pq
+
+    from increment.store import WarehouseResultsStore
+
+    fixture = Path(__file__).parent / "fixtures" / "switchback_legacy" / "store"
+    (path,) = fixture.glob("*.parquet")
+    manifest = json.loads(pq.read_schema(path).metadata[b"increment.run_manifest.v2"])
+    key = (manifest["experiment_id"], manifest["analysis_spec_hash"], manifest["run_id"])
+    original = ParquetResultsStore(fixture).open_run(*key)
+    backend = ibis.duckdb.connect() if destination == "warehouse" else None
+    try:
+        store = (
+            WarehouseResultsStore(backend)
+            if backend is not None
+            else ParquetResultsStore(tmp_path / "copied")
+        )
+        store.put(original.run)
+        copied = store.open_run(*key)
+        assert copied.run.manifest_hash == original.run.manifest_hash
+        assert copied.run.registration_hash == original.run.registration_hash
+        assert copied.run.expected_roster == original.run.expected_roster
+        envelope = copied.envelope()
+        assert copied.run.metadata is not None and envelope.metadata is not None
+        assert not copied.run.metadata.scope.decision_complete("assigned")
+        assert not envelope.metadata.scope.decision_complete("assigned")
+        (cell,) = envelope.cells
+        assert cell.to_payload() == original.envelope().cells[0].to_payload()
+        assert cell.components["sampling"][0].state == "unavailable"
+        assert cell.summary is not None and cell.summary.point == 2
+        assert cell.summary.alpha is None and cell.summary.reason == "zero_standard_error"
+        (query,) = store.query(*key).to_pylist()
+        assert query["point"] == 2 and query["alpha"] is None
+        assert query["sampling"]["status"] == "unavailable"
+        assert query["reason_code"] == "evidence.p_value.unavailable"
+    finally:
+        if backend is not None:
+            backend.disconnect()
+
+
+def _assert_selected_legacy_scope(selected):
+    assert selected.metadata is not None
+    assert selected.metadata.scope.decision_complete("assigned") is False
+    (frame,) = selected.to_frame(backend="polars").to_dicts()
+    (table,) = estimates_to_readout(selected)
+    assert frame["estimate"] == table["lift"] == 1.5
+    for projection in (frame, table):
+        assert projection["sampling_available"] and projection["point_available"]
+        standard_error = projection["standard_error"]
+        assert isinstance(standard_error, (int, float)) and standard_error > 0
+        assert projection["failure_code"] is None
+        assert projection["decision_scope_complete"] is False
+        assert (
+            projection["required_cell_count"],
+            projection["available_cell_count"],
+            projection["unavailable_cell_count"],
+            projection["hidden_cell_count"],
+        ) == (2, 1, 1, 1)
+        hidden_cells = projection["hidden_cells"]
+        assert isinstance(hidden_cells, str)
+        (unavailable,) = json.loads(hidden_cells)
+        assert unavailable["cell"]["metric"] == "y"
+        assert unavailable["code"] == "evidence.p_value.unavailable"
+        assert unavailable["context"] == {"metric": "y", "reason": "zero_standard_error"}
+
+
+def _assert_rejoined_legacy_scope(combined):
+    assert combined.metadata is not None
+    assert combined.metadata.scope.decision_complete("assigned") is False
+    rows = {row["metric"]: row for row in estimates_to_readout(combined)}
+    assert rows["healthy"]["sampling_available"] and not rows["y"]["sampling_available"]
+    assert rows["healthy"]["decision_scope_complete"] is False
+    assert rows["y"]["decision_scope_complete"] is False
+
+
+def _assert_contrast_concat_collision(left, right):
+    from increment.errors import InvalidRequestError
+
+    for first, second in ((left, right), (right, left)):
+        with pytest.raises(InvalidRequestError) as caught:
+            first.concat(second)
+        assert caught.value.code == "readout.collection.concat_cell_collision"
+
+
+def _assert_unrelated_source_keeps_sampling(report, unrelated):
+    foreign_source = unrelated[0].source_snapshot_id
+    for combined in (report.concat(unrelated), unrelated.concat(report)):
+        (foreign,) = [
+            row
+            for row in estimates_to_readout(combined)
+            if row["source_snapshot_id"] == foreign_source
+        ]
+        assert foreign["sampling_available"] and foreign["decision_scope_complete"] is True
+        hidden = foreign["hidden_cells"]
+        assert isinstance(hidden, str)
+        assert json.loads(hidden)[0]["code"] is None
+
+
+def _assert_borrowed_scope_is_unchanged(report, saved):
+    borrowed = type(report.metadata).from_saved_payload(json.loads(saved)["metadata"])
+    borrowed_json = borrowed.model_dump_json()
+    rebuilt = type(report)(report, metadata=borrowed, source=report.source)
+    assert rebuilt.metadata.scope == report.metadata.scope
+    assert borrowed.scope.decision_complete("assigned") is True
+    assert borrowed.model_dump_json() == borrowed_json
+
+
+def test_filtering_legacy_unavailable_primary_keeps_healthy_sampling_and_incomplete_scope():
+    fixture = Path(__file__).parent / "fixtures" / "switchback_legacy"
+    saved = (fixture / "base-mixed-readout.json").read_text()
+    report = ReadoutResults.model_validate_json(saved)
+    original = report.model_dump_json()
+    healthy_index = next(i for i, row in enumerate(report) if row.metric == "healthy")
+    filtered = report.filter(lambda row: row.metric == "healthy")
+    sliced = report[healthy_index : healthy_index + 1]
+    restored = ReadoutResults.model_validate_json(filtered.model_dump_json())
+    assert report.metadata is not None and filtered.metadata is not None
+    original_scope = report.metadata.scope
+    assert original_scope.decision_complete("assigned") is False
+    reset = filtered.metadata.model_copy(update={"cells": report.metadata.cells})
+    assert reset.scope.decision_complete("assigned") is True
+    for selected in (filtered, sliced, restored):
+        assert selected.metadata.scope == original_scope
+        _assert_selected_legacy_scope(selected)
+    _assert_borrowed_scope_is_unchanged(report, saved)
+    assert report.metadata.scope is original_scope
+    assert report.model_dump_json() == original
+    assert json.loads(original) == json.loads(saved)
+
+
+def test_legacy_sampling_knowledge_merges_across_full_and_hidden_views():
+    # Public baseline partials retain no sampling marker for hidden cells. The source named
+    # "independent" has treatment y=(1, 2), healthy=(3, 4), so both primary tests are valid.
+    fixture = Path(__file__).parent / "fixtures" / "switchback_legacy"
+    full = ReadoutResults.model_validate_json((fixture / "base-mixed-readout.json").read_text())
+    partial_json = (fixture / "base-partial-readout.json").read_text()
+    old_partial = ReadoutResults.model_validate_json(partial_json)
+    new_partial = full.filter(lambda row: row.metric == "healthy")
+    restored_partial = ReadoutResults.model_validate_json(new_partial.model_dump_json())
+    unrelated_json = (fixture / "base-unrelated-partial-readout.json").read_text()
+    unrelated = ReadoutResults.model_validate_json(unrelated_json)
+    views = (full, old_partial, new_partial, restored_partial)
+    originals = tuple(view.model_dump_json() for view in (*views, unrelated))
+    for left in views:
+        _assert_unrelated_source_keeps_sampling(left, unrelated)
+        for right in views:
+            combined = left.concat(right)
+            if left is full or right is full:
+                _assert_rejoined_legacy_scope(combined)
+            elif left is old_partial and right is old_partial:
+                assert combined.metadata.scope.decision_complete("assigned") is True
+            else:
+                _assert_selected_legacy_scope(combined)
+    for sampling in (
+        {
+            "available": False,
+            "reason_code": "evidence.p_value.unavailable",
+            "reason_context": {"metric": "y", "reason": "insufficient_replicates"},
+        },
+        {"available": True},
+    ):
+        conflicting = json.loads(new_partial.model_dump_json())
+        for record in conflicting["metadata"]["cells"]:
+            if record["cell"]["metric"] == "y":
+                record["sampling"] = sampling
+        other = ReadoutResults.model_validate_json(json.dumps(conflicting))
+        for known in (full, new_partial, restored_partial):
+            _assert_contrast_concat_collision(known, other)
+    conflicting_rows = json.loads(old_partial.model_dump_json())
+    conflicting_rows["rows"][0]["estimate"]["value"] += 1
+    _assert_contrast_concat_collision(
+        full, ReadoutResults.model_validate_json(json.dumps(conflicting_rows))
+    )
+    assert tuple(view.model_dump_json() for view in (*views, unrelated)) == originals
+    assert json.loads(old_partial.model_dump_json()) == json.loads(partial_json)
+    assert json.loads(unrelated.model_dump_json()) == json.loads(unrelated_json)
 
 
 @pytest.mark.integration
