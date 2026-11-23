@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import UserList
 from dataclasses import replace
 from datetime import timedelta
@@ -20,7 +21,11 @@ from tests.spillover_trial import (
     WINDOW_END,
     bind_summary,
     complete_receipt,
+    frame_design,
+    frame_trial,
     launched_study,
+    legacy_spillover_file,
+    paired_trial,
     spillover_rows,
     three_policy_trial,
     write_study,
@@ -86,6 +91,30 @@ def test_no_history_keeps_wide_intervals_even_if_all_outcomes_are_zero():
     # (1 - t + t/m)^2 for t=.95,.475 at 4/.05; both arms have the same width.
     assert (zero.lower, zero.upper) == pytest.approx((-0.914078742665, 0.914078742665), abs=1e-10)
     assert zero.unavailable_reason is None
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_heterogeneous_matched_pairs_learn_a_half_point_effect_as_strata_grow():
+    # Each store's outcome is constant at each offer count, irrespective of
+    # recipient identities. Every legal draw has policy means 1/4 and 3/4.
+    widths = []
+    for strata, maximum_width in ((400, 0.32), (4000, 0.102)):
+        experiment, reader = frame_trial(*paired_trial(strata))
+        with reader:
+            result = spillover_rows(run(experiment, reader))[0]
+        assert result.estimate == pytest.approx(0.5, rel=0, abs=1e-12)
+        assert result.lower is not None and result.upper is not None
+        assert 0 < result.lower < 0.5 < result.upper < 1
+        assert result.upper - result.lower < maximum_width
+        assert result.method == experiment.design["method"] == "two-stage-fixed-bet-v3"
+        widths.append(result.upper - result.lower)
+    assert widths[1] < widths[0] / 3
+    # Independent 90-digit inversion of the Bernoulli product mixture:
+    # mean_j [(1-b_j)^(H(1-q)) (1-b_j+b_j/m)^(Hq)] = 80.
+    assert (result.lower, result.upper) == pytest.approx(
+        (0.44800001336258285, 0.54931800357390933), rel=0, abs=1e-10
+    )
 
 
 @pytest.mark.parametrize("changed", [False, True], ids=["identical", "disjoint"])
@@ -214,6 +243,34 @@ def test_registration_binds_comparison_and_group_specific_offer_counts():
         assert stale.value.code == "kernel.run.execution_unavailable"
 
 
+def test_saved_v2_registration_rejects_every_nonmethod_reader_change():
+    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
+    fields, frames = paired_trial()
+    declaration = frame_design(fields)
+    roster = frames["roster"].to_pandas()
+    counts = frames["offer_counts"].to_pandas()
+    swapped = roster.copy()
+    swapped.loc[[0, 4], "group_id"] = swapped.loc[[4, 0], "group_id"].to_list()
+    for population, schedule, options in (
+        (roster, counts, {"alpha": 0.01}),
+        (roster, counts, {"metric": "clicked"}),
+        (roster, counts, {"window_days": 8}),
+        (roster, counts.assign(offers=counts.offers.where(counts.index != 1, 1)), {}),
+        (swapped, counts, {}),
+    ):
+        _, rebound = bind_summary(population, schedule, None, declaration, **options)
+        with rebound, pytest.raises(CodedError) as stale:
+            run(registered, rebound)
+        assert stale.value.code == "kernel.run.execution_unavailable"
+    payload = json.loads(registered.to_json())
+    payload["source_refs"][0]["expected_digest"] = "changed-source"
+    changed_source = Experiment.from_json(json.dumps(payload))
+    _, reader = frame_trial(fields, frames)
+    with reader, pytest.raises(CodedError) as stale:
+        run(changed_source, reader)
+    assert stale.value.code == "kernel.request.invalid"
+
+
 def test_unsupported_run_options_refuse_before_missing_logs():
     people, counts, design, _ = _trial()
     pair = bind_summary(people.drop(columns="assignment"), counts, None, design)
@@ -256,7 +313,12 @@ def _measure_saved_trial(db, path, saved):
             source_snapshot_evidence=complete_receipt(),
         )
         with reader:
-            return [row.estimate for row in spillover_rows(run(registered, reader))]
+            rows = spillover_rows(run(registered, reader))
+            assert {row.method for row in rows} == {registered.design["method"]}
+            assert {row.registration_hash for row in rows} == {
+                registered.registration.registration_hash
+            }
+            return [row.estimate for row in rows]
     finally:
         con.disconnect()
 

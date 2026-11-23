@@ -41,10 +41,88 @@ def test_summary_sql_preview(postgres_con):
     run_summary_sql_probe(postgres_con, dialect="postgres")
 
 
-def test_spillover_policy_comparisons(postgres_con, tmp_path):
+@pytest.mark.parametrize("qualified", [False, True], ids=["default-future", "qualified-future"])
+def test_spillover_policy_comparisons(postgres_con, tmp_path, qualified):
     from tests.spillover_trial import run_three_policy_probe
 
-    run_three_policy_probe(postgres_con, tmp_path)
+    run_three_policy_probe(postgres_con, tmp_path, reader_con=postgres_con if qualified else None)
+
+
+def test_spillover_sources_keep_the_originally_visible_relations(
+    postgres_con, tmp_path, monkeypatch
+):
+    from contextlib import ExitStack
+
+    import sqlglot as sg
+
+    from increment import from_definitions, run
+    from tests.spillover_trial import (
+        WAREHOUSE_ROLES,
+        complete_receipt,
+        spillover_rows,
+        three_policy_trial,
+        write_study,
+    )
+
+    con = postgres_con
+    design, frames = three_policy_trial()
+    tag = uuid4().hex
+    earlier = f"spillover_{tag}"
+    names = {role: f"spill_{tag}_{role}" for role in WAREHOUSE_ROLES}
+    names["purchases"] = f"Spill {tag} ' \" Purchases"
+    quoted = {
+        role: sg.to_identifier(name, quoted=True).sql("postgres") for role, name in names.items()
+    }
+    declared = {
+        **names,
+        "purchases": quoted["purchases"],
+        "group_policy": f"public.{names['group_policy']}",
+    }
+    path = tmp_path / "spillover.yaml"
+    write_study(path, design, declared, dialect="postgres")
+    measurement_names = {names[role] for role in ("group_policy", "assignments", "purchases")}
+
+    def execute(sql):
+        with con.raw_sql(sql):
+            pass
+
+    def no_measurement_reads(statement):
+        sql = statement if isinstance(statement, str) else statement.as_string(con.con)
+        for query in sg.parse(sql, read="postgres"):
+            if query is not None:
+                tables = {table.name for table in query.find_all(sg.exp.Table)}
+                assert tables.isdisjoint(measurement_names)
+        return statement
+
+    with ExitStack() as cleanup:
+        con.create_database(earlier)
+        cleanup.callback(execute, f'DROP SCHEMA "{earlier}" CASCADE')
+        cleanup.callback(execute, "RESET search_path")
+        for role, name in names.items():
+            con.create_table(name, frames[role], database="public")
+            cleanup.callback(con.drop_table, name, database="public", force=True)
+        execute(
+            f"CREATE TEMP TABLE {quoted['offer_counts']} AS TABLE public.{quoted['offer_counts']}"
+        )
+        cleanup.callback(con.drop_table, names["offer_counts"], database="pg_temp", force=True)
+        execute(f"TRUNCATE public.{quoted['offer_counts']}")
+        execute(f'SET search_path TO "{earlier}", public')
+        with monkeypatch.context() as guard:
+            _patch_postgres_cursor_execute(con, guard, no_measurement_reads)
+            experiment, reader = from_definitions(
+                path, con, experiment_name="pilot", source_snapshot_evidence=complete_receipt()
+            )
+        with reader:
+            for role in WAREHOUSE_ROLES:
+                execute(
+                    f'CREATE TABLE "{earlier}".{quoted[role]} '
+                    f"AS TABLE public.{quoted[role]} WITH NO DATA"
+                )
+            execute(f'SET search_path TO "{earlier}", public, pg_temp')
+            rows = spillover_rows(run(experiment, reader))
+        assert [row.estimate for row in rows] == pytest.approx(
+            (0.030158730158730190, 0.480952380952380909), abs=1e-14, rel=0
+        )
 
 
 @pytest.fixture

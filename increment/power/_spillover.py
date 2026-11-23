@@ -32,6 +32,7 @@ from increment._spillover_registration import require_registered_spillover
 from increment.estimation.spillover import BatchCell, SpilloverInterval
 
 if TYPE_CHECKING:
+    from increment._spillover_registration import SpilloverMethod
     from increment.kernel.experiment import Experiment
 
 _ATTEMPTS = 4096
@@ -503,8 +504,9 @@ def _measure(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
     models: tuple[_Scenario, ...],
+    method: SpilloverMethod,
 ) -> tuple[ScenarioEvidence, ...]:
-    rule = SpilloverInterval(population)
+    rule = SpilloverInterval(population, method=method)
     tail = 0.05 / (24 * len(population.design.comparisons))
     r, p = _indices(population, comparison)
     # Equal potential schedules can share draws across labels. Dependence across
@@ -591,7 +593,10 @@ def _planning_population(
 
 
 def evaluate_design(
-    population: SpilloverPopulation, comparison: SpilloverComparison
+    population: SpilloverPopulation,
+    comparison: SpilloverComparison,
+    *,
+    method: SpilloverMethod = "two-stage-fixed-bet-v3",
 ) -> PlanningEvidence:
     """Assess directional detection before the trial is assigned."""
     if comparison.baseline_rate is None:
@@ -618,7 +623,7 @@ def evaluate_design(
                 for k in events
             ):
                 return PlanningEvidence((), "not_assessed", "group_draw_exceeds_planning_limit")
-    return _conclude(_measure(population, comparison, grid))
+    return _conclude(_measure(population, comparison, grid, method))
 
 
 @dataclass(frozen=True, slots=True)
@@ -681,7 +686,7 @@ def spillover_power(experiment: Experiment) -> tuple[SpilloverPowerResult, ...]:
     """Assess the registered policy changes using only pre-launch group sizes and quotas."""
     if experiment.design.get("kind") != "spillover":
         refuse_input("spillover.design.required", "design")
-    require_registered_spillover(experiment)
+    method = require_registered_spillover(experiment)
     declaration: Mapping[str, Any] = experiment.design
     law = SpilloverDesign(
         declaration["groups_per_policy"],
@@ -700,6 +705,6 @@ def spillover_power(experiment: Experiment) -> tuple[SpilloverPowerResult, ...]:
         context["roster_digest"],
     )
     return tuple(
-        SpilloverPowerResult(c.policy, c.reference, evaluate_design(population, c))
+        SpilloverPowerResult(c.policy, c.reference, evaluate_design(population, c, method=method))
         for c in law.comparisons
     )

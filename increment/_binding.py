@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
 from increment._canonical import declaration_value
 from increment._execute import execute_views, operation_parameters, selected_binding
 from increment._runnability import _UNDECLARED_BREAKOUT, operation_options, scope_refusals
+from increment._spillover_registration import require_registered_spillover, spillover_registration
 from increment.decision import AnalysisState, ContrastContext, DefinitionsArmAnalysisState
 from increment.errors import CodedError, refuse
 
@@ -217,9 +218,28 @@ def _differing_field(experiment: Experiment, declared: Experiment) -> str | None
     """The first declaration in which an experiment departs from its reader's experiment."""
     if experiment.experiment_id != declared.experiment_id:
         return "experiment_id"
+    registration = declared.registration
     if experiment.design != declared.design:
-        return "design"
-    if experiment.registration != declared.registration:
+        # A fresh reader may execute an intact older registration, but only
+        # this recognized method transition may differ from its declaration.
+        legacy = {**declared.design, "method": "two-stage-fixed-bet-v2"}
+        if not (
+            declared.design.get("kind") == "spillover"
+            and declared.design.get("protocol") == "spillover-fixed-count-v2"
+            and declared.design.get("method") == "two-stage-fixed-bet-v3"
+            and experiment.design == legacy
+        ):
+            return "design"
+
+        require_registered_spillover(experiment)
+        registration = spillover_registration(
+            declared.experiment_id,
+            legacy,
+            declared.metrics,
+            declared.source_refs,
+            declared.analysis_context,
+        )
+    if experiment.registration != registration:
         return "registration"
     if declaration_value(experiment.analysis_context) != declaration_value(
         declared.analysis_context

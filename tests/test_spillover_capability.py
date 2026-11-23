@@ -121,7 +121,7 @@ def test_named_spillover_comparisons_match_through_frame_and_definitions(con, tm
         assert frame.direction == db.direction
         assert frame.unavailable_reason == db.unavailable_reason
         assert frame.range_basis == db.range_basis
-        assert frame.method == db.method == "two-stage-fixed-bet-v2"
+        assert frame.method == db.method == "two-stage-fixed-bet-v3"
         assert (frame.family_size, frame.policy_count, frame.alpha) == (
             db.family_size,
             db.policy_count,

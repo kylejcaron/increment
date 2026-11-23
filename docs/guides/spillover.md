@@ -60,13 +60,26 @@ experiments:
 )
 ```
 
-The three extra tables describe the two draws. Point the three names at your own tables or views; use qualified names when needed.
+The three source fields point to tables or views you already have; they do not require three new copies of your data. `roster: eligible_customers_v1` means “read eligibility and store membership from the table or view named `eligible_customers_v1`.”
 
-| Table | One row for… | What it records |
+| Source field | One row for… | What it records |
 |---|---|---|
 | `roster` | Each eligible customer, before launch | `person_id`, their `group_id` (store), and `stratum` (the set of stores drawn together, here `all`). |
 | `offer_counts` | Each store and **possible** policy, before launch | `group_id`, `policy`, and `offers`: how many customers would get offers if that policy were drawn. Every policy you compare must leave at least one customer in each store without an offer. |
 | `group_policy` | Each store, after the first draw | `group_id` and the one `policy` actually assigned. The customer's assignment and its time come separately from `coupon_assignment`. |
+
+Eligibility and assignment answer different questions. `roster` fixes **who could be assigned**, their store and the set of stores randomized together, before either draw. The ordinary `coupon_assignment` exposure records **what each customer was actually assigned and when**, including customers assigned no offer. It is reused, not replaced. Purchases remain the ordinary metric's events.
+
+For example, the first store's eligibility rows look like this:
+
+| `person_id` | `group_id` | `stratum` |
+|---|---|---|
+| A0 | A | all |
+| A1 | A | all |
+| A2 | A | all |
+| A3 | A | all |
+
+An existing eligibility table can supply these columns directly, or a view can rename your customer and store columns. Keep membership fixed after registration; do not build this list from customers who later visit, redeem an offer or buy. The example below creates small tables only to make it runnable.
 
 With DuckDB, attach the databases and create any views before registering. Assignment and purchase **tables** can be populated or created later at their registered names; a new view is a different definition. Use absolute database paths to reopen from another connection.
 

@@ -1469,7 +1469,7 @@ analyst journey.
 When using Roborev, freeze the head and review the coherent base-to-tip range:
 
 ```bash
-roborev review --quiet --repo <absolute-worktree> --branch=<branch> --base <base-sha> --wait
+roborev review --quiet --repo <absolute-worktree> --branch=<branch> --base <base-sha> --panel branch_review --wait
 ```
 
 `--branch` has an optional value: use `=` for a named branch; a separate
@@ -1480,6 +1480,19 @@ alone does not skip it. Quiet mode suppresses enqueue headers, so inspect
 `roborev list --json` and `roborev show --job <id>` for the resulting job's
 pins and verdict. After a Roborev upgrade, reverify that this invocation leaves
 the common hooks unchanged before using it without activation authority.
+
+Confirm the receipt names `branch_review` and lists its members; a single
+default review is not a panel review. If that panel is not configured, report
+the missing configuration instead of silently falling back. Wait for and
+inspect non-voting members too: their findings do not change the parent verdict.
+Resolve demonstrated defects and record product choices separately.
+
+A static review is not an execution check. For changed statistical or input
+paths, attach bounded evidence for the claimed user journey and realistic
+scales: useful precision as independent replication grows, resource use,
+actual backend resolution, and completing or reopening saved experiments as
+applicable. State which checks ran and which did not; do not treat a passing
+review as proof of calibration or practical usability.
 
 Confirm the job's actual base/head and that the branch did not move.
 `--sha` does not replace a branch range's base. Review changed integration

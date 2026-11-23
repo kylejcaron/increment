@@ -1,0 +1,11 @@
+{
+  "base_commit": "908b7689a009bb9e8589aff7422469e33ad75884",
+  "source": "Unchanged git archive of the base commit, executed with the existing .venv/bin/python. No production files modified.",
+  "generation": "frame_trial(*paired_trial(40), planning=True) serialized before observations; run(saved, fresh_reader) and spillover_power(saved) executed under that same base.",
+  "paired_inputs": "tests/spillover_trial.py::paired_trial(40), seed 519406; two stores of four per stratum, quotas 0/2, means 1/4 and 3/4.",
+  "sha256": {
+    "paired-prelaunch.json": "97a9d1533a7a1a25eab937b9a0f1e2643e9401b251a97bd5d8fc4c5bf0e16ec6",
+    "paired-readout.json": "6147f7945f0402bbb7932e7ed1a625c9e481571ddcb46fd3cd45977c5c1368cf",
+    "paired-power.json": "9dbdbe39e4e31e8fcf4128126af3efa4bd1f14a5d093dc72807542ba8c753418"
+  }
+}

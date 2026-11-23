@@ -39,6 +39,19 @@ Change quality:
 - Consumer outcomes: use the affected journey contracts in docs/validation.md
   and tests/readout_journeys.py. Constructor presence and row counts are not
   evidence that an analyst can reach and correctly interpret the result.
+- Practical scale: check how work and interval width change as independent
+  units or strata grow. Mathematical coverage alone does not establish a
+  useful analysis. Identify a concrete supported case where discarded data,
+  small strata, or unequal group sizes defeats the feature's claimed use.
+- Saved journeys: check genuine earlier-version results and prelaunch
+  registrations, not only current-version round trips. Trace availability,
+  reasons and confidence labels through restored tables and decisions; an
+  unavailable test must not become a completed negative test.
+- Warehouse identity: trace unqualified and quoted names through the backend's
+  actual resolution rules, including search paths, views and future tables.
+- Evidence scope: check that new methods and planners have their own evidence
+  record; an older unadjusted or single-stratum example cannot certify them.
+  Distinguish a derivation, an executed bounded check and an untested claim.
 - Scoped collections: verify every requested cell is present as a result or an
   identity-preserving unavailable row with its reason, including valid siblings.
 - Sampling and posterior evidence stay distinct; a prior must not change

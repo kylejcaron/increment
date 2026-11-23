@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import pyarrow as pa
 import pytest
 import yaml
@@ -138,6 +140,57 @@ def frame_trial(design, frames, *, planning=False):
         frame_design(design),
         alpha=design.get("alpha", 0.05),
     )
+
+
+def paired_trial(strata=40):
+    """Matched stores: reference mean 1/4, other-policy mean 3/4 under every draw."""
+    names = [f"s{i:06d}" for i in range(strata)]
+    design = {
+        "groups_per_policy": {s: {"base": 1, "upper": 1} for s in names},
+        "comparisons": [
+            {
+                "policy": "upper",
+                "reference": "base",
+                "meaningful_effect": 0.5,
+                "baseline_rate": 0.25,
+            }
+        ],
+    }
+    rng = np.random.default_rng(519_406)
+    people, counts, policies = [], [], []
+    for h, s in enumerate(names):
+        high = int(rng.integers(2))
+        for j in range(2):
+            group = 2 * h + j
+            policy = "upper" if j == high else "base"
+            offered = set(rng.choice(4, 2, replace=False)) if j == high else set()
+            bought = h < (3 * strata // 4 if j == high else strata // 4)
+            policies.append({"group_id": group, "policy": policy})
+            counts.extend(
+                {"group_id": group, "policy": label, "offers": n}
+                for label, n in (("base", 0), ("upper", 2))
+            )
+            people.extend(
+                {
+                    "person_id": 4 * group + i,
+                    "group_id": group,
+                    "stratum": s,
+                    "assignment": "offered" if i in offered else "no_offer",
+                    "bought": None if i in offered else bought,
+                }
+                for i in range(4)
+            )
+    summary = pa.Table.from_pylist(people)
+    return design, {
+        "summary": summary,
+        "roster": summary.select(["person_id", "group_id", "stratum"]),
+        "offer_counts": pa.Table.from_pylist(counts),
+        "group_policy": pa.Table.from_pylist(policies),
+    }
+
+
+def legacy_spillover_file(name):
+    return Path(__file__).parent / "fixtures" / "spillover_legacy" / name
 
 
 def write_study(path, design, names, *, dialect=None):
@@ -282,6 +335,6 @@ def run_three_policy_probe(con, tmp_path, *, alpha=0.01, reader_con=None):
         assert (row.metric, row.window_days) == ("bought", 7)
         assert (row.lower, row.upper) == pytest.approx(expected, rel=0, abs=1e-10)
         assert (row.alpha, row.family_size, row.policy_count) == (alpha, 2, 3)
-        assert row.method == "two-stage-fixed-bet-v2"
+        assert row.method == "two-stage-fixed-bet-v3"
         assert row.direction == "inconclusive" and row.unavailable_reason is None
     return result

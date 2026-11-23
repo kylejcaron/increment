@@ -1,21 +1,33 @@
 """Lower confidence limits for a stratified mixture of nonnegative fixed bets."""
 
+from __future__ import annotations
+
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import elementwise
+
+if TYPE_CHECKING:
+    from increment._spillover_registration import SpilloverMethod
 
 
 class PolicyMixture:
     """Fixed bet grid for one policy's stratum quotas, shared by both tails."""
 
     def __init__(
-        self, counts: NDArray[np.int64], weights: NDArray[np.float64], log_threshold: float
+        self,
+        counts: NDArray[np.int64],
+        weights: NDArray[np.float64],
+        log_threshold: float,
+        method: SpilloverMethod,
     ) -> None:
         self.counts = counts
         rates = weights / counts
-        self.terms = 1 + (int(counts.max()) - 1).bit_length()
+        total = sum(map(int, counts))
+        scale = int(counts.max()) if method == "two-stage-fixed-bet-v2" else total
+        self.terms = 1 + (scale - 1).bit_length()
         bets = np.ldexp(0.95, -np.arange(self.terms))
         eta = bets[:, None] * (rates / rates.max())
         self.log_base = np.log1p(-eta)
@@ -24,7 +36,7 @@ class PolicyMixture:
         # error in the accumulated log factors (including cancellation at m=1).
         # This is not an interval-arithmetic certificate for warehouse moments.
         self.level = log_threshold + math.log(self.terms)
-        self.level += 32 * np.finfo(float).eps * (counts.sum() + self.level)
+        self.level += 32 * np.finfo(float).eps * (total + self.level)
 
     def negative_log_limit(
         self, mean: NDArray[np.float64], variance: NDArray[np.float64], cap: float

@@ -374,7 +374,7 @@ def _decimal_tail(strata, weights, threshold):
     for xs in strata:
         a, q = mean(xs), mean(x * x for x in xs)
         atoms.append((q / a, len(xs) * a**2 / q) if a else (Decimal(0), Decimal(0)))
-    bets = [Decimal(".95") / 2**j for j in range(1 + (max(counts) - 1).bit_length())]
+    bets = [Decimal(".95") / 2**j for j in range(1 + (sum(counts) - 1).bit_length())]
     etas = [[t * r / max(rates) for r in rates] for t in bets]
 
     def wealth(m, *, verify_compression=False):
@@ -427,7 +427,8 @@ def _decimal_policy(pop, labels, events, policy, k):
     return min(lower, 1), min(upper, 1)
 
 
-def test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisance():
+@pytest.mark.parametrize("alpha", [0.01, 0.13])
+def test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisance(alpha):
     labels = (
         ["base", "medium", "spare", "upper"] * 6
         + ["base", "base", "spare", "medium"] * 2
@@ -441,7 +442,7 @@ def test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisan
     )
     comparisons = (_comparison("medium"), _comparison("upper"))
     quotas = {"a": dict(Counter(labels[:32])), "b": dict(Counter(labels[32:]))}
-    pop = _population(groups, quotas, comparisons, alpha=0.13)
+    pop = _population(groups, quotas, comparisons, alpha=alpha)
     events = [
         (i * 7 + 3) % (g.size - g.offers[pop.design.policies.index(p)] + 1)
         for i, (g, p) in enumerate(zip(pop.groups, labels, strict=True))
@@ -613,7 +614,7 @@ def test_exact_two_stage_law_covers_the_person_targets_and_both_normalized_tails
         ns = [q[policy] for q in quotas.values()]
         rates = [Fraction(e, n) for e, n in zip(expanded, ns, strict=True)]
         target = targets[p] * Fraction(people, sum(expanded))
-        for reflected, j in product((False, True), range(1 + (max(ns) - 1).bit_length())):
+        for reflected, j in product((False, True), range(1 + (sum(ns) - 1).bit_length())):
             expectation = Fraction(1)
             for block, states, b, rate in zip(blocks, strata, maxima, rates, strict=True):
                 eta = Fraction(19, 20 * 2**j) * rate / max(rates)
@@ -653,9 +654,8 @@ def test_exact_two_stage_law_covers_the_person_targets_and_both_normalized_tails
 
 @pytest.mark.slow
 @pytest.mark.numerical_certification
-def test_many_one_group_strata_keep_the_outward_side_of_the_closed_form():
-    # For every stratum and each policy, all observed normalized totals are
-    # exactly 1/2. The product reduces to (.05 + .475/m)^8192 for either tail.
+def test_many_one_group_strata_keep_the_outward_side_of_the_product_mixture():
+    # Every normalized total is 1/2. Each bet has product (1-beta + beta/(2m))^n.
     n = 8192
     names = [f"s{i}" for i in range(n)]
     groups = tuple((2 * i + j, s, 4, (0, 2)) for i, s in enumerate(names) for j in range(2))
@@ -666,7 +666,18 @@ def test_many_one_group_strata_keep_the_outward_side_of_the_closed_form():
     lo, hi = spillover.SpilloverInterval(pop).bounds(_comparison(), cells)
     with localcontext() as ctx:
         ctx.prec = 58
-        limit = Decimal(".475") / (Decimal(80) ** (Decimal(1) / n) - Decimal(".05"))
+        bets = [Decimal(".95") / 2**j for j in range(14)]
+        left, right = Decimal(0), Decimal(1)
+        for _ in range(90):
+            mid = (left + right) / 2
+            if sum((1 - b + b / (2 * mid)) ** n for b in bets) >= 80 * len(bets):
+                left = mid
+            else:
+                right = mid
+        limit = left
+        old = Decimal(".475") / (Decimal(80) ** (Decimal(1) / n) - Decimal(".05"))
+        # The extra small bets improve heterogeneous designs, not all designs.
+        assert 0 < 1 - 2 * old < 1 - 2 * limit < Decimal(".002")
         assert Decimal.from_float(lo[0]) <= 2 * limit - 1
         assert Decimal.from_float(hi[0]) >= 1 - 2 * limit
         assert lo[0] == pytest.approx(float(2 * limit - 1), rel=0, abs=1e-10)

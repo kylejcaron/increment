@@ -1,7 +1,7 @@
 """Operating characteristics for the prospective two-stage binary model."""
 
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, asdict
 from functools import cache
 from itertools import combinations, product
 from math import ceil, comb, log2, prod
@@ -17,7 +17,13 @@ from calibration.spillover import certify_decisions, certify_sampling, three_lev
 from increment import Experiment, Spillover, SpilloverComparison
 from increment.errors import CodedError
 from increment.power import spillover_power
-from tests.spillover_trial import bind_summary, frame_trial, three_policy_trial
+from tests.spillover_trial import (
+    bind_summary,
+    frame_trial,
+    legacy_spillover_file,
+    paired_trial,
+    three_policy_trial,
+)
 
 
 def test_offline_power_refuses_edited_group_quotas_under_the_saved_registration():
@@ -34,6 +40,40 @@ def test_offline_power_refuses_edited_group_quotas_under_the_saved_registration(
     with pytest.raises(CodedError) as stale:
         spillover_power(edited)
     assert stale.value.code == "kernel.request.invalid"
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_saved_v2_optional_power_uses_the_same_registered_interval_after_upgrade():
+    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
+    expected = json.loads(legacy_spillover_file("paired-power.json").read_text())
+    old = [asdict(row) for row in spillover_power(registered)]
+    assert json.loads(json.dumps(old)) == expected
+    current, reader = frame_trial(*paired_trial(), planning=True)
+    with reader:
+        fresh = spillover_power(current)
+    assert [asdict(row) for row in fresh] != old
+
+
+def test_offline_power_refuses_unknown_registered_method_even_with_matching_digest():
+    from increment._spillover_registration import spillover_registration
+
+    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
+    payload = json.loads(registered.to_json())
+    payload["design"]["method"] = "two-stage-fixed-bet-v99"
+    changed = Experiment.from_json(json.dumps(payload))
+    digest = spillover_registration(
+        changed.experiment_id,
+        changed.design,
+        changed.metrics,
+        changed.source_refs,
+        changed.analysis_context,
+    )
+    payload["registration"] = {"registration_hash": digest.registration_hash}
+    unknown = Experiment.from_json(json.dumps(payload))
+    with pytest.raises(CodedError) as unsupported:
+        spillover_power(unknown)
+    assert unsupported.value.code == "kernel.request.invalid"
 
 
 def _comparison(rate=0.4, effect=0.1, policy="upper"):

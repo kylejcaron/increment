@@ -45,7 +45,7 @@ def bind_spillover(
         **law.declaration(),
         "kind": "spillover",
         "protocol": "spillover-fixed-count-v2",
-        "method": "two-stage-fixed-bet-v2",
+        "method": "two-stage-fixed-bet-v3",
         "control_group": design.control_group,
         "offered_group": design.offered_group,
     }

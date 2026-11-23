@@ -20,6 +20,7 @@ from increment.semantics.loader import admit_read_only_sql
 
 if TYPE_CHECKING:
     from ibis.backends.duckdb import Backend as DuckDBBackend
+    from ibis.backends.postgres import Backend as PostgresBackend
 
 _Locator = tuple[str, str, str]
 _Namespace = tuple[str, str]
@@ -138,6 +139,19 @@ def _qualified(con: SQLBackend, parts: tuple[str, ...], *, field: str = "relatio
         return parts[0], parts[1], parts[2]
     if con.name == "duckdb":
         return _duckdb_location(cast("DuckDBBackend", con), parts, field)
+    if con.name == "postgres" and len(parts) == 1:
+        relation = sg.to_identifier(parts[0], quoted=True).sql(dialect="postgres")
+        literal = sg.exp.Literal.string(relation).sql(dialect="postgres")
+        statement = (
+            "SELECT n.nspname, c.relname FROM pg_catalog.pg_class AS c "
+            "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+            f"WHERE c.oid = pg_catalog.to_regclass({literal})"
+        )
+        with cast("PostgresBackend", con).raw_sql(statement) as cursor:
+            row = cursor.fetchone()
+        if row is not None:
+            parts = tuple(row)
+        # Missing future inputs keep the connection's default creation schema.
     db = parts[-2] if len(parts) >= 2 else getattr(con, "current_database", None)
     if con.name == "bigquery" and len(parts) == 2:
         catalog = getattr(con, "billing_project", None)

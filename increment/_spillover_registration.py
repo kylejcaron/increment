@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from increment.kernel.contracts import Registration, _refuse, contract_hash
 
 if TYPE_CHECKING:
     from increment.kernel.experiment import Experiment, SourceReference
+
+
+type SpilloverMethod = Literal["two-stage-fixed-bet-v2", "two-stage-fixed-bet-v3"]
 
 
 def spillover_registration(
@@ -32,7 +35,12 @@ def spillover_registration(
     )
 
 
-def require_registered_spillover(experiment: Experiment) -> None:
+def require_registered_spillover(experiment: Experiment) -> SpilloverMethod:
+    method = experiment.design.get("method")
+    if experiment.design.get("protocol") != "spillover-fixed-count-v2" or (
+        method != "two-stage-fixed-bet-v2" and method != "two-stage-fixed-bet-v3"
+    ):
+        _refuse("kernel.request.invalid", field="the saved spillover method is not supported")
     if experiment.registration != spillover_registration(
         experiment.experiment_id,
         experiment.design,
@@ -44,3 +52,4 @@ def require_registered_spillover(experiment: Experiment) -> None:
             "kernel.request.invalid",
             field="the saved spillover inputs no longer match their registration",
         )
+    return cast("SpilloverMethod", method)

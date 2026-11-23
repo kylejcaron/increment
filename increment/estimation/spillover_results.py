@@ -41,7 +41,7 @@ class SpilloverEffect(CodedModel, BaseModel):
     estimand: Literal["spillover"] = "spillover"
     value_scale: Literal["absolute"] = "absolute"
     inference: Literal["fixed"] = "fixed"
-    method: Literal["two-stage-fixed-bet-v2"] = "two-stage-fixed-bet-v2"
+    method: Literal["two-stage-fixed-bet-v2", "two-stage-fixed-bet-v3"] = "two-stage-fixed-bet-v3"
     estimate: float = Field(allow_inf_nan=False)
     lower: float | None
     upper: float | None
