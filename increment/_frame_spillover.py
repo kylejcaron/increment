@@ -7,7 +7,9 @@ import json
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from math import fsum
+from numbers import Real
 from typing import TYPE_CHECKING, Any
 
 import narwhals as nw
@@ -20,7 +22,6 @@ from increment._spillover_design import (
     SpilloverDesign,
     SpilloverPopulation,
     canonical_id,
-    integer_scalar,
     is_label,
     refuse_input,
 )
@@ -28,16 +29,11 @@ from increment._spillover_design import (
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
-_COLUMNS = {
-    "roster": ("person_id", "group_id", "stratum"),
-    "offer_counts": ("group_id", "policy", "offers"),
-    "group_policy": ("group_id", "policy"),
-    "offered": ("person_id", "offered"),
-    "outcomes": ("person_id", "outcome"),
-}
+    from increment._metric_specs import MetricSpec
+    from increment._spillover_design import Spillover
 
 
-def _rows(frame: IntoDataFrame | None, role: str) -> Iterator[tuple[Any, ...]]:
+def _as_frame(frame: IntoDataFrame | None, role: str) -> nw.DataFrame[Any]:
     prelaunch = role in ("roster", "offer_counts")
     code = "spillover.design.invalid" if prelaunch else "spillover.log.keys"
     if frame is None:
@@ -46,18 +42,30 @@ def _rows(frame: IntoDataFrame | None, role: str) -> Iterator[tuple[Any, ...]]:
         df = nw.from_native(frame, eager_only=True)
     except (TypeError, ValueError):
         df = None
-    columns = _COLUMNS[role]
     if not isinstance(df, nw.DataFrame):
         refuse_input(code, role)
+    return df
+
+
+def _rows(frame: IntoDataFrame | None, role: str, *columns: str) -> Iterator[tuple[Any, ...]]:
+    df = _as_frame(frame, role)
+    code = (
+        "spillover.design.invalid" if role in ("roster", "offer_counts") else "spillover.log.keys"
+    )
     names = Counter(df.columns)
-    if any(names[c] != 1 for c in columns):
+    if any(not is_label(c) or names[c] != 1 for c in columns) or len(set(columns)) != len(columns):
         refuse_input(code, role)
     if role == "outcomes":
-        # Preserve the backend's null mask (including pandas nullable integer/boolean arrays).
+        outcome_col = nw.col(columns[1])
+        null_mask = outcome_col.is_null()
+        if df.schema[columns[1]].is_float():
+            null_mask = null_mask | outcome_col.is_nan()
         return (
             (person, None if missing else value)
             for person, value, missing in df.select(
-                *columns, nw.col("outcome").is_null().alias("_missing")
+                nw.col(columns[0]).alias("person"),
+                outcome_col.alias("value"),
+                null_mask.alias("missing"),
             ).iter_rows()
         )
     return df.select(*columns).iter_rows()
@@ -69,16 +77,25 @@ class _Roster:
     strata: dict[Identifier, str]
 
 
-def _roster(frame: IntoDataFrame) -> _Roster:
+def _roster(
+    frame: IntoDataFrame, unit: str, cluster: str, stratum: str | None, design: SpilloverDesign
+) -> _Roster:
     membership: dict[Identifier, Identifier] = {}
     strata: dict[Identifier, str] = {}
     duplicate = False
-    for raw_person, raw_group, stratum in _rows(frame, "roster"):
+    if stratum is None:
+        if len(design.groups_per_policy) != 1:
+            refuse_input("spillover.design.invalid", "stratum")
+        sole_stratum = next(iter(design.groups_per_policy))
+        rows = ((p, g, sole_stratum) for p, g in _rows(frame, "roster", unit, cluster))
+    else:
+        rows = _rows(frame, "roster", unit, cluster, stratum)
+    for raw_person, raw_group, group_stratum in rows:
         person, group = canonical_id(raw_person), canonical_id(raw_group)
-        if person is None or group is None or not is_label(stratum):
+        if person is None or group is None or not is_label(group_stratum):
             refuse_input("spillover.design.invalid", "roster")
-        previous_stratum = strata.setdefault(group, stratum)
-        if person in membership or previous_stratum != stratum:
+        previous_stratum = strata.setdefault(group, group_stratum)
+        if person in membership or previous_stratum != group_stratum:
             duplicate = True
         membership[person] = group
     if (
@@ -93,12 +110,12 @@ def _roster(frame: IntoDataFrame) -> _Roster:
 
 
 def _profiles(
-    frame: IntoDataFrame, roster: _Roster, design: SpilloverDesign
+    frame: IntoDataFrame, cluster: str, roster: _Roster, design: SpilloverDesign
 ) -> tuple[GroupProfile, ...]:
     counts: dict[tuple[Identifier, str], int] = {}
     duplicate = bad_law = False
     group_type = type(next(iter(roster.strata)))
-    for raw_group, policy, offers in _rows(frame, "offer_counts"):
+    for raw_group, policy, offers in _rows(frame, "offer_counts", cluster, "policy", "offers"):
         group = canonical_id(raw_group)
         if group is None or type(group) is not group_type or not is_label(policy):
             refuse_input("spillover.design.invalid", "offer_counts")
@@ -136,23 +153,27 @@ def _digest(roster: _Roster, policies: tuple[str, ...], profiles: tuple[GroupPro
 
 
 def _keyed_log(
-    frame: IntoDataFrame | None, role: str, expected: dict[Identifier, Any]
+    frame: IntoDataFrame | None,
+    role: str,
+    expected: dict[Identifier, Any],
+    key_col: str,
+    value_col: str,
 ) -> dict[Identifier, Any]:
     records: dict[Identifier, Any] = {}
-    for key, value in _rows(frame, role):
+    for key, value in _rows(frame, role, key_col, value_col):
         key = canonical_id(key)
         if key is None or key not in expected or key in records:
             refuse_input("spillover.log.keys", role)
         records[key] = value
-    if role != "outcomes" and len(records) != len(expected):
+    if len(records) != len(expected):
         refuse_input("spillover.log.keys", role)
     return records
 
 
 def _group_policies(
-    frame: IntoDataFrame | None, roster: _Roster, design: SpilloverDesign
+    frame: IntoDataFrame | None, cluster: str, roster: _Roster, design: SpilloverDesign
 ) -> dict[Identifier, str]:
-    policies = _keyed_log(frame, "group_policy", roster.strata)
+    policies = _keyed_log(frame, "group_policy", roster.strata, cluster, "policy")
     allocation: Counter[tuple[str, str]] = Counter()
     for group, policy in policies.items():
         if not is_label(policy) or policy not in design.policies:
@@ -167,44 +188,49 @@ def _group_policies(
     return policies
 
 
-def _binary(value: object, role: str) -> bool:
+def _binary_outcome(value: object) -> bool:
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
-    if not integer_scalar(value) or value not in (0, 1):
-        refuse_input("spillover.log.binary", role)
+    if (
+        not isinstance(value, (Real, Decimal))
+        or isinstance(value, np.timedelta64)
+        or value not in (0, 1)
+    ):
+        refuse_input("spillover.log.binary", "outcomes")
     return bool(value)
 
 
 def _verify_offers(
-    frame: IntoDataFrame | None,
+    assignments: dict[Identifier, Any],
     membership: dict[Identifier, Identifier],
     population: SpilloverPopulation,
     policy: dict[Identifier, str],
-) -> tuple[dict[Identifier, bool], Counter[Identifier]]:
-    offered = _keyed_log(frame, "offered", membership)
+    design: Spillover,
+) -> Counter[Identifier]:
     by_group: Counter[Identifier] = Counter()
-    for person, value in offered.items():
-        offered[person] = _binary(value, "offered")
-        if offered[person]:
+    for person, label in assignments.items():
+        if not is_label(label) or label not in (design.control_group, design.offered_group):
+            refuse_input("spillover.log.keys", "offered")
+        if label == design.offered_group:
             by_group[membership[person]] += 1
     index = {p: i for i, p in enumerate(population.design.policies)}
     for g in population.groups:
         if by_group[g.group_id] != g.offers[index[policy[g.group_id]]]:
             refuse_input("spillover.log.quota", "offered")
-    return offered, by_group
+    return by_group
 
 
 def _untreated_events(
-    frame: IntoDataFrame | None,
+    outcomes: dict[Identifier, Any],
     membership: dict[Identifier, Identifier],
-    offered: dict[Identifier, bool],
+    assignments: dict[Identifier, str],
+    control_group: str,
 ) -> Counter[Identifier]:
-    outcomes = _keyed_log(frame, "outcomes", membership)
-    if any(not flag and outcomes.get(person) is None for person, flag in offered.items()):
+    if any(value is None and assignments[p] == control_group for p, value in outcomes.items()):
         refuse_input("spillover.log.keys", "outcomes")
     events: Counter[Identifier] = Counter()
     for person, value in outcomes.items():
-        if value is not None and _binary(value, "outcomes") and not offered[person]:
+        if assignments[person] == control_group and _binary_outcome(value):
             events[membership[person]] += 1
     return events
 
@@ -226,34 +252,45 @@ class _Cell:
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class FrameSpilloverSource:
-    """Five input roles; planning uses only the eligible roster and prospective offer counts."""
+    """One row per eligible person, plus a prospective schedule and realized group policies."""
 
-    roster: IntoDataFrame
+    frame: nw.DataFrame[Any]
+    unit: str
+    group: str
+    cluster: str
+    stratum: str | None
+    design: Spillover
+    outcome: str
     offer_counts: IntoDataFrame
-    group_policy: IntoDataFrame | None = None
-    offered: IntoDataFrame | None = None
-    outcomes: IntoDataFrame | None = None
+    group_policy: IntoDataFrame | None
+    recipe: tuple[tuple[str, str], ...]
 
     def _capture(self, design: SpilloverDesign) -> tuple[_Roster, SpilloverPopulation]:
         if not isinstance(design, SpilloverDesign):
             refuse_input("spillover.design.required", "design")
-        roster = _roster(self.roster)
-        profiles = _profiles(self.offer_counts, roster, design)
+        roster = _roster(self.frame, self.unit, self.cluster, self.stratum, design)
+        profiles = _profiles(self.offer_counts, self.cluster, roster, design)
         identity = _digest(roster, design.policies, profiles)
         return roster, SpilloverPopulation(design, profiles, identity)
 
-    def freeze(self, design: SpilloverDesign) -> SpilloverPopulation:
+    def freeze(self, law: SpilloverDesign) -> SpilloverPopulation:
         """Capture eligible group profiles without accessing either assignment or outcomes."""
-        return self._capture(design)[1]
+        return self._capture(law)[1]
 
     def observe(self, population: SpilloverPopulation) -> tuple[PolicyCell, ...]:
         """Validate both assignment stages and reduce the untreated outcomes by policy and stratum."""
         roster, current = self._capture(population.design)
         if current != population:
             refuse_input("spillover.roster.changed", "roster")
-        policies = _group_policies(self.group_policy, roster, population.design)
-        offered, n_offered = _verify_offers(self.offered, roster.membership, population, policies)
-        events = _untreated_events(self.outcomes, roster.membership, offered)
+        policies = _group_policies(self.group_policy, self.cluster, roster, population.design)
+        assignments = _keyed_log(self.frame, "offered", roster.membership, self.unit, self.group)
+        n_offered = _verify_offers(
+            assignments, roster.membership, population, policies, self.design
+        )
+        outcomes = _keyed_log(self.frame, "outcomes", roster.membership, self.unit, self.outcome)
+        events = _untreated_events(
+            outcomes, roster.membership, assignments, self.design.control_group
+        )
         compared = population.design.compared_policies
         cells = {(s, p): _Cell() for s in population.design.groups_per_policy for p in compared}
         for g in population.groups:
@@ -266,3 +303,46 @@ class FrameSpilloverSource:
                 cell.unoffered += unoffered
                 cell.events += count
         return tuple(cells[k].finish(*k) for k in sorted(cells))
+
+
+def summary_spillover_source(
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    group: str,
+    cluster: str,
+    stratum: str | None,
+    design: Spillover,
+    metric: MetricSpec,
+    offer_counts: IntoDataFrame,
+    group_policy: IntoDataFrame | None,
+) -> FrameSpilloverSource:
+    """Bind a precomputed conversion to the two recorded assignment stages."""
+    outcome = metric.value_column or metric.name
+    recipe: tuple[tuple[str, str], ...] = (
+        ("source", "frame"),
+        ("shape", "summary"),
+        ("unit", unit),
+        ("group", group),
+        ("cluster", cluster),
+        ("control_group", design.control_group),
+        ("offered_group", design.offered_group),
+        ("metric", metric.name),
+        ("metric_type", metric.type),
+        ("window_days", str(metric.window_days)),
+        ("value_column", outcome),
+    )
+    if stratum is not None:
+        recipe += (("stratum", stratum),)
+    return FrameSpilloverSource(
+        _as_frame(frame, "roster"),
+        unit,
+        group,
+        cluster,
+        stratum,
+        design,
+        outcome,
+        offer_counts,
+        group_policy,
+        recipe,
+    )

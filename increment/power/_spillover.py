@@ -12,17 +12,27 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from itertools import groupby
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from scipy.special import betainccinv, betaincinv
 
-from increment._spillover_design import GroupProfile, SpilloverComparison, SpilloverPopulation
+from increment._spillover_design import (
+    GroupProfile,
+    SpilloverComparison,
+    SpilloverDesign,
+    SpilloverPopulation,
+    refuse_input,
+)
+from increment._spillover_registration import require_registered_spillover
 from increment.estimation.spillover import BatchCell, SpilloverInterval
+
+if TYPE_CHECKING:
+    from increment.kernel.experiment import Experiment
 
 _ATTEMPTS = 4096
 _MAX_GROUP_ATTEMPTS = 2**25
@@ -543,30 +553,38 @@ def _indices(population: SpilloverPopulation, comparison: SpilloverComparison) -
     return policies.index(comparison.reference), policies.index(comparison.policy)
 
 
-def _planning_population(population: SpilloverPopulation) -> SpilloverPopulation:
-    """Use structural coordinates for allocation ties, random draws and interval reductions."""
+def _planning_population(
+    population: SpilloverPopulation, comparison: SpilloverComparison
+) -> SpilloverPopulation:
+    """Order allocation ties and random draws by the directed comparison's assignment law."""
     design = population.design
-    strata = [
-        (
-            tuple(design.groups_per_policy[name].values()),
-            sorted((g.size, g.offers) for g in members),
-        )
-        for name, members in groupby(population.groups, key=lambda g: g.stratum)
-    ]
+    r, p = _indices(population, comparison)
+
+    def profile(group: GroupProfile) -> tuple[int, int, int]:
+        return group.size, group.offers[r], group.offers[p]
+
+    strata = []
+    for name, members in groupby(population.groups, key=lambda g: g.stratum):
+        ordered = sorted(members, key=profile)
+        counts = design.groups_per_policy[name]
+        reference, policy = counts[comparison.reference], counts[comparison.policy]
+        # The assignment law pools all other policies for this comparison.
+        allocation = (reference, policy, len(ordered) - reference - policy)
+        strata.append((allocation, ordered, counts))
     # Smaller first-stage allocations precede larger ones. Break ties by the
     # ordered group profiles, larger first. Equal signatures are exchangeable.
-    strata.sort(key=lambda block: block[1], reverse=True)
+    strata.sort(key=lambda block: [profile(g) for g in block[1]], reverse=True)
     strata.sort(key=lambda block: block[0])
     # Population columns sort by (stratum label, group ID); use ranks for both
     # so neither simulator nor interval reduction needs a second permutation.
     width = len(str(len(strata) - 1))
     quotas = {}
     groups = []
-    for rank, (counts, profiles) in enumerate(strata):
+    for rank, (_, members, counts) in enumerate(strata):
         name = str(rank).zfill(width)
-        quotas[name] = dict(zip(design.policies, counts, strict=True))
-        for size, offers in profiles:
-            groups.append(GroupProfile(len(groups), name, size, offers))
+        quotas[name] = counts
+        for group in members:
+            groups.append(GroupProfile(len(groups), name, group.size, group.offers))
     return replace(
         population, design=replace(design, groups_per_policy=quotas), groups=tuple(groups)
     )
@@ -581,7 +599,7 @@ def evaluate_design(
     work = len(population.groups) * len(population.design.comparisons) * _ATTEMPTS
     if work > _MAX_GROUP_ATTEMPTS:
         return PlanningEvidence((), "not_assessed", "simulation_budget_exceeded")
-    population = _planning_population(population)
+    population = _planning_population(population, comparison)
     groups = population.groups
     r, p = _indices(population, comparison)
     sizes = tuple(g.size for g in groups)
@@ -601,3 +619,87 @@ def evaluate_design(
             ):
                 return PlanningEvidence((), "not_assessed", "group_draw_exceeds_planning_limit")
     return _conclude(_measure(population, comparison, grid))
+
+
+@dataclass(frozen=True, slots=True)
+class SpilloverPowerResult:
+    """Ability to detect the registered change in one policy comparison before launch."""
+
+    policy: str
+    reference: str
+    evidence: PlanningEvidence = field(repr=False)
+
+    @property
+    def status(self) -> str:
+        return self.evidence.status
+
+    @property
+    def reason(self) -> str | None:
+        return self.evidence.reason
+
+    @property
+    def message(self) -> str:
+        """A pre-launch interpretation for the signed change the analyst chose."""
+        if self.status != "not_assessed":
+            effect = next(s.true_effect for s in self.evidence.scenarios if s.true_effect != 0)
+            change = f"{100 * effect:+.6g} percentage points"
+            if self.evidence.status == "supported":
+                return (
+                    f"All six scenarios modeling a change of {change} met the 80% detection target."
+                )
+            if self.evidence.status == "underpowered":
+                return (
+                    f"At least one scenario modeling a change of {change} fell short of 80% detection. "
+                    "Not detecting the change would not rule it out."
+                )
+            return f"The simulations could not establish 80% detection for a change of {change}."
+        match self.reason:
+            case "missing_baseline_rate":
+                why = "Supply a comparable pre-experiment event rate to check power."
+            case "simulation_budget_exceeded":
+                why = "This design exceeds the planning simulation limit."
+            case "group_draw_exceeds_planning_limit":
+                why = "A group's simulated draw exceeds the planning limit."
+            case "effect_rounds_to_zero":
+                why = "On this roster the chosen change rounds to zero people changing outcome."
+            case "effect_exceeds_capacity":
+                why = (
+                    "In a modeled scenario, too few outcomes can change in the requested "
+                    "direction among groups where the two policies offer different counts."
+                )
+            case "degenerate_cancellation":
+                why = (
+                    "The simulation cannot place offsetting gains and losses in separate "
+                    "groups where the two policies offer different counts."
+                )
+            case _:
+                why = "The planning simulations did not establish detection probabilities."
+        return f"Power was not assessed. {why} The experiment can still report an effect range."
+
+
+def spillover_power(experiment: Experiment) -> tuple[SpilloverPowerResult, ...]:
+    """Assess the registered policy changes using only pre-launch group sizes and quotas."""
+    if experiment.design.get("kind") != "spillover":
+        refuse_input("spillover.design.required", "design")
+    require_registered_spillover(experiment)
+    declaration: Mapping[str, Any] = experiment.design
+    law = SpilloverDesign(
+        declaration["groups_per_policy"],
+        tuple(SpilloverComparison(**item) for item in declaration["comparisons"]),
+        declaration["outcome"],
+        declaration["horizon"],
+        alpha=declaration["alpha"],
+    )
+    context: Mapping[str, Any] = experiment.analysis_context
+    population = SpilloverPopulation(
+        law,
+        tuple(
+            GroupProfile(i, stratum, size, offers)
+            for i, (stratum, size, offers) in enumerate(context["planning_groups"])
+        ),
+        context["roster_digest"],
+    )
+    return tuple(
+        SpilloverPowerResult(c.policy, c.reference, evaluate_design(population, c))
+        for c in law.comparisons
+    )

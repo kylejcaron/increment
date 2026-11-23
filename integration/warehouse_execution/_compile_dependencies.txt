@@ -1,4 +1,4 @@
-# Traced on commit: 5f44b9613904a3f5a8e80fd744f4afdf1c3fd400
+# Traced on commit: 5284235e2e667224f78a5004355c4eaa056d6bed
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -21,6 +21,7 @@ increment._exploratory
 increment._finite_sample_refusals
 increment._frame_moments
 increment._frame_panel
+increment._frame_spillover
 increment._frame_validation
 increment._health
 increment._identity
@@ -48,6 +49,9 @@ increment._source_operations
 increment._source_sequential
 increment._source_types
 increment._source_workflows
+increment._spillover_binding
+increment._spillover_design
+increment._spillover_registration
 increment._study
 increment._trigger_integrity
 increment._unit_cycle
@@ -59,6 +63,7 @@ increment.artifacts
 increment.artifacts._query
 increment.breakout
 increment.breakout.estimates
+increment.breakout.projection
 increment.builders
 increment.compatibility
 increment.decide
@@ -86,6 +91,7 @@ increment.estimation._relative_posterior
 increment.estimation._result_types
 increment.estimation._sequential_inversion
 increment.estimation._sequential_likelihood
+increment.estimation._spillover_mixture
 increment.estimation._student_t
 increment.estimation._tails
 increment.estimation._winsor_bootstrap
@@ -129,6 +135,8 @@ increment.estimation.results
 increment.estimation.risk_difference
 increment.estimation.sequential
 increment.estimation.sequential_result
+increment.estimation.spillover
+increment.estimation.spillover_results
 increment.estimation.variance
 increment.estimation.winsor
 increment.estimators
@@ -195,10 +203,12 @@ increment.readouts._requests
 increment.readouts._run
 increment.readouts._run_acquisition
 increment.readouts._source_digest
+increment.readouts._spillover_result
 increment.readouts._srm
 increment.readouts._whole_window
 increment.result_envelope
 increment.semantics
+increment.semantics._spillover
 increment.semantics.artifact
 increment.semantics.assignment
 increment.semantics.design

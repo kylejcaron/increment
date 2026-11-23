@@ -38,6 +38,7 @@ from increment.estimation.arm_contract import (
     PlanningFamilyExpansion,
     RelativeDecisionPolicy,
 )
+from increment.power._spillover import SpilloverPowerResult, spillover_power
 from increment.power.core import (
     Baseline,
     PowerDesign,
@@ -67,6 +68,8 @@ from increment.power.unit_cycle import (
 )
 
 __all__ = [
+    "SpilloverPowerResult",
+    "spillover_power",
     "SwitchbackBaseline",
     "SwitchbackPowerResult",
     "switchback_achieved_power",

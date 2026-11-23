@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -39,6 +39,7 @@ from increment.decision import (
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
 from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.priors import prior_from_payload
+from increment.kernel.contracts import View, _refuse
 from increment.plan import with_unassigned_procedures
 from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
 from increment.semantics.shared import _refuse_shared_trigger, _refuse_uncaptured_shared_metric
@@ -86,6 +87,7 @@ def _compliance_only_request(
 _SCOPE_OPERATIONS = {
     "run": ("run",),
     "switchback": ("run",),
+    "spillover": ("run",),
     "daily": ("run_daily_lift", "run_daily"),
     "asof": ("run_asof_lift", "run_asof"),
     "breakout": ("run_breakout",),
@@ -97,8 +99,7 @@ _SCOPE_FAMILY_MISMATCH = RefusalSpec(
     "kernel.scope.family_mismatch",
     CapabilityError,
     template=(
-        "A switchback view requires a switchback experiment; "
-        "use run, daily, asof, or breakout with this experiment."
+        "A {view} view requires a {view} experiment. Use a view declared by this experiment."
     ),
     keys=frozenset({"experiment_id", "view"}),
 )
@@ -274,8 +275,55 @@ def _refuse_undeclared_breakouts(experiment: Any, scope: Any) -> None:
     )
 
 
+def require_spillover_request(experiment: Any, options: Mapping[str, Any]) -> None:
+    """Admit only the registered whole-trial comparison; never an arm analysis on these data."""
+    registered_view = View(view="spillover")
+    outcome = experiment.design.get("outcome")
+    if tuple(experiment.metrics) != (outcome,):
+        _refuse("kernel.request.invalid", field="request the registered spillover metric")
+    if (
+        experiment.views != (registered_view,)
+        or scope_operation(experiment, registered_view) != "run"
+    ):
+        _refuse(
+            "kernel.request.invalid",
+            field="spillover supports only its registered whole-trial view",
+        )
+    if (
+        not set(options) <= {"metrics", "coherence"}
+        or options.get("coherence", "captured") != "captured"
+    ):
+        _refuse(
+            "kernel.request.invalid",
+            field="spillover supports only its registered comparison and metric",
+        )
+    if "metrics" in options:
+        selection = options["metrics"]
+        if (
+            isinstance(selection, Sequence)
+            and not isinstance(selection, (str, bytes, bytearray))
+            and len(selection) == 1
+        ):
+            metric = selection[0]
+            if isinstance(metric, str) and metric == outcome:
+                return
+            if hasattr(metric, "model_dump"):
+                metric = metric.model_dump(mode="json")
+            if isinstance(metric, Mapping) and declaration_value(metric) == declaration_value(
+                experiment.metrics[outcome]
+            ):
+                return
+        _refuse("kernel.request.invalid", field="request the registered spillover metric")
+
+
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     """Validate supported execution coordinates without acquiring evidence."""
+    if experiment.design.get("kind") == "spillover":
+        try:
+            require_spillover_request(experiment, experiment.request_options)
+        except CodedError as refusal:
+            return (refusal,)
+        return ()
     operation = scope_operation(experiment, scope)
     if (
         operation not in _SCOPE_OPERATIONS[scope.view]
@@ -302,7 +350,7 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         validate_breakout_identities(experiment, scope)
         if scope.view == "breakout":
             _refuse_undeclared_breakouts(experiment, scope)
-        if scope.view == "switchback" and not contrast:
+        if scope.view == "spillover" or (scope.view == "switchback" and not contrast):
             refuse(
                 _SCOPE_FAMILY_MISMATCH,
                 experiment_id=experiment.experiment_id,

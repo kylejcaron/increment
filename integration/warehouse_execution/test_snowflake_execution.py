@@ -55,15 +55,25 @@ def test_spillover_requires_session_independent_sources(snowflake_con, tmp_path)
     import sqlglot as sg
 
     from increment.errors import CodedError
-    from tests.spillover_trial import three_policy_trial, write_study
+    from tests.spillover_trial import (
+        WAREHOUSE_ROLES,
+        complete_receipt,
+        three_policy_trial,
+        write_study,
+    )
 
     con = snowflake_con
     design, frames = three_policy_trial()
     tag = uuid4().hex[:12]
-    names = {role: f"spill_{tag}_{role}" for role in frames}
+    names = {role: f"spill_{tag}_{role}" for role in WAREHOUSE_ROLES}
     study = tmp_path / "study.yaml"
     namespace = f"{con.current_catalog}.{con.current_database}"
-    write_study(study, design, {role: f"{namespace}.{name}" for role, name in names.items()})
+    write_study(
+        study,
+        design,
+        {role: f"{namespace}.{name}" for role, name in names.items()},
+        dialect="snowflake",
+    )
     with ExitStack() as cleanup:
         for role, name in names.items():
             if role == "offer_counts":
@@ -76,14 +86,16 @@ def test_spillover_requires_session_independent_sources(snowflake_con, tmp_path)
                 cleanup.callback(con.drop_table, name)
 
         # A session-local log is irrelevant before launch but cannot be the readout source.
-        con.create_table(names["outcomes"], frames["outcomes"], temp=True)
-        cleanup.callback(con.drop_table, names["outcomes"])
-        experiment, reader = from_definitions(study, con, family="spillover")
+        con.create_table(names["purchases"], frames["purchases"], temp=True)
+        cleanup.callback(con.drop_table, names["purchases"])
+        experiment, reader = from_definitions(
+            study, con, experiment_name="pilot", source_snapshot_evidence=complete_receipt()
+        )
         with reader, pytest.raises(CodedError) as temporary:
             run(experiment, reader)
         assert (temporary.value.code, temporary.value.context["field"]) == (
             "spillover.design.invalid",
-            "outcomes",
+            "purchases",
         )
 
         temp_view = f"{names['roster']}_view"
@@ -97,9 +109,14 @@ def test_spillover_requires_session_independent_sources(snowflake_con, tmp_path)
             pass
         cleanup.callback(con.drop_view, temp_view)
         names["roster"] = temp_view
-        write_study(study, design, {role: f"{namespace}.{name}" for role, name in names.items()})
+        write_study(
+            study,
+            design,
+            {role: f"{namespace}.{name}" for role, name in names.items()},
+            dialect="snowflake",
+        )
         with pytest.raises(CodedError) as temporary:
-            from_definitions(study, con, family="spillover")
+            from_definitions(study, con, experiment_name="pilot")
         assert (temporary.value.code, temporary.value.context["field"]) == (
             "spillover.design.invalid",
             "roster",

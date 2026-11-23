@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from fractions import Fraction
 from itertools import combinations, permutations, product
 from math import comb
@@ -14,11 +15,11 @@ import numpy as np
 import pyarrow as pa
 from scipy.stats import binom
 
-from increment import run
+from increment import AnalysisPlan, MetricSpec, Spillover, SpilloverComparison, from_frame, run
 from increment._spillover_design import GroupProfile, SpilloverPopulation
 from increment.estimation.spillover import summarize_cells, summarize_counts
-from increment.power import _spillover
-from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
+from increment.estimation.spillover_results import SpilloverEffects
+from increment.power import _spillover, spillover_power
 
 
 def offer_trial(level_counts, quotas, changes):
@@ -31,7 +32,7 @@ def offer_trial(level_counts, quotas, changes):
     assignments = rng.permutation(np.repeat(labels, list(level_counts.values()))).tolist()
     # Only even-numbered groups have an event under the second policy; the
     # potential outcomes are fixed before either draw.
-    person_ids, group_ids, offers, outcome_ids, events = [], [], [], [], []
+    person_ids, group_ids, own_assignments, bought, buyers = [], [], [], [], []
     for j, (group, policy) in enumerate(zip(groups, assignments, strict=True)):
         selected = set(rng.choice(size, size=quotas[policy], replace=False))
         event = policy == labels[1] and j % 2 == 0
@@ -39,13 +40,18 @@ def offer_trial(level_counts, quotas, changes):
             person = f"{group}/{i}"
             person_ids.append(person)
             group_ids.append(group)
-            offers.append(i in selected)
-            if i not in selected:
-                outcome_ids.append(person)
-                events.append(event)
+            offered = i in selected
+            own_assignments.append("offered" if offered else "no_offer")
+            bought.append(None if offered else event)
+            if not offered and event:
+                buyers.append(person)
+    roster = pa.table(
+        {"group_id": group_ids, "person_id": person_ids, "stratum": ["all"] * len(person_ids)}
+    )
     frames = {
-        "roster": pa.table(
-            {"group_id": group_ids, "person_id": person_ids, "stratum": ["all"] * len(person_ids)}
+        "roster": roster,
+        "summary": roster.append_column("assignment", pa.array(own_assignments)).append_column(
+            "bought", pa.array(bought)
         ),
         "offer_counts": pa.table(
             {
@@ -55,20 +61,35 @@ def offer_trial(level_counts, quotas, changes):
             }
         ),
         "group_policy": pa.table({"group_id": groups, "policy": assignments}),
-        "offered": pa.table({"person_id": person_ids, "offered": offers}),
-        "outcomes": pa.table({"person_id": outcome_ids, "outcome": events}),
-    }
-    design = SpilloverDesign(
-        groups_per_policy={"all": level_counts},
-        comparisons=tuple(
-            SpilloverComparison(
-                policy=p, reference=labels[0], meaningful_effect=effect, baseline_rate=0.25
-            )
-            for p, effect in zip(labels[1:], changes, strict=True)
+        "assignments": pa.table(
+            {
+                "person_id": person_ids,
+                "assignment": own_assignments,
+                "assigned_at": [datetime(2025, 1, 1, 12, tzinfo=UTC)] * len(person_ids),
+                "experiment_id": ["pilot"] * len(person_ids),
+            }
         ),
-        outcome="ordered",
-        horizon="one week",
-    )
+        "purchases": pa.table(
+            {
+                "person_id": buyers,
+                "purchased_at": [datetime(2025, 1, 2, tzinfo=UTC)] * len(buyers),
+                "channel": ["web"] * len(buyers),
+            }
+        ),
+    }
+    design = {
+        "alpha": 0.05,
+        "groups_per_policy": {"all": level_counts},
+        "comparisons": [
+            {
+                "policy": p,
+                "reference": labels[0],
+                "meaningful_effect": effect,
+                "baseline_rate": 0.25,
+            }
+            for p, effect in zip(labels[1:], changes, strict=True)
+        ],
+    }
     return design, frames
 
 
@@ -80,13 +101,33 @@ def three_levels():
     )
 
 
-def _report(design, frames):
-    start = monotonic()
-    experiment, reader = from_frame(**frames, design=design)
-    elapsed = monotonic() - start
+def _report(fields, frames):
+    design = Spillover(
+        control_group="no_offer",
+        offered_group="offered",
+        groups_per_policy=fields["groups_per_policy"],
+        comparisons=tuple(SpilloverComparison(**c) for c in fields["comparisons"]),
+    )
+    experiment, reader = from_frame(
+        frames["summary"],
+        shape="summary",
+        unit="person_id",
+        group="assignment",
+        cluster="group_id",
+        stratum="stratum",
+        design=design,
+        offer_counts=frames["offer_counts"],
+        group_policy=frames["group_policy"],
+        metrics=[MetricSpec(name="bought", type="conversion", window_days=7)],
+        plan=AnalysisPlan(primary="bought", alpha=fields["alpha"]),
+    )
     with reader:
-        result = run(experiment, reader)
-    for planning, row in zip(experiment.planning, result.comparisons, strict=True):
+        start = monotonic()
+        plans = spillover_power(experiment)
+        elapsed = monotonic() - start
+        rows = run(experiment, reader).readout()
+        assert isinstance(rows, SpilloverEffects)
+    for planning, row in zip(plans, rows, strict=True):
         scenarios = planning.evidence.scenarios
         print(
             json.dumps(
@@ -128,15 +169,20 @@ class CalibrationCheck:
     limit: float
 
 
+def diagnostic_population(groups, quotas, comparisons, *, alpha=0.05):
+    """Construct a finite population directly from known group profiles, without person logs."""
+    design = Spillover("no_offer", "offered", quotas, comparisons)
+    profiles = tuple(GroupProfile(*group) for group in groups)
+    return SpilloverPopulation(
+        design.law("event", 7, alpha), profiles, "synthetic finite population"
+    )
+
+
 def _population(sizes, strata, quotas, offers):
     # These are generated finite populations, specified without person identities.
     comparison = SpilloverComparison("upper", "base", 0.01, 0.25)
-    design = SpilloverDesign(quotas, (comparison,), "event", "one week")
-    groups = tuple(
-        GroupProfile(i, s, n, q)
-        for i, (s, n, q) in enumerate(zip(strata, sizes, offers, strict=True))
-    )
-    return SpilloverPopulation(design, groups, "synthetic finite population"), comparison
+    groups = ((i, s, n, q) for i, (s, n, q) in enumerate(zip(strata, sizes, offers, strict=True)))
+    return diagnostic_population(groups, quotas, (comparison,)), comparison
 
 
 def _hypergeometric(n, events, draws):

@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from numbers import Real
+from operator import le
 from types import MappingProxyType
 from typing import Never, TypeGuard
 
@@ -15,6 +16,7 @@ import numpy as np
 from increment.errors import InvalidRequestError, raiser, refusals
 
 type Identifier = str | int
+SPILLOVER_ESTIMATOR = "spillover.two_stage"
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -40,6 +42,21 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 _REQUIREMENTS = {
+    ("spillover.design.invalid", "offered_group"): "use different labels for offer and no offer",
+    ("spillover.design.invalid", "window_days"): "give the conversion a fixed positive day count",
+    ("spillover.design.invalid", "metric"): (
+        "choose one fixed-window conversion for the experiment unit, without a margin or rollout cost"
+    ),
+    ("spillover.design.invalid", "plan"): (
+        "declare one primary conversion and its alpha, without other methods or decision rules"
+    ),
+    ("spillover.design.invalid", "design"): (
+        "use the two-stage policy comparison, not an individual-arm analysis"
+    ),
+    ("spillover.design.invalid", "experiment"): (
+        "use the eligible roster and group offer counts without one-stage allocation, "
+        "an assignment ledger, a trigger, cluster adjustment, pre-periods, breakouts or factors"
+    ),
     ("spillover.design.invalid", "alpha"): "choose a false-alarm rate strictly between 0 and 1",
     (
         "spillover.design.invalid",
@@ -91,7 +108,7 @@ def refuse_input(code: str, field: str) -> Never:
     requirement = _REQUIREMENTS.get((code, field))
     if requirement is None:
         requirement = (
-            "use booleans or integer zeros and ones"
+            "use booleans or numeric zeros and ones"
             if code == "spillover.log.binary"
             else "supply the declared fields and types"
         )
@@ -132,6 +149,36 @@ def _sequence[T](values: Sequence[T], field: str) -> tuple[T, ...]:
     return tuple(values)
 
 
+def _comparison_values(
+    policy: object, reference: object, effect: object, rate: object
+) -> tuple[str, str, float, float | None]:
+    policy_name = _label(policy, "policy")
+    reference_name = _label(reference, "reference")
+    if policy_name == reference_name:
+        _raise(
+            "spillover.design.invalid",
+            field="comparisons",
+            requirement="choose two distinct policies",
+        )
+    if (
+        not isinstance(effect, Real)
+        or isinstance(effect, (bool, np.bool_, np.timedelta64))
+        or not (le(-1, effect) and le(effect, 1))
+        or float(effect) == 0
+    ):
+        _raise("spillover.planning.meaningful_effect", meaningful_effect=effect)
+    baseline = None
+    if rate is not None:
+        if (
+            not isinstance(rate, Real)
+            or isinstance(rate, (bool, np.bool_, np.timedelta64))
+            or not (le(0, rate) and le(rate, 1))
+        ):
+            _raise("spillover.planning.baseline_rate", baseline_rate=rate)
+        baseline = float(rate)
+    return policy_name, reference_name, float(effect), baseline
+
+
 @dataclass(frozen=True, slots=True)
 class SpilloverComparison:
     """A signed change in untreated outcome probability: policy minus reference."""
@@ -142,31 +189,13 @@ class SpilloverComparison:
     baseline_rate: float | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "policy", _label(self.policy, "policy"))
-        object.__setattr__(self, "reference", _label(self.reference, "reference"))
-        if self.policy == self.reference:
-            _raise(
-                "spillover.design.invalid",
-                field="comparisons",
-                requirement="choose two distinct policies",
-            )
-        effect, rate = self.meaningful_effect, self.baseline_rate
-        if (
-            not isinstance(effect, Real)
-            or isinstance(effect, (bool, np.bool_, np.timedelta64))
-            or not -1 <= effect <= 1
-            or effect == 0
-        ):
-            _raise("spillover.planning.meaningful_effect", meaningful_effect=effect)
-        if rate is not None:
-            if (
-                not isinstance(rate, Real)
-                or isinstance(rate, (bool, np.bool_, np.timedelta64))
-                or not 0 <= rate <= 1
-            ):
-                _raise("spillover.planning.baseline_rate", baseline_rate=rate)
-            object.__setattr__(self, "baseline_rate", float(rate))
-        object.__setattr__(self, "meaningful_effect", float(effect))
+        policy, reference, effect, rate = _comparison_values(
+            self.policy, self.reference, self.meaningful_effect, self.baseline_rate
+        )
+        object.__setattr__(self, "policy", policy)
+        object.__setattr__(self, "reference", reference)
+        object.__setattr__(self, "meaningful_effect", effect)
+        object.__setattr__(self, "baseline_rate", rate)
 
 
 def _freeze_allocation(
@@ -192,6 +221,68 @@ def _freeze_allocation(
             refuse_input("spillover.design.quota", "groups_per_policy")
         frozen[name] = MappingProxyType(dict(sorted(row.items())))
     return MappingProxyType(dict(sorted(frozen.items())))
+
+
+def _comparison_family(
+    comparisons: Sequence[SpilloverComparison], policies: Mapping[str, int]
+) -> tuple[SpilloverComparison, ...]:
+    family = _sequence(comparisons, "comparisons")
+    pairs: set[frozenset[str]] = set()
+    for comparison in family:
+        if not isinstance(comparison, SpilloverComparison):
+            _raise(
+                "spillover.design.invalid",
+                field="comparisons",
+                requirement="supply SpilloverComparison records",
+            )
+        if comparison.policy not in policies or comparison.reference not in policies:
+            _raise(
+                "spillover.design.invalid",
+                field="comparisons",
+                requirement="compare only declared policies",
+            )
+        pair = frozenset((comparison.policy, comparison.reference))
+        if pair in pairs:
+            refuse_input("spillover.design.duplicate", "comparisons")
+        pairs.add(pair)
+    return family
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class Spillover:
+    """Two individual assignments and the policies randomized across groups."""
+
+    control_group: str
+    offered_group: str
+    groups_per_policy: Mapping[str, Mapping[str, int]]
+    comparisons: tuple[SpilloverComparison, ...]
+
+    def __init__(
+        self,
+        control_group: str,
+        offered_group: str,
+        groups_per_policy: Mapping[str, Mapping[str, int]],
+        comparisons: Sequence[SpilloverComparison],
+    ) -> None:
+        control = _label(control_group, "control_group")
+        offered = _label(offered_group, "offered_group")
+        if control == offered:
+            refuse_input("spillover.design.invalid", "offered_group")
+        quotas = _freeze_allocation(groups_per_policy)
+        family = _comparison_family(comparisons, next(iter(quotas.values())))
+        object.__setattr__(self, "control_group", control)
+        object.__setattr__(self, "offered_group", offered)
+        object.__setattr__(self, "groups_per_policy", quotas)
+        object.__setattr__(self, "comparisons", family)
+
+    def law(self, metric_name: str, window_days: int, alpha: float) -> SpilloverDesign:
+        """Bind the assignment law to the conversion window and family error rate."""
+        if not integer_scalar(window_days) or window_days < 1:
+            refuse_input("spillover.design.invalid", "window_days")
+        horizon = f"{window_days} day" if window_days == 1 else f"{window_days} days"
+        return SpilloverDesign(
+            self.groups_per_policy, self.comparisons, metric_name, horizon, alpha=alpha
+        )
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -222,32 +313,14 @@ class SpilloverDesign:
         ):
             refuse_input("spillover.design.invalid", "alpha")
         quotas = _freeze_allocation(groups_per_policy)
-        policies = tuple(next(iter(quotas.values())))
-        family = _sequence(comparisons, "comparisons")
-        pairs: set[frozenset[str]] = set()
-        for comparison in family:
-            if not isinstance(comparison, SpilloverComparison):
-                _raise(
-                    "spillover.design.invalid",
-                    field="comparisons",
-                    requirement="supply SpilloverComparison records",
-                )
-            pair = frozenset((comparison.policy, comparison.reference))
-            if not pair.issubset(policies):
-                _raise(
-                    "spillover.design.invalid",
-                    field="comparisons",
-                    requirement="compare only declared policies",
-                )
-            if pair in pairs:
-                refuse_input("spillover.design.duplicate", "comparisons")
-            pairs.add(pair)
+        policies = next(iter(quotas.values()))
+        family = _comparison_family(comparisons, policies)
         object.__setattr__(self, "groups_per_policy", quotas)
         object.__setattr__(self, "comparisons", family)
         object.__setattr__(self, "outcome", _label(outcome, "outcome"))
         object.__setattr__(self, "horizon", _label(horizon, "horizon"))
         object.__setattr__(self, "alpha", float(alpha))
-        object.__setattr__(self, "policies", policies)
+        object.__setattr__(self, "policies", tuple(policies))
 
     @property
     def compared_policies(self) -> frozenset[str]:

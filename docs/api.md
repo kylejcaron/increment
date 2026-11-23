@@ -163,14 +163,14 @@ values.
 
 ### Current changes
 
-- [Two-stage spillover experiments](guides/spillover.md) compare outcomes for
-  people who got no offer across prespecified offer levels. Set one family
-  `alpha` (default `0.05`) before assignment. Dataframes and warehouse tables
-  return the same estimate, range and direction. An optional historical rate
-  helps assess power; it does not determine whether the final interval is shown.
-  Stores with identical offer counts under both policies cannot contribute to
-  that spillover. The interval now respects this limit (`two-stage-fixed-bet-v2`);
-  register with this version before assignment.
+- [Two-stage offer experiments](guides/spillover.md) use the named
+  `from_definitions` builder or `from_frame(shape="summary")`, then `run`.
+  The named experiment reuses a fixed-window conversion metric and reads
+  both random assignments in the warehouse. Save the experiment before
+  launch; at measurement bind a fresh reader with the purchase feed's
+  certified cutoff and completeness. `results_store=` saves signed policy
+  comparisons for offline reopening. `increment.power.spillover_power`
+  checks pre-launch power without reading purchases.
 
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because
@@ -1129,35 +1129,31 @@ across publication and requests.
 
 ## Two-stage spillover
 
-Use `increment.from_definitions(path, con, family="spillover")` for warehouse tables or `increment.spillover.from_frame(...)` for local dataframes. Both return an experiment and a reader. Call `increment.run(experiment, reader)` to read the comparisons.
+Use `from_definitions(path, con, experiment_name=...)` for a named warehouse experiment with `design.mechanism: spillover`, or `from_frame(..., shape="summary", design=Spillover(...))` for one completed conversion per eligible person. Both return an `Experiment` and `ExperimentReader`. The [worked store example](guides/spillover.md) covers both assignments and both input shapes.
 
-`SpilloverDesign` declares the group counts for each offer level in each stratum, one binary outcome, its time window, and an ordered list of comparisons. Set `alpha` on the design to limit the chance that any registered interval misses its true effect (default `0.05`). A `SpilloverComparison` names the policy and reference, a signed meaningful change in proportion units, and an optional historical event rate for power. The design compares different amounts of **one** offer, not different treatments.
+`Spillover` names the two **individual assignment labels**, the number of groups assigned to each offer policy within each stratum, and the ordered comparisons. `SpilloverComparison` names the policy and reference, a signed meaningful change in proportion units, and an optional historical event rate. `plan.primary` selects one fixed-window conversion; `plan.alpha` (default `0.05`) protects all registered comparisons together.
 
-Before assignment, bind the eligible roster and the number of offers each group would make at each level. Check `experiment.planning` and save `experiment.registration_id`. To reopen, pass the saved value as `expected_registration` to the same builder and source recipe. To analyze, also supply the group policy log, individual offer log, and an explicit yes/no outcome for every person who got no offer. The [guide](guides/spillover.md) gives the five table schemas and an executable warehouse example.
+Save `experiment.to_json()` before assignment and check `spillover_power(experiment)` for each planned change. At measurement call `run(Experiment.from_json(saved), reader, results_store=store, run_id=...)` with a reader bound to the current source. The warehouse reader needs a `SourceSnapshotEvidence` with a cutoff and a certified complete-through time for the outcome feed. A missing certification is not evidence of zero purchases.
 
-Ordinary and spillover studies can share a definitions directory. Select the spillover by `family="spillover", experiment_name=...`. Ordinary `runnable()` does not check spillover readiness: `experiment.planning` assesses power before launch; `run` checks the recorded inputs after the outcome window closes.
-
-The warehouse sends region-by-policy summaries to the estimator. They contain no customer or store IDs, but a total based on one person can still reveal that person's outcome.
-
-`run(...).comparisons` keeps the registered pairs in order. `estimate` is the change for people kept **without** an offer, under `policy` minus `reference`. Each eligible person counts equally. Simply pooling untreated people answers a different question. With unequal group sizes the estimate can lie outside `[-1, 1]`; the true difference in probabilities cannot.
+`result.readout()` returns one row per registered pair. `estimate` is **policy minus reference** in the chance of conversion if a person receives no offer. Everyone on the eligible roster counts equally, although only outcomes for people assigned no offer are used. With unequal group sizes the estimate can lie outside `[-1, 1]`; the true difference cannot. This is not relative lift.
 
 Read the endpoints (`lower`, `upper`) in proportion units. A range wholly above zero gives `direction="increase"`; one wholly below gives `"decrease"`. A range that touches or crosses zero is `"inconclusive"`. If no range can be computed, `direction` is `"unavailable"` and `unavailable_reason` says why. Low power, missing history, and identical observed outcomes do not withhold a range. Each row records `alpha`, `method`, the number of registered comparisons (`family_size`), and the number of distinct policies they compare (`policy_count`).
 
 `range_basis` tells you what the endpoints mean. `family_interval` uses the experiment's outcomes. `attainable_range` gives the whole range allowed by the registered offer counts; it does not show a direction. `identical_offer_counts` means the two policies cannot differ under this design's assumptions: the point and range are exactly zero. `unavailable` means no interval was computed. A nonzero range can be narrower than the sampling variation in the point estimate; the point is not clipped to fit.
 
-These ranges apply at the registered horizon, not to repeated looks or comparisons picked after seeing outcomes. For a record of the run, [archive the input versions and comparison rows](guides/spillover.md#keep-a-result-you-can-reproduce); the registration ID alone is not an outcome snapshot. See the [design assumptions and evidence](reference/validation-evidence.md#ev-spillover-rct2).
+These intervals apply at the registered horizon, not to repeated looks or comparisons picked after seeing outcomes. Use `result.to_frame()` for tabular rows and `RunResult.from_handle(handle, registration=experiment.registration)` to read saved comparisons. Saving results does not preserve the source data. See the [design assumptions and evidence](reference/validation-evidence.md#ev-spillover-rct2).
 
-::: increment.spillover.SpilloverComparison
+::: increment.Spillover
 
-::: increment.spillover.SpilloverDesign
+::: increment.SpilloverComparison
 
-::: increment.spillover.SpilloverExperiment
+::: increment.power.spillover_power
 
-::: increment.spillover.SpilloverReader
+::: increment.power.SpilloverPowerResult
 
-::: increment.spillover.SpilloverResult
+::: increment.results.SpilloverEffect
 
-::: increment.spillover.from_frame
+::: increment.results.SpilloverEffects
 
 ## Logged-policy evaluation
 

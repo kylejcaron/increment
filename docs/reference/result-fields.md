@@ -98,10 +98,11 @@ missing evidence, and calculation failures remain visible.
 `readout()` without a scope is valid only when the run executed one view. With
 several views, pass one of the experiment's scopes; omitting it refuses with
 `results.readout.scope_required`, and a scope the run did not execute refuses
-with `results.readout.scope_unknown`. A result restored by
-`RunResult.from_handle` or a pickle keeps its portable cells only, so
-`readout()` refuses with `results.readout.not_retained`; its `to_frame()`,
-`render` and `readout_table` still read the saved cells.
+with `results.readout.scope_unknown`. A restored result retains its portable
+cells. `readout()` refuses with `results.readout.not_retained` for collections
+that require live rows; `to_frame()` and `render` still read saved cells.
+The two-stage offer comparison can be read entirely from its saved cells, so
+`RunResult.from_handle(..., registration=...).readout()` also works offline.
 
 Portable result cells have a closed set of row kinds. Readers refuse an
 unrecognized `row_kind` with `results.cell.schema_unsupported`; they never
@@ -199,6 +200,9 @@ on result objects and tables.
 |---|---|---|---|
 | Arm comparisons: `from_frame` (summary or panel), `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
 | Switchback: `from_switchback_frame` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
+| Two-stage offer policies: named `from_definitions` or `from_frame(shape="summary")` | `SpilloverEffects` | `SpilloverEffect` | Signed absolute difference in conversion under personal nonoffer; `0.05` is five percentage points. |
+
+In a [two-stage offer experiment](../guides/spillover.md), `policy` minus `reference` is the comparison and `analysis_population="assigned"` identifies the whole eligible roster. `own_assignment="unoffered"` identifies whose outcomes informed it; it does not narrow the target population to the customers who happened not to receive an offer. Use the row's `direction`, interval endpoints and `range_basis`, not an arm-relative lift or an overall decision.
 
 A `LiftEstimate` can be absolute. An encouragement design's additive LATE row
 and an observational metric reported with `run(value_scale={metric: "absolute"})`

@@ -99,7 +99,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_summary) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_panel) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_switchback_panel) | [supported (conditional)](#capability-ingresses-triggered-day-axis-histories-from_definitions) | [supported (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_moments) |
 | Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_unit_summary) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_unit_panel) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_switchback_panel) | [supported](#capability-ingresses-triggered-encouragement-compliance-from_definitions) | [supported](#capability-ingresses-triggered-encouragement-compliance-from_unit_day_artifact) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_moments) |
 | Triggered clustered daily/as-of outcome readouts | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_summary) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_panel) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_switchback_panel) | [refused / supported (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_definitions) | [refused / supported (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_moments) |
-| Two-stage untreated spillover contrast | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_switchback_panel) | [supported (conditional)](#capability-ingresses-untreated-spillover-from_definitions) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_moments) |
+| Two-stage spillover: policy difference under personal nonoffer | [supported (conditional)](#capability-ingresses-untreated-spillover-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_switchback_panel) | [supported (conditional)](#capability-ingresses-untreated-spillover-from_definitions) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_moments) |
 | Logged-policy contrast | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_switchback_panel) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_definitions) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_moments) |
 | TabularPolicy persistence (JSON dump and validate) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_summary) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_panel) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_switchback_panel) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_definitions) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_day_artifact) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_moments) |
 | Mixed-covariate CUPED × scalar cuped | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_summary) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_panel) | [source limited](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_switchback_panel) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_definitions) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_day_artifact) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_moments) |
@@ -7462,35 +7462,33 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-untreated-spillover"></span>
 
-### Two-stage untreated spillover contrast
+### Two-stage spillover: policy difference under personal nonoffer
 
 <span id="capability-ingresses-untreated-spillover-from_unit_summary"></span>
 
-#### Two-stage untreated spillover contrast — Unit summary
+#### Two-stage spillover: policy difference under personal nonoffer — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
-**Condition:** An ordinary experiment assignment cannot represent this two-stage design
+**Condition:** Every eligible person has an assignment; everyone without an offer has a measured conversion
 
-**Status:** not expressible
+**Status:** supported
 
-**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
+**Operation:** `from_frame(..., shape='summary', design=...) and run()`
 
-**Operation:** `run(experiment, reader)`
-
-**Stage:** construction
+**Stage:** read
 
 <span id="capability-ingresses-untreated-spillover-from_unit_panel"></span>
 
-#### Two-stage untreated spillover contrast — Unit panel
+#### Two-stage spillover: policy difference under personal nonoffer — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
-**Condition:** An ordinary experiment assignment cannot represent this two-stage design
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
 
 **Status:** not expressible
 
-**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
 
 **Operation:** `run(experiment, reader)`
 
@@ -7498,15 +7496,15 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-untreated-spillover-from_switchback_panel"></span>
 
-#### Two-stage untreated spillover contrast — Switchback panel
+#### Two-stage spillover: policy difference under personal nonoffer — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
-**Condition:** An ordinary experiment assignment cannot represent this two-stage design
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
 
 **Status:** not expressible
 
-**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
 
 **Operation:** `run(experiment, reader)`
 
@@ -7514,29 +7512,29 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-untreated-spillover-from_definitions"></span>
 
-#### Two-stage untreated spillover contrast — Definitions
+#### Two-stage spillover: policy difference under personal nonoffer — Definitions
 
 **Recorded path:** `from_definitions`
 
-**Condition:** The warehouse validates both assignment stages and returns summaries by policy and stratum
+**Condition:** Both assignment logs match the frozen roster and the purchase feed covers all windows
 
 **Status:** supported
 
-**Operation:** `from_definitions(..., family='spillover') and run()`
+**Operation:** `from_definitions(..., experiment_name=...) and run()`
 
 **Stage:** read
 
 <span id="capability-ingresses-untreated-spillover-from_unit_day_artifact"></span>
 
-#### Two-stage untreated spillover contrast — Unit-day artifact
+#### Two-stage spillover: policy difference under personal nonoffer — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
-**Condition:** An ordinary experiment assignment cannot represent this two-stage design
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
 
 **Status:** not expressible
 
-**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
 
 **Operation:** `run(experiment, reader)`
 
@@ -7544,31 +7542,19 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-untreated-spillover-from_moments"></span>
 
-#### Two-stage untreated spillover contrast — Portable moments
+#### Two-stage spillover: policy difference under personal nonoffer — Portable moments
 
 **Recorded path:** `from_moments`
 
-**Condition:** An ordinary experiment assignment cannot represent this two-stage design
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
 
 **Status:** not expressible
 
-**Reason:** Use spillover.from_frame or from_definitions with the spillover family.
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
 
 **Operation:** `run(experiment, reader)`
 
 **Stage:** construction
-
-<span id="capability-ingresses-untreated-spillover-family"></span>
-
-#### Two-stage untreated spillover contrast: family-owned operations
-
-**Condition:** Named offer policies and both assignment logs identify the untreated comparisons
-
-**Status:** supported
-
-**Operation:** `spillover.from_frame() and run()`
-
-**Stage:** read
 
 
 <span id="capability-ingresses-logged-policy-contrast"></span>

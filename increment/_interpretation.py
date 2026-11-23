@@ -1320,6 +1320,8 @@ def _readout_qualifications(interpretation: ReadoutInterpretation) -> tuple[_Qua
 
 def _cell_label(cell: CellKey) -> str:
     parts = [cell.metric]
+    if cell.kind == "spillover":
+        parts.extend((f"policy={cell.policy!r}", f"reference={cell.reference!r}", "not offered"))
     if cell.kind == "contrast":
         if cell.control_group is not None:
             parts.append(f"control={cell.control_group}")
@@ -1377,6 +1379,8 @@ def _cell_coordinates(key: CellKey, varying: frozenset[str]) -> str:
     get distinct labels and coordinates shared by all of them are omitted.
     """
     parts = [key.metric]
+    if key.kind == "spillover":
+        parts.extend((f"policy={key.policy!r}", f"reference={key.reference!r}", "not offered"))
     if key.kind == "contrast":
         parts.append(f"control={key.control_group}")
         parts.append(f"treatment={key.treatment_group}")
@@ -1627,6 +1631,19 @@ def _sequential_lift_bound(value, *, lower: bool) -> float | None:
 
 def project_effect(row) -> EffectEstimate:
     """Choose one retained estimate on the row's requested scale."""
+    if getattr(row, "own_assignment", None) == "unoffered":
+        interval = () if row.lower is None else ((row.lower, row.upper),)
+        return EffectEstimate(
+            row.estimate,
+            row.lower,
+            row.upper,
+            row.alpha,
+            "absolute",
+            row.unavailable_reason,
+            "interval" if interval else None,
+            interval,
+            row.multiplicity,
+        )
     sequential = (
         row.require_asymptotic_sequential_result()
         if getattr(row, "inference", None) == "asymptotic_mean"

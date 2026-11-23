@@ -22,6 +22,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     StrictInt,
+    ValidationError,
     field_serializer,
     field_validator,
     model_serializer,
@@ -40,9 +41,20 @@ from increment._literals import (
     Correction,
     PreferredDirection,
 )
+from increment._spillover_design import (
+    Spillover,
+    SpilloverComparison,
+    _comparison_values,
+    refuse_input,
+)
+from increment._spillover_design import (
+    _freeze_allocation as _freeze_group_counts,
+)
 from increment.errors import (
     MODEL_FIELD_REFUSALS,
+    CodedError,
     CodedModel,
+    CodedValidationMixin,
     DefinitionError,
     InvalidRequestError,
     RefusalSpec,
@@ -50,6 +62,7 @@ from increment.errors import (
     refusals,
     refuse,
 )
+from increment.semantics._spillover import selected_spillover_metric
 from increment.semantics.design import (
     ALLOCATION_SCHEME_INCOMPATIBLE,
     AllocationScheme,
@@ -649,6 +662,82 @@ def _require_nonblank_source_sql(kind: str, name: str, sql: str) -> None:
             source_name=name,
             route="supply a read-only SELECT or WITH query",
         )
+
+
+_ARTIFACT_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+_ARTIFACT_CATALOG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$-]*$")
+
+
+def _artifact_scalar(value: str, field_name: str) -> str:
+    """Validate an exact, non-empty UTF-8 scalar used in artifact identity."""
+    if not isinstance(value, str) or not value:
+        _definition_refusal(
+            "definition.non_empty_string",
+            f"{field_name} must be a non-empty string",
+            field_name=field_name,
+        )
+    if value != value.strip():
+        _definition_refusal(
+            "definition.surrounding_whitespace",
+            f"{field_name} must not have surrounding whitespace",
+            field_name=field_name,
+        )
+    if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value):
+        _definition_refusal(
+            "definition.contain_control_characters",
+            f"{field_name} must not contain control characters",
+            field_name=field_name,
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        _definition_refusal(
+            "definition.utf",
+            f"{field_name} must be valid UTF-8",
+            field_name=field_name,
+        )
+    return value
+
+
+def _artifact_identifier(value: str, field_name: str) -> str:
+    value = _artifact_scalar(value, field_name)
+    pattern = _ARTIFACT_CATALOG_RE if field_name == "catalog" else _ARTIFACT_IDENTIFIER_RE
+    if not pattern.fullmatch(value):
+        _definition_refusal(
+            "definition.single_sql_identifier",
+            f"{field_name} must be a single SQL identifier "
+            "(letters, digits, '_', '$', '-' in catalogs; no quoting or separators)",
+            field_name=field_name,
+        )
+    return value
+
+
+class RelationLocator(CodedValidationMixin, BaseModel):
+    """A namespace-qualified relation name; never a backend SQL fragment."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+    catalog: str | None = Field(default=None, max_length=255)
+    schema_name: str | None = Field(default=None, alias="schema", max_length=255)
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("catalog", "schema_name")
+    @classmethod
+    def _namespace_identifier(cls, value: str | None, info) -> str | None:
+        if value is not None:
+            return _artifact_identifier(value, info.field_name)
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _relation_identifier(cls, value: str) -> str:
+        return _artifact_identifier(value, "name")
 
 
 # Base / mixin
@@ -1881,8 +1970,105 @@ class ObservationalDeclaration(_Base):
     covariates: tuple[AdjustmentCovariate, ...] = Field(min_length=1)
 
 
+class _SpilloverComparisonDeclaration(_Base):
+    policy: str
+    reference: str
+    meaningful_effect: float
+    baseline_rate: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_before_numeric_coercion(cls, value: object) -> object:
+        required = {"policy", "reference", "meaningful_effect"}
+        if isinstance(value, Mapping) and required <= value.keys() <= cls.model_fields.keys():
+            fields = cast(Mapping[str, object], value)
+            policy, reference, effect, rate = _comparison_values(
+                fields["policy"],
+                fields["reference"],
+                fields["meaningful_effect"],
+                fields.get("baseline_rate"),
+            )
+            return {
+                "policy": policy,
+                "reference": reference,
+                "meaningful_effect": effect,
+                "baseline_rate": rate,
+            }
+        return value
+
+
+class SpilloverDeclaration(_Base):
+    """Group allocations, directed comparisons, the eligible roster and the policy draw."""
+
+    mechanism: Literal["spillover"] = "spillover"
+    offered_group: str
+    groups_per_policy: Mapping[str, Mapping[str, int]]
+    comparisons: tuple[_SpilloverComparisonDeclaration, ...]
+    roster: str
+    offer_counts: str
+    group_policy: str
+
+    @field_validator("roster", "offer_counts", "group_policy", mode="before")
+    @classmethod
+    def _table_locator(cls, raw: object) -> str:
+        if isinstance(raw, str):
+            parts = raw.split(".")
+            if not 1 <= len(parts) <= 3:
+                refuse_input("spillover.design.invalid", "relations")
+            raw = dict(zip(("catalog", "schema", "name")[-len(parts) :], parts, strict=True))
+        if (
+            not isinstance(raw, Mapping)
+            or not {"name"} <= raw.keys() <= {"catalog", "schema", "name"}
+            or (raw.get("catalog") is not None and raw.get("schema") is None)
+        ):
+            refuse_input("spillover.design.invalid", "relations")
+        try:
+            locator = RelationLocator.model_validate(raw, strict=True)
+        except (CodedError, ValidationError):
+            pass
+        else:
+            return ".".join(
+                p for p in (locator.catalog, locator.schema_name, locator.name) if p is not None
+            )
+        refuse_input("spillover.design.invalid", "relations")
+
+    @field_validator(
+        "groups_per_policy", mode="plain", json_schema_input_type=dict[str, dict[str, int]]
+    )
+    @classmethod
+    def _snapshot_group_counts(cls, value: Any) -> Mapping[str, Mapping[str, int]]:
+        return _freeze_group_counts(value)
+
+    @field_serializer("groups_per_policy")
+    def _dump_group_counts(
+        self, value: Mapping[str, Mapping[str, int]]
+    ) -> dict[str, dict[str, int]]:
+        return {stratum: dict(counts) for stratum, counts in value.items()}
+
+    def parameters(self, control_group: str) -> Spillover:
+        """Use the experiment's no-offer label, not a group policy, for control."""
+        return Spillover(
+            control_group,
+            self.offered_group,
+            self.groups_per_policy,
+            tuple(
+                SpilloverComparison(c.policy, c.reference, c.meaningful_effect, c.baseline_rate)
+                for c in self.comparisons
+            ),
+        )
+
+    def table_names(self) -> dict[str, str]:
+        """Return the three design tables without changing their namespaces."""
+        return {
+            "roster": self.roster,
+            "offer_counts": self.offer_counts,
+            "group_policy": self.group_policy,
+        }
+
+
 ExperimentDesignDeclaration = Annotated[
-    EncouragementDeclaration | ObservationalDeclaration, Field(discriminator="mechanism")
+    EncouragementDeclaration | ObservationalDeclaration | SpilloverDeclaration,
+    Field(discriminator="mechanism"),
 ]
 
 
@@ -2627,10 +2813,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     allocation_scheme: AllocationScheme | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    #: Optional non-randomized identification mechanism. Absent means
-    #: Randomized, built from control_group/allocation above -- see
-    #: resolved_design(). mechanism: "randomized" is not a valid value
-    #: here: the top-level fields are randomized's only spelling.
+    #: When omitted, the control group and allocation define an ordinary randomized design.
     design: ExperimentDesignDeclaration | None = None
     #: Explicit identity-bearing assignment relation for row-level evidence.
     assignment_ledger: AssignmentLedgerBinding | None = None
@@ -2659,6 +2842,8 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
 
     @model_validator(mode="after")
     def _check_allocation(self):
+        if isinstance(self.design, SpilloverDeclaration):
+            self.design.parameters(self.control_group)
         _validate_allocation_semantics(self.control_group, self.allocation)
         if isinstance(self.design, ObservationalDeclaration) and self.allocation_scheme is not None:
             from increment.errors import refuse
@@ -2735,11 +2920,7 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
         return [_plan_entry_name(g) for g in self.plan.guardrails]
 
     def resolved_design(self) -> "Randomized | Encouragement | Observational":
-        """Compose this experiment's identification design from its
-        always-present control_group/allocation plus the optional
-        design declaration. The one place every production read site
-        builds a design from an Experiment -- never construct
-        Randomized(control_group=experiment.control_group, ...) ad hoc."""
+        """Resolve a one-stage identification design. Spillovers require both draws."""
         from increment.semantics.design import AdjustmentSet as _AdjustmentSet
         from increment.semantics.design import Encouragement as _Encouragement
         from increment.semantics.design import Observational as _Observational
@@ -2751,6 +2932,8 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                 allocation=self.allocation,
                 allocation_scheme=self.allocation_scheme,
             )
+        if isinstance(self.design, SpilloverDeclaration):
+            refuse_input("spillover.design.invalid", "design")
         if isinstance(self.design, EncouragementDeclaration):
             return _Encouragement(
                 control_group=self.control_group,
@@ -3186,6 +3369,9 @@ class Definitions(_Base):
         self._validate_experiments(index, errors, owners)
         self._raise_errors(errors, owners)
         self._refuse_finite_sample_on_unsupported_metrics(index)
+        for experiment in self.experiments:
+            if isinstance(experiment.design, SpilloverDeclaration):
+                selected_spillover_metric(self, experiment)
         return self
 
     def _index_sources_and_validate_names(

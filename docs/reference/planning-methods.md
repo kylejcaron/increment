@@ -5,6 +5,8 @@ Start with [Power analysis](../guides/power-analysis.md) for a complete sizing w
 Planning is conditional on the selected decision rule and model; numerical bounds
 do not establish the model or future trial calibration.
 
+For a [two-stage offer experiment](../guides/spillover.md), use `increment.power.spillover_power(experiment)` rather than an independent-arm solver. It checks each signed meaningful change against the frozen roster and planned offer counts without reading outcomes. See the [modeled scenarios and detection criterion](validation-evidence.md#ev-spillover-rct2).
+
 
 ## Solver arguments
 

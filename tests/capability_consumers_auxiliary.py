@@ -1085,16 +1085,16 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         ),
     ),
     ConsumerContract(
-        "spillover_family_boundary",
+        "spillover",
         tuple(
             _expectation(
                 f"{ingress}_not_expressible",
                 "run(experiment, reader)",
                 ingress,
-                "An ordinary experiment assignment cannot represent this two-stage design",
+                "The input does not carry store policy, individual assignment and planned offer counts",
                 "not_expressible",
-                "tests.test_spillover_capability::test_ordinary_and_two_stage_assignments_are_not_interchangeable",
-                reason="Use spillover.from_frame or from_definitions with the spillover family.",
+                "tests.test_spillover_capability::test_other_inputs_cannot_declare_both_random_draws",
+                reason="Use a one-row-per-person summary or a named warehouse experiment.",
                 stage="construction",
             )
             for ingress, status in SPILLOVER_DISPOSITIONS.items()
@@ -1102,18 +1102,18 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         )
         + (
             _expectation(
-                "dataframe_supported",
-                "spillover.from_frame() and run()",
-                "spillover.from_frame",
-                "Named offer policies and both assignment logs identify the untreated comparisons",
+                "from_unit_summary_supported",
+                "from_frame(..., shape='summary', design=...) and run()",
+                "from_unit_summary",
+                "Every eligible person has an assignment; everyone without an offer has a measured conversion",
                 "supported",
                 "tests.test_spillover_capability::test_named_spillover_comparisons_match_through_frame_and_definitions",
             ),
             _expectation(
-                "warehouse_supported",
-                "from_definitions(..., family='spillover') and run()",
+                "from_definitions_supported",
+                "from_definitions(..., experiment_name=...) and run()",
                 "from_definitions",
-                "The warehouse validates both assignment stages and returns summaries by policy and stratum",
+                "Both assignment logs match the frozen roster and the purchase feed covers all windows",
                 "supported",
                 "tests.test_spillover_capability::test_named_spillover_comparisons_match_through_frame_and_definitions",
             ),

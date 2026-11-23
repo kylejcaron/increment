@@ -10,9 +10,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import pytest
 
+from calibration.spillover import diagnostic_population
+from increment import SpilloverComparison
 from increment.errors import InvalidRequestError
 from increment.estimation import spillover
 from increment.estimation.spillover import (
@@ -22,7 +23,6 @@ from increment.estimation.spillover import (
     summarize_cells,
     summarize_counts,
 )
-from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
 
 
 def _comparison(policy="upper", reference="base"):
@@ -34,28 +34,14 @@ def _group(i, size=4, offers=(1, 2), stratum="all"):
 
 
 def _population(groups, quotas=None, comparisons=None, *, alpha=None):
-    design = SpilloverDesign(
-        groups_per_policy=(
-            {"all": {"base": len(groups) // 2, "upper": len(groups) // 2}}
-            if quotas is None
-            else quotas
-        ),
-        comparisons=(_comparison(),) if comparisons is None else comparisons,
-        outcome="visit",
-        horizon="7d",
-        **({} if alpha is None else {"alpha": alpha}),
+    return diagnostic_population(
+        groups,
+        quotas
+        if quotas is not None
+        else {"all": {"base": len(groups) // 2, "upper": len(groups) // 2}},
+        (_comparison(),) if comparisons is None else comparisons,
+        alpha=0.05 if alpha is None else alpha,
     )
-    roster = pd.DataFrame(
-        [(f"{g}/{j}", g, s) for g, s, n, _ in groups for j in range(n)],
-        columns=["person_id", "group_id", "stratum"],
-    )
-    counts = pd.DataFrame(
-        [(g, p, k) for g, _, _, ks in groups for p, k in zip(design.policies, ks, strict=True)],
-        columns=["group_id", "policy", "offers"],
-    )
-    experiment, reader = from_frame(roster, offer_counts=counts, design=design)
-    with reader:
-        return experiment.population
 
 
 def _cells(population, labels, events):

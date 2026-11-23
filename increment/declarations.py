@@ -67,7 +67,16 @@ class ContrastHypothesisKey:
     treatment_group: str
 
 
-HypothesisKey = ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey
+@dataclass(frozen=True, slots=True)
+class SpilloverHypothesisKey:
+    metric: str
+    policy: str
+    reference: str
+
+
+HypothesisKey = (
+    ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey | SpilloverHypothesisKey
+)
 Population = Literal["assigned", "triggered"]
 
 
@@ -160,7 +169,7 @@ class _ReadoutModel(CodedModel, BaseModel):
 
 
 class CellKey(_ReadoutModel):
-    kind: Literal["arm", "segment", "contrast"]
+    kind: Literal["arm", "segment", "contrast", "spillover"]
     metric: str
     method: str | None
     method_role: Literal["decision", "sensitivity"] | None
@@ -178,17 +187,41 @@ class CellKey(_ReadoutModel):
     source: str | None = None
     ds: Any = None
     ds_basis: Literal["calendar", "cohort"] | None = None
+    policy: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    reference: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    own_assignment: Literal["unoffered"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @classmethod
     def from_row(cls, row):
+        spillover = getattr(row, "own_assignment", None) == "unoffered"
         contrast = hasattr(row, "control_group")
         segment = getattr(row, "dimension", None) is not None
-        values: dict[str, Any] = {name: getattr(row, name, None) for name in cls.model_fields}
+        axes = ("policy", "reference", "own_assignment")
+        values: dict[str, Any] = {
+            name: getattr(row, name, None)
+            for name in cls.model_fields
+            if spillover or name not in axes
+        }
         values.update(
-            kind="contrast" if contrast else "segment" if segment else "arm",
+            kind=(
+                "spillover"
+                if spillover
+                else "contrast"
+                if contrast
+                else "segment"
+                if segment
+                else "arm"
+            ),
             analysis_population=getattr(row, "analysis_population", "assigned"),
         )
         return cls(**values)
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # Pickled keys from earlier schemas predate the policy coordinates.
+        axes = dict.fromkeys(("policy", "reference", "own_assignment"))
+        super().__setstate__({**state, "__dict__": {**axes, **state["__dict__"]}})
 
     def __hash__(self):
         return hash(
@@ -211,6 +244,9 @@ class CellKey(_ReadoutModel):
                 self.source,
                 self.ds,
                 self.ds_basis,
+                self.policy,
+                self.reference,
+                self.own_assignment,
             )
         )
 
@@ -235,6 +271,46 @@ class CellKey(_ReadoutModel):
 
     @model_validator(mode="after")
     def _identity_axes(self):
+        if self.kind == "spillover":
+            if not (
+                self.policy
+                and self.reference
+                and self.policy != self.reference
+                and self.own_assignment == "unoffered"
+                and self.analysis_population == "assigned"
+                and self.value_scale == "absolute"
+                and self.estimand == "spillover"
+                and self.method is not None
+                and self.inference == "fixed"
+                and all(
+                    value is None
+                    for value in (
+                        self.method_role,
+                        self.group_id,
+                        self.control_group,
+                        self.treatment_group,
+                        self.dimension,
+                        self.dimension_value,
+                        self.aggregation,
+                        self.ds,
+                        self.ds_basis,
+                        self.source,
+                        self.alternative,
+                    )
+                )
+            ):
+                _refuse(
+                    "readout.cell.key_invalid",
+                    kind=self.kind,
+                    fields=("policy", "reference", "own_assignment"),
+                )
+            return self
+        if any(value is not None for value in (self.policy, self.reference, self.own_assignment)):
+            _refuse(
+                "readout.cell.key_invalid",
+                kind=self.kind,
+                fields=("policy", "reference", "own_assignment"),
+            )
         valid = (
             self.kind == "arm"
             and self.group_id is not None
@@ -310,6 +386,9 @@ class CellKey(_ReadoutModel):
         return serialize_day_axis(value)
 
     def hypothesis(self) -> HypothesisKey:
+        if self.kind == "spillover":
+            assert self.policy is not None and self.reference is not None
+            return SpilloverHypothesisKey(self.metric, self.policy, self.reference)
         if self.kind == "arm":
             assert self.group_id is not None and self.estimand is not None
             return ArmHypothesisKey(self.metric, self.group_id, self.estimand)

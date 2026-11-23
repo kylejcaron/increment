@@ -1,135 +1,250 @@
-# Does making more offers help people who get no offer?
+# Does making more offers help customers who get no offer?
 
-A spillover experiment asks whether offering something to more people changes outcomes for people who **weren’t offered it**. You can compare two or more offer levels for the same treatment. This is not a comparison of different products and not a switchback over time.
+A retailer wants to know whether making more coupon offers in a store changes a customer's chance of buying **when that customer is not offered a coupon**. This is a spillover: other people's offers may affect your outcome. The retailer will compare three offer policies using its usual seven-day purchase metric, then save and reopen the results.
 
-For example, a retailer might assign stores to make few, some or many offers and compare purchases by customers who received none. Each customer belongs to one store. Offers in one store must not influence customers in another. To use the interval, assume that **how many** peers receive offers can matter, but **which** peers receive them does not.
+## 1. Name the experiment and its metric
 
-## Before launch: choose comparisons and freeze the roster
+In this example, `few`, `some` and `many` mean **zero, one and two offers per store**, respectively. They are not the customer's own assignment. `offered` and `no_offer` are the two possible assignments for a customer. These names, the table names, `store_offers` and `purchases_7d` are choices, not reserved words.
 
-Give every policy a name. Set the number of offers each store would make under **each** policy and the number of stores that will use each policy. If you draw stores separately by region, use a separate set of store counts for each region (a *stratum*). Zero offers is fine. A policy that offers to everyone cannot be used to measure what happens without an offer.
-
-Choose the direction and size of each comparison before seeing outcomes. `policy: many, reference: few` means **many minus few**. `meaningful_effect: 0.05` means a rise of five percentage points, not a 5% relative increase. Set `alpha` once for the experiment. At the default `0.05`, the mathematical rule limits the chance that **any** registered range misses its true effect to 5%, under the assignment rules below. Smaller alpha generally means wider ranges. Software approximates the endpoints; don't interpret a difference at the last decimal place. The [evidence and assumptions](../reference/validation-evidence.md#ev-spillover-rct2) give the details.
-
-Want to know whether the experiment could detect that change? Give the comparison a comparable pre-experiment event rate as `baseline_rate`. Without it, Increment skips the power check, **not** the final interval.
-
-Save these definitions alongside the **frozen**, versioned roster and offer counts. In this six-store example, two stores receive each policy. The size and names are examples, not limits.
+Put the following declarations in your definitions directory. The DuckDB example writes them into one file; the purchase metric can also be shared with other experiments.
 
 ```python
 from pathlib import Path
 
-study = Path("offers.yaml")
-study.write_text("""\
-spillovers:
+definitions = Path("definitions")
+definitions.mkdir(exist_ok=True)
+(definitions / "offers.yaml").write_text(
+    """\
+dialect: duckdb
+fact_sources:
+  - name: purchases
+    sql: SELECT customer_id, ordered_at, 'purchase' AS event, payment_state FROM orders
+    timestamp_column: ordered_at
+    entities: [customer_id]
+    facts: [{name: purchase, column: null}]
+    properties: [{name: payment_state, column: payment_state}]
+metrics:
+  - name: purchases_7d
+    type: conversion
+    entity: customer_id
+    fact: purchase
+    filters: [{property: payment_state, op: equals, values: [paid]}]
+    window_days: 7
+exposures:
+  - name: coupon_assignment
+    sql: |
+      SELECT customer_id AS unit_id, assigned_at AS ts, assignment AS group_id, experiment_id
+      FROM customer_assignments
+experiments:
   - name: store_offers
+    unit: customer_id
+    exposure: coupon_assignment
+    start: 2025-09-01
+    end: 2025-09-02
+    observation_end: 2025-09-08
+    day_boundary: UTC
+    control_group: no_offer
+    plan: {primary: purchases_7d, alpha: 0.01}
     design:
-      outcome: purchased
-      horizon: within seven days
-      alpha: 0.01
+      mechanism: spillover
+      offered_group: offered
       groups_per_policy: {all: {few: 2, some: 2, many: 2}}
       comparisons:
         - {policy: some, reference: few, meaningful_effect: 0.05}
         - {policy: many, reference: few, meaningful_effect: 0.05}
-    relations:
       roster: eligible_customers_v1
       offer_counts: planned_counts_v1
-      group_policy: store_assignment_v1
-      offered: customer_assignment_v1
-      outcomes: seven_day_purchase_v1
-""")
+      group_policy: store_assignments
+""",
+    encoding="utf-8",
+)
 ```
 
-Use durable tables or views for **this experiment**. Short names use the connection's current schema at registration; use fully qualified names to reopen from another schema. The registration checks the roster and planned counts, not the contents of future logs or outcomes. To reproduce a result, bind snapshots that cannot be overwritten and keep them. A version-looking name on a mutable view is not a snapshot.
+The three extra tables describe the two draws. Point the three names at your own tables or views; use qualified names when needed.
 
-With DuckDB, attach the databases before registering, even if the outcome tables do not exist yet. Use absolute file paths to reopen on another connection; an in-memory database works only on its original connection. With Snowflake, avoid a temporary table or view with the same name as a registered input. The check applies to the named object, not the tables inside a view.
-
-| Relation | Columns | When needed |
+| Table | One row for… | What it records |
 |---|---|---|
-| `roster` | `person_id`, `group_id`, `stratum` | Before launch |
-| `offer_counts` | `group_id`, `policy`, `offers` | Before launch: one row per store and possible policy |
-| `group_policy` | `group_id`, `policy` | After launch: the policy assigned to each store |
-| `offered` | `person_id`, `offered` | After launch: the actual offer assignment for **every** eligible customer |
-| `outcomes` | `person_id`, `outcome` | After the window closes: a yes/no outcome for **every** customer without an offer |
+| `roster` | Each eligible customer, before launch | `person_id`, their `group_id` (store), and `stratum` (the set of stores drawn together, here `all`). |
+| `offer_counts` | Each store and **possible** policy, before launch | `group_id`, `policy`, and `offers`: how many customers would get offers if that policy were drawn. Every policy you compare must leave at least one customer in each store without an offer. |
+| `group_policy` | Each store, after the first draw | `group_id` and the one `policy` actually assigned. The customer's assignment and its time come separately from `coupon_assignment`. |
 
-<details markdown="1">
-<summary>Create the example’s planning tables in DuckDB</summary>
+With DuckDB, attach the databases and create any views before registering. Assignment and purchase **tables** can be populated or created later at their registered names; a new view is a different definition. Use absolute database paths to reopen from another connection.
+
+## 2. Register before either random draw
+
+Freeze the eligible people and planned counts. Two stores per policy gives six stores here; each has four eligible customers. No assignments or purchases need to exist yet.
 
 ```python
 import ibis
 import pyarrow as pa
 
-database = Path("offers.duckdb").resolve()
-con = ibis.duckdb.connect(database)
+from increment import Experiment, from_definitions, run
+from increment.power import spillover_power
+
+con = ibis.duckdb.connect(Path("offers.duckdb").resolve())
 stores = list("ABCDEF")
 people = [f"{s}{i}" for s in stores for i in range(4)]
 roster = pa.table(
-    {"person_id": people, "group_id": [p[0] for p in people], "stratum": ["all"] * 24}
+    {"person_id": people, "group_id": [p[0] for p in people], "stratum": ["all"] * len(people)}
 )
 counts = pa.table(
     {
         "group_id": [s for s in stores for _ in range(3)],
-        "policy": ["few", "some", "many"] * 6,
-        "offers": [0, 1, 2] * 6,
+        "policy": ["few", "some", "many"] * len(stores),
+        "offers": [0, 1, 2] * len(stores),
     }
 )
 con.create_table("eligible_customers_v1", roster)
 con.create_table("planned_counts_v1", counts)
+
+trial, planning_reader = from_definitions(definitions, con, experiment_name="store_offers")
+saved_plan = Path("registered-offers.json")
+with planning_reader:
+    saved_plan.write_text(trial.to_json(), encoding="utf-8")
+    for check in spillover_power(trial):
+        print(check.policy, "minus", check.reference, check.message)
 ```
 
-</details>
+`meaningful_effect: 0.05` means a rise of **five percentage points**. For a power check, also give the comparison a comparable historical purchase rate as `baseline_rate`. `supported` means all modeled scenarios met the 80% detection target; `underpowered` means at least one fell short; `inconclusive` means the simulations couldn't settle it. Without history, the check says `not_assessed`, not that the final interval is unavailable. Save the experiment file before launch and keep it unchanged.
 
-Use your Ibis connection as `con`. Planning reads eligibility and offer counts, not assignments or purchases. Save `registration_id` **before either random draw**.
+## 3. Draw the assignments, then measure
 
-```python
-from increment import from_definitions, run
-
-experiment, reader = from_definitions(study, con, family="spillover")
-with reader:
-    for comparison in experiment.planning:
-        print(comparison.policy, comparison.reference, comparison.status)
-    registration = experiment.registration_id
-```
-
-Read `experiment.planning` before launch. `supported` means all modeled scenarios met the 80% detection target; `underpowered` means at least one fell short. `inconclusive` means the simulations couldn't settle it; `not_assessed` gives a reason, such as missing history. These labels describe power, not whether the assignment logs and outcomes are ready. `run` checks those after the trial.
-
-## Draw the assignments, then measure
-
-First, randomly allocate the exact number of stores to each policy within each stratum. Then randomly choose the planned number of customers in each store to receive an offer. Each possible selection of the required size must be equally likely. Make the draws independently across strata and, at the second stage, across stores. Logging the right counts doesn’t prove the draws were random. Record **who got an offer**, not who took it up.
-
-After seven days, an explicit zero means a confirmed nonpurchase. A missing outcome for a customer who got no offer is an error, not a zero. Outcomes for customers who got an offer are optional.
+Draw exactly the planned number of stores per policy in each stratum. In each store, draw exactly its planned number of people to offer the coupon. Every subset of the required size must be equally likely. Draw independently across strata and, within the second stage, across stores. Record assignments for **everyone**, not redemptions, opened messages or visits.
 
 <details markdown="1">
-<summary>Load the example’s recorded assignments and purchases</summary>
+<summary>Load the example's assignments, orders and first batch receipt</summary>
 
 ```python
-labels = ["few", "some", "many"] * 2
-policy = pa.table({"group_id": stores, "policy": labels})
+from datetime import UTC, datetime
+
+
+def september(day, hour=0):
+    return datetime(2025, 9, day, hour, tzinfo=UTC)
+
+
+policies = pa.table({"group_id": stores, "policy": ["few", "some", "many"] * 2})
+con.create_table("store_assignments", policies)
 selected = {"B0", "C0", "C1", "E0", "F0", "F1"}
-offers = pa.table({"person_id": people, "offered": [p in selected for p in people]})
-unoffered = [p for p in people if p not in selected]
-bought = {"D0", "D1", "B1", "E1", "E2", "C2", "F2", "F3"}
-purchases = pa.table({"person_id": unoffered, "outcome": [p in bought for p in unoffered]})
-con.create_table("store_assignment_v1", policy)
-con.create_table("customer_assignment_v1", offers)
-con.create_table("seven_day_purchase_v1", purchases)
+assignments = ["offered" if p in selected else "no_offer" for p in people]
+con.create_table(
+    "customer_assignments",
+    pa.table(
+        {
+            "customer_id": people,
+            "assigned_at": [september(2, 10)] * len(people),
+            "assignment": assignments,
+            "experiment_id": ["store_offers"] * len(people),
+        }
+    ),
+)
+
+early_buyers = ["D0", "D1", "B1", "E1", "E2", "C2", "F2"]
+# B1 buys twice; A0 has an unpaid order. Neither adds another conversion.
+orders = early_buyers + ["B1", "A0"]
+con.create_table(
+    "orders",
+    pa.table(
+        {
+            "customer_id": orders,
+            "ordered_at": [september(3)] * len(orders),
+            "payment_state": ["paid"] * (len(orders) - 1) + ["unpaid"],
+        }
+    ),
+)
+
+
+def load_receipt(batch, cutoff, through):
+    return pa.table({"batch": [batch], "cutoff": [cutoff], "complete_through": [through]})
+
+
+con.create_table("purchase_load_receipts", load_receipt("first", september(9), september(8)))
 ```
 
 </details>
 
-## Read the comparisons you registered
+Match the purchase feed's **load receipt**, not today's date or the most recent purchase, to the declared window. A qualifying paid order strictly after assignment and before midnight at the start of September 9 counts once. Everyone's window must be complete, even if they have already bought. Only then does no qualifying order mean zero.
 
 ```python
-experiment, reader = from_definitions(
-    study, con, family="spillover", expected_registration=registration
+from increment.artifacts import SourceSnapshotEvidence
+from increment.errors import CodedError
+from increment.store import ParquetResultsStore
+
+registered = Experiment.from_json(saved_plan.read_text(encoding="utf-8"))
+store = ParquetResultsStore("results")
+run_id = "offers-final"
+
+
+def measure(batch):
+    loads = con.table("purchase_load_receipts")
+    (receipt,) = loads.filter(loads.batch == batch).to_pyarrow().to_pylist()
+    evidence = SourceSnapshotEvidence(
+        observation_cutoff_ts=receipt["cutoff"],
+        complete_through_by_feed={"purchases": receipt["complete_through"]},
+    )
+    _, reader = from_definitions(
+        definitions,
+        con,
+        experiment_name=registered.experiment_id,
+        source_snapshot_evidence=evidence,
+    )
+    with reader:
+        return run(registered, reader, results_store=store, run_id=run_id)
+
+
+try:
+    measure("first")
+except CodedError as error:
+    assert error.code == "spillover.window.incomplete"
+else:
+    raise AssertionError("The September 8 purchases have not all arrived")
+
+key = (registered.experiment_id, registered.analysis_spec_hash, run_id)
+try:
+    store.open_run(*key)
+except CodedError as error:
+    assert error.code == "store.run.not_found"
+else:
+    raise AssertionError("An incomplete experiment should have no saved run")
+```
+
+The first job guarantees purchases only through the **start** of September 8. Wait for the next completed job. Here its last batch contains F3's purchase on September 8 and certifies the full day. Use a fresh reader with that receipt and the **original** experiment, not a shorter window or a newly registered plan.
+
+```python
+con.insert(
+    "orders",
+    pa.table(
+        {
+            "customer_id": ["F3"],
+            "ordered_at": [september(8, 17)],
+            "payment_state": ["paid"],
+        }
+    ),
 )
-with reader:
-    rows = run(experiment, reader).comparisons
-for row in rows:
+con.insert("purchase_load_receipts", load_receipt("final", september(9), september(9)))
+result = measure("final")
+print(result.readout())
+con.disconnect()
+```
+
+## 4. Read the saved comparisons without reconnecting
+
+```python
+from increment import RunResult
+
+handle = ParquetResultsStore("results").open_run(*key)
+reopened = RunResult.from_handle(handle, registration=registered.registration)
+assert tuple(reopened.readout()) == tuple(result.readout())
+table = reopened.to_frame()
+
+for row in reopened.readout():
     point = f"{row.policy} minus {row.reference}: {100 * row.estimate:+.1f} points"
     if row.lower is None or row.upper is None:
         print(f"{point}; no interval: {row.unavailable_reason}")
-        continue
-    print(f"{point}; range {100 * row.lower:+.1f} to {100 * row.upper:+.1f}; {row.direction}")
+    else:
+        print(f"{point}; range {100 * row.lower:+.1f} to {100 * row.upper:+.1f}; {row.direction}")
 ```
+
+Expected output for these recorded purchases (percentage points):
 
 <!-- output -->
 ```text
@@ -137,42 +252,56 @@ some minus few: +25.0 points; range -97.7 to +99.1; inconclusive
 many minus few: +50.0 points; range -97.3 to +100.0; inconclusive
 ```
 
-The best estimate for “some” versus “few” is a **25-point increase** in purchases by customers who got no offer. But only two stores ran each policy. The range includes both a loss and a gain, so the result is **inconclusive**. It is not “no effect,” and it is not a missing test.
+For a formatted comparison table, pass `reopened` to `increment.tables.readout_table`. It shows both policy names and expresses the difference and its range in percentage points.
 
-If the whole range is above zero the row reports `increase`; if it is below zero, `decrease`. Whether that is good news depends on the outcome. A range that touches zero is inconclusive. All registered comparisons are protected without needing a previous event rate. Each eligible person counts equally; simply pooling everyone who got no offer answers a different question.
+The estimates compare policies for the **whole eligible population if each customer personally received no offer**. Only customers drawn to receive no offer supply these outcomes. With equal-sized stores here, their purchase rates average 25%, 50% and 75% across stores under `few`, `some` and `many`. Hence `some` minus `few` is +25 points. With unequal store sizes, simply pooling nonoffered customers gives the wrong weights.
 
-Only people in stores that would make **different numbers of offers** can contribute to this spillover. If the two policies would make exactly the same number in every store, the effect is zero by design: the point and both ends of the range are zero. This follows from the assumption that the number of offers matters, not which coworkers get them or what the policy is called. It is not evidence that two genuinely different offers have the same effect.
+Only two stores ran each policy. Both ranges allow a loss as well as a gain: **inconclusive is not no effect**. A range wholly above or below zero reports an increase or decrease. If the interval calculation fails, the point stays visible with a missing range and its reason. The family of registered ranges uses one `alpha` (here `.01`), not one test per customer.
 
-Warehouse analysis returns totals by region and policy, not rows labeled with a customer or store ID. That is not anonymization: if just one customer went without an offer in a cell, its event count reveals that customer's outcome. Apply your usual access and small-cell reporting rules.
+This interpretation assumes that customers in one store cannot affect another store, and that **how many** other customers get the offer matters, not **which** customers get it. If two policies assign identical counts in every store, the effect is zero by design under those assumptions. See the [evidence and limits](../reference/validation-evidence.md#ev-spillover-rct2).
 
-Already have dataframes? Use [`increment.spillover.from_frame`](../api.md#two-stage-spillover) with the same five roles, then `run(experiment, reader)`. No warehouse connection is needed. See the [validation evidence](../reference/validation-evidence.md#ev-spillover-rct2) for the published comparison and the limits of the planning check.
+The results store keeps the comparison rows, not the customer records. Keep immutable input versions if you need to repeat the calculation. Even a warehouse total can reveal a customer's outcome when just one person contributes; apply your usual access rules.
 
-## Keep a result you can reproduce
+## Already have one row per customer?
 
-Spillover results aren't written to Increment's results store. The registration ID identifies the design, not a particular set of purchases. Keep the definitions, the versions of all five tables **as analyzed**, and the comparison rows you reported. This example keeps one DuckDB file and records its checksum so you can verify it later. In a shared warehouse, bind immutable snapshots and retain their version identifiers instead.
+Use `from_frame(shape="summary")` with the same policies, comparisons and plan. Here `group` names the **individual assignment** column and `cluster` names the **store** column. Supply a measured yes/no value for every customer without an offer; missing is not zero. `window_days=7` describes the supplied flag. The summary reader does not calculate a window from timestamps.
 
 ```python
-import json
-from dataclasses import asdict
-from hashlib import file_digest
+from math import isclose
 
-import yaml
+from increment import AnalysisPlan, MetricSpec, Spillover, SpilloverComparison, from_frame
 
-declared = yaml.safe_load(study.read_text())
-schema = con.current_database
-con.disconnect()
-with database.open("rb") as snapshot:
-    snapshot_sha256 = file_digest(snapshot, "sha256").hexdigest()
-archive = {
-    "registration_id": registration,
-    "definitions": declared,
-    "database": str(database),
-    "schema": schema,
-    "snapshot_sha256": snapshot_sha256,
-    "comparisons": [asdict(row) for row in rows],
-}
-with Path("store-offers-result.json").open("x") as output:
-    json.dump(archive, output, allow_nan=False, indent=2)
+buyers = {*early_buyers, "F3"}
+summary = roster.append_column("assignment", pa.array(assignments)).append_column(
+    "purchases_7d", pa.array([None if p in selected else p in buyers for p in people])
+)
+local, reader = from_frame(
+    summary,
+    shape="summary",
+    experiment_id="store_offers",
+    unit="person_id",
+    group="assignment",
+    cluster="group_id",
+    stratum="stratum",
+    design=Spillover(
+        control_group="no_offer",
+        offered_group="offered",
+        groups_per_policy={"all": {"few": 2, "some": 2, "many": 2}},
+        comparisons=(
+            SpilloverComparison("some", "few", 0.05),
+            SpilloverComparison("many", "few", 0.05),
+        ),
+    ),
+    offer_counts=counts,
+    group_policy=policies,
+    metrics=[MetricSpec(name="purchases_7d", type="conversion", window_days=7)],
+    plan=AnalysisPlan(primary="purchases_7d", alpha=0.01),
+)
+with reader:
+    local_rows = run(local, reader).readout()
+for left, right in zip(local_rows, reopened.readout(), strict=True):
+    assert (left.policy, left.reference) == (right.policy, right.reference)
+    assert isclose(left.estimate, right.estimate, abs_tol=1e-12)
+    assert isclose(left.lower, right.lower, abs_tol=1e-10)
+    assert isclose(left.upper, right.upper, abs_tol=1e-10)
 ```
-
-Retain the database file read-only alongside the JSON; a checksum can't recover deleted data. No customer rows are exported from the warehouse to build the report. If purchases are corrected later, keep the original snapshots and report the corrected analysis separately.

@@ -5,11 +5,23 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+import polars as pl
+import pyarrow as pa
 import pytest
 
-from increment import run
-from increment.errors import InvalidRequestError
-from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
+from increment import (
+    AnalysisPlan,
+    Experiment,
+    MetricSpec,
+    Spillover,
+    SpilloverComparison,
+    from_frame,
+    run,
+)
+from increment.errors import CodedError, InvalidRequestError
+from increment.estimation.spillover_results import SpilloverEffect, SpilloverEffects
+
+_METRIC = MetricSpec(name="visits_7d", value_column="visited", type="conversion", window_days=7)
 
 
 def _comparison(policy="half", reference="zero"):
@@ -20,10 +32,10 @@ def _design(**changes):
     options: dict[str, Any] = {
         "groups_per_policy": {"all": {"zero": 2, "half": 2, "full": 2}},
         "comparisons": [_comparison()],
-        "outcome": "visited",
-        "horizon": "seven days",
+        "control_group": "no offer",
+        "offered_group": "coupon",
     }
-    return SpilloverDesign(**(options | changes))
+    return Spillover(**(options | changes))
 
 
 def _frames():
@@ -32,40 +44,56 @@ def _frames():
     policies = ("half", "zero", "full", "half", "zero", "full")
     sizes = (4, 3, 2, 6, 5, 4)
     events = (1, 0, 0, 3, 2, 0)
-    roster, counts, offered, outcomes = [], [], [], []
+    members, counts = [], []
     for g, n, p, e in zip(groups, sizes, policies, events, strict=True):
         quotas = {"zero": 0, "half": n // 2, "full": n}
         counts.extend((g, name, k) for name, k in quotas.items())
         for j in range(n):
             person = f"person/{g}/{j}"
-            roster.append((person, g, "all"))
-            offered.append((person, j < quotas[p]))
-            if j >= quotas[p]:
-                outcomes.append((person, int(j - quotas[p] < e)))
+            assignment = "coupon" if j < quotas[p] else "no offer"
+            event = None if j < quotas[p] else int(j - quotas[p] < e)
+            members.append((person, g, "all", assignment, event))
+    roster = pd.DataFrame(members, columns=["customer", "store", "region", "assignment", "visited"])
     return {
-        "roster": pd.DataFrame(roster, columns=["person_id", "group_id", "stratum"]),
-        "offer_counts": pd.DataFrame(counts, columns=["group_id", "policy", "offers"]),
-        "group_policy": pd.DataFrame({"group_id": groups, "policy": policies}),
-        "offered": pd.DataFrame(offered, columns=["person_id", "offered"]),
-        "outcomes": pd.DataFrame(outcomes, columns=["person_id", "outcome"]),
+        "roster": roster,
+        "offer_counts": pd.DataFrame(counts, columns=["store", "policy", "offers"]),
+        "group_policy": pd.DataFrame({"store": groups, "policy": policies}),
     }
 
 
-def _register(frames, design=None):
+def _inputs(frames, design, stratum) -> dict[str, Any]:
+    return {
+        "unit": "customer",
+        "group": "assignment",
+        "cluster": "store",
+        "stratum": stratum,
+        "design": _design() if design is None else design,
+        "offer_counts": frames["offer_counts"],
+        "group_policy": frames.get("group_policy"),
+    }
+
+
+def _register(frames, design=None, *, stratum="region", alpha=0.05, metric=_METRIC):
     return from_frame(
         frames["roster"],
-        offer_counts=frames["offer_counts"],
-        design=_design() if design is None else design,
-        group_policy=frames["group_policy"],
-        offered=frames["offered"],
-        outcomes=frames["outcomes"],
+        shape="summary",
+        metrics=[metric],
+        plan=AnalysisPlan(primary=metric.name, alpha=alpha),
+        **_inputs(frames, design, stratum),
     )
+
+
+def _effect(experiment, reader) -> SpilloverEffect:
+    effects = run(experiment, reader).readout()
+    assert isinstance(effects, SpilloverEffects)
+    (row,) = effects
+    return row
 
 
 def test_freezes_declared_order_and_snapshots_all_nested_values():
     quotas = {"z": {"b": np.int64(1), "a": 1, "c": 1}, "a": {"c": 1, "b": 1, "a": 1}}
     pairs = [_comparison("c", "b"), _comparison("a", "b")]
-    design = _design(groups_per_policy=quotas, comparisons=pairs)
+    design = _design(groups_per_policy=quotas, comparisons=pairs).law("visited", 7, 0.05)
     before = design.declaration()
     quotas["z"].clear()
     quotas.clear()
@@ -84,21 +112,17 @@ def test_alpha_is_a_preassignment_decision_not_a_readout_option():
     frames = _frames()
     default, reader = _register(frames)
     with reader:
-        strict, other = _register(frames, _design(alpha=0.01))
+        strict, other = _register(frames, alpha=0.01)
         with other:
-            assert strict.registration_id != default.registration_id
-            assert strict.design.declaration()["alpha"] == 0.01
-        with pytest.raises(InvalidRequestError) as stale:
-            from_frame(
-                frames["roster"],
-                offer_counts=frames["offer_counts"],
-                design=strict.design,
-                expected_registration=default.registration_id,
-            )
-        assert stale.value.code == "spillover.roster.changed"
+            assert strict.registration != default.registration
+            assert _effect(strict, other).alpha == 0.01
+            with pytest.raises(CodedError) as stale:
+                run(default, other)
+        assert stale.value.code == "kernel.run.execution_unavailable"
+        assert stale.value.context["field"] == "design"
     for invalid in (0, 1, -0.1, True, np.bool_(False), float("nan"), float("inf"), "0.05"):
         with pytest.raises(InvalidRequestError) as error:
-            _design(alpha=invalid)
+            _design().law("visited", 7, cast(Any, invalid))
         assert error.value.context["field"] == "alpha"
 
 
@@ -124,7 +148,7 @@ def test_alpha_is_a_preassignment_decision_not_a_readout_option():
 )
 def test_rejects_unidentified_laws_and_ambiguous_comparisons(changes, code):
     with pytest.raises(InvalidRequestError) as exc:
-        _design(**changes)
+        replace(_design().law("visited", 7, 0.05), **changes)
     assert exc.value.code == f"spillover.design.{code}"
 
 
@@ -135,17 +159,14 @@ def test_comparison_needs_distinct_named_policies(p, r):
     assert exc.value.code == "spillover.design.invalid"
 
 
-def test_frame_summary_uses_equal_group_weights_and_only_unoffered_outcomes():
+@pytest.mark.parametrize("backend", ["pandas", "arrow", "polars"])
+def test_frame_summary_uses_equal_group_weights_and_only_unoffered_outcomes(backend):
     frames = _frames()
     experiment, reader = _register(frames)
-    groups = experiment.population.groups
-    assert [g.group_id for g in groups] == [2, 4, 6, 10, 12, 14]
-    first = groups[0]
-    assert (first.stratum, first.size, first.offers) == ("all", 3, (3, 1, 0))
+    assert experiment.analysis_context["planning_groups"][0] == ("all", 3, (3, 1, 0))
     with reader:
-        result = run(experiment, reader)
-    assert result.registration_id == experiment.registration_id
-    (row,) = result.comparisons
+        row = _effect(experiment, reader)
+    assert row.registration_hash == experiment.registration.registration_hash
     # Expand untreated events to group totals; two groups per arm represent all six.
     half = (4 * 1 / 2 + 6 * 3 / 3) / 2
     zero = (0 + 2) / 2
@@ -155,13 +176,16 @@ def test_frame_summary_uses_equal_group_weights_and_only_unoffered_outcomes():
     assert (row.lower, row.upper) == pytest.approx((-0.964962853, 0.999070650), abs=1e-9)
     assert row.direction == "inconclusive" and row.unavailable_reason is None
 
-    offered_only = frames["offered"].loc[lambda t: t.offered, ["person_id"]].copy()
-    offered_only["outcome"] = pd.array([1, *([None] * (len(offered_only) - 1))], dtype="Int64")
-    frames["outcomes"] = pd.concat([offered_only, frames["outcomes"]], ignore_index=True)
-    shuffled, reader = _register({k: v.iloc[::-1] for k, v in frames.items()})
-    assert shuffled.registration_id == experiment.registration_id
-    with reader:
-        assert run(shuffled, reader) == result
+    frames["roster"].at[0, "visited"] = -99
+    shuffled: dict[str, Any] = {k: v.iloc[::-1] for k, v in frames.items()}
+    if backend == "arrow":
+        shuffled = {k: pa.Table.from_pandas(v, preserve_index=False) for k, v in shuffled.items()}
+    elif backend == "polars":
+        shuffled = {k: pl.from_pandas(v) for k, v in shuffled.items()}
+    rebound, fresh = _register(shuffled)
+    assert rebound.registration == experiment.registration
+    with fresh:
+        assert _effect(Experiment.from_json(experiment.to_json()), fresh) == row
 
 
 @pytest.mark.parametrize("field", ["roster", "offer_counts"])
@@ -196,13 +220,13 @@ def test_prelaunch_inputs_require_unique_ownership_and_feasible_counts(role, cha
     df = frames[role].astype(object)
     frames[role] = df
     if change == "duplicate_person":
-        frames[role] = pd.concat([df, df.iloc[:1].assign(group_id=99, stratum="other")])
+        frames[role] = pd.concat([df, df.iloc[:1].assign(store=99, region="other")])
     elif change == "duplicate_pair":
         frames[role] = pd.concat([df, df.iloc[:1]])
     elif change == "two_strata":
-        df.at[0, "stratum"] = "other"
+        df.at[0, "region"] = "other"
     elif change in ("blank_id", "mixed_ids", "wrong_domain"):
-        df.at[0, "group_id"] = " " if change == "blank_id" else "10"
+        df.at[0, "store"] = " " if change == "blank_id" else "10"
     elif change == "missing_quota":
         frames[role] = df.iloc[1:]
     elif change == "unknown_pair":
@@ -220,74 +244,100 @@ def test_prelaunch_inputs_require_unique_ownership_and_feasible_counts(role, cha
     assert exc.value.context["field"] == role
 
 
-@pytest.mark.parametrize("change", ["membership", "counts", "id_domain"])
-def test_readout_rechecks_frozen_membership_and_every_quota(change):
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ("membership", "spillover.roster.changed"),
+        ("counts", "spillover.roster.changed"),
+        ("id_domain", "spillover.roster.changed"),
+        ("missing_person", "spillover.roster.changed"),
+        ("foreign_person", "spillover.roster.changed"),
+        ("duplicate_person", "spillover.design.duplicate"),
+    ],
+)
+def test_readout_rechecks_frozen_membership_and_every_quota(change, code):
     frames = _frames()
+    counts = frames["offer_counts"]
+    # Even losing one person would leave every prospective quota feasible in store 10.
+    counts.loc[(counts.store == 10) & (counts.policy == "full"), "offers"] = 3
     experiment, reader = _register(frames)
     if change == "membership":
         df = frames["roster"]
-        df.loc[[0, 4], "group_id"] = [2, 10]
+        df.loc[[0, 4], "store"] = [2, 10]
     elif change == "counts":
         # Unassigned potential quota: no realized offer count would reveal this change.
         frames["offer_counts"].at[0, "offers"] = 1
+    elif change == "missing_person":
+        frames["roster"].drop(index=0, inplace=True)
+    elif change == "foreign_person":
+        frames["roster"].at[0, "customer"] = "foreign customer"
+    elif change == "duplicate_person":
+        frames["roster"].at[0, "customer"] = frames["roster"].at[1, "customer"]
     else:
         for role in ("roster", "offer_counts", "group_policy"):
-            frames[role]["group_id"] = frames[role].group_id.astype(str)
+            frames[role]["store"] = frames[role].store.astype(str)
     with reader, pytest.raises(InvalidRequestError) as exc:
         run(experiment, reader)
-    assert exc.value.code == "spillover.roster.changed"
+    assert exc.value.code == code
     assert set(exc.value.context) == {"field", "requirement"}
     assert exc.value.context["field"] == "roster"
 
 
-@pytest.mark.parametrize("field", ["group_policy", "offered", "outcomes"])
 @pytest.mark.parametrize("mismatch", ["missing", "foreign", "duplicate"])
-def test_log_keys_never_drop_foreign_or_duplicate_rows_or_impute_missing(field, mismatch):
+def test_group_policy_log_never_drops_foreign_or_duplicate_rows_or_imputes_missing(mismatch):
     frames = _frames()
-    log = frames[field]
+    log = frames["group_policy"]
     if mismatch == "missing":
-        frames[field] = log.iloc[1:]
+        frames["group_policy"] = log.iloc[1:]
     elif mismatch == "duplicate":
-        frames[field] = pd.concat([log, log.iloc[:1]])
+        frames["group_policy"] = pd.concat([log, log.iloc[:1]])
     else:
-        log.iat[0, 0] = -1 if field == "group_policy" else "foreign"
+        log.iat[0, 0] = -1
     experiment, reader = _register(frames)
     with reader, pytest.raises(InvalidRequestError) as exc:
         run(experiment, reader)
     assert exc.value.code == "spillover.log.keys"
-    assert exc.value.context["field"] == field
+    assert exc.value.context["field"] == "group_policy"
 
 
 @pytest.mark.parametrize(
-    ("role", "column", "value", "code"),
+    ("role", "column", "value", "code", "field"),
     [
-        ("group_policy", "group_id", "10", "keys"),
-        ("group_policy", "policy", 1, "keys"),
-        ("offered", "offered", 2, "binary"),
-        ("offered", "offered", "1", "binary"),
-        ("offered", "offered", None, "binary"),
-        ("outcomes", "outcome", 0.0, "binary"),
-        ("outcomes", "outcome", None, "keys"),
+        ("group_policy", "store", "10", "keys", "group_policy"),
+        ("group_policy", "policy", 1, "keys", "group_policy"),
+        ("roster", "assignment", 2, "keys", "offered"),
+        ("roster", "assignment", "1", "keys", "offered"),
+        ("roster", "assignment", pd.NA, "keys", "offered"),
+        ("roster", "visited", np.nextafter(1.0, 2.0), "binary", "outcomes"),
+        ("roster", "visited", "1", "binary", "outcomes"),
     ],
 )
-def test_logs_require_binary_measurements_and_matching_key_domains(role, column, value, code):
+def test_logs_require_binary_measurements_and_matching_key_domains(
+    role, column, value, code, field
+):
     frames = _frames()
     frames[role] = frames[role].astype(object)
-    frames[role].at[0, column] = value
+    frames[role].at[2 if column == "visited" else 0, column] = value
     experiment, reader = _register(frames)
     with reader, pytest.raises(InvalidRequestError) as exc:
         run(experiment, reader)
     assert exc.value.code == f"spillover.log.{code}"
-    assert exc.value.context["field"] == role
+    assert exc.value.context["field"] == field
 
 
-def test_optional_offered_measurement_cannot_be_nonbinary_even_in_uncompared_group():
+@pytest.mark.parametrize("backend", ["arrow", "polars"])
+def test_nan_in_an_unoffered_outcome_is_missing_even_without_an_arrow_null(backend):
     frames = _frames()
-    frames["outcomes"].loc[len(frames["outcomes"])] = ["person/12/0", 2]
-    experiment, reader = _register(frames)
+    roster = frames["roster"]
+    values = roster["visited"].to_numpy(copy=True)
+    values[2] = float("nan")
+    arrow = pa.Table.from_pandas(roster.drop(columns="visited"), preserve_index=False)
+    arrow = arrow.append_column("visited", pa.array(values, from_pandas=False))
+    native = arrow if backend == "arrow" else pl.from_arrow(arrow)
+    experiment, reader = _register(frames | {"roster": native})
     with reader, pytest.raises(InvalidRequestError) as exc:
         run(experiment, reader)
-    assert exc.value.code == "spillover.log.binary"
+    assert exc.value.code == "spillover.log.keys"
     assert exc.value.context["field"] == "outcomes"
 
 
@@ -295,24 +345,24 @@ def test_optional_offered_measurement_cannot_be_nonbinary_even_in_uncompared_gro
 def test_both_realized_quotas_are_local_not_just_trial_totals(field):
     frames = _frames()
     roster = frames["roster"]
-    roster["stratum"] = roster.group_id.map(lambda g: "west" if g in {10, 2, 12} else "east")
+    roster["region"] = roster.store.map(lambda g: "west" if g in {10, 2, 12} else "east")
     design = _design(
-        groups_per_policy={s: dict.fromkeys(_design().policies, 1) for s in ("east", "west")}
+        groups_per_policy={s: {"half": 1, "zero": 1, "full": 1} for s in ("east", "west")}
     )
     if field == "group_policy":
         frames[field].loc[[0, 4], "policy"] = ["zero", "half"]
     else:
-        df = frames[field]
-        df.loc[df.person_id == "person/10/0", "offered"] = False
-        df.loc[df.person_id == "person/2/0", "offered"] = True
+        roster.loc[roster.customer == "person/10/0", "assignment"] = "no offer"
+        roster.loc[roster.customer == "person/2/0", "assignment"] = "coupon"
     experiment, reader = _register(frames, design)
-    assert [(g.stratum, g.group_id) for g in experiment.population.groups] == [
-        ("east", 4),
+    profiles = experiment.analysis_context["planning_groups"]
+    assert [(stratum, size) for stratum, size, _ in profiles] == [
         ("east", 6),
-        ("east", 14),
+        ("east", 4),
+        ("east", 5),
+        ("west", 3),
+        ("west", 4),
         ("west", 2),
-        ("west", 10),
-        ("west", 12),
     ]
     with reader, pytest.raises(InvalidRequestError) as exc:
         run(experiment, reader)
@@ -322,7 +372,7 @@ def test_both_realized_quotas_are_local_not_just_trial_totals(field):
 
 def test_stratum_totals_must_account_for_every_group():
     frames = _frames()
-    design = replace(_design(), groups_per_policy={"all": {"zero": 2, "half": 2, "full": 1}})
+    design = _design(groups_per_policy={"all": {"zero": 2, "half": 2, "full": 1}})
     with pytest.raises(InvalidRequestError) as exc:
         _register(frames, design)
     assert exc.value.code == "spillover.design.quota"
@@ -331,10 +381,57 @@ def test_stratum_totals_must_account_for_every_group():
 
 def test_planning_needs_no_observed_frames_but_readout_requires_them():
     frames = _frames()
-    experiment, reader = from_frame(
-        frames["roster"], offer_counts=frames["offer_counts"], design=_design()
-    )
+    roster = frames["roster"].drop(columns="region")
+    planning = {"roster": roster[["customer", "store"]], "offer_counts": frames["offer_counts"]}
+    design = _design(groups_per_policy={"midwest": {"zero": 2, "half": 2, "full": 2}})
+    metric = MetricSpec(name="visited", type="conversion", window_days=7)
+    experiment, reader = _register(planning, design, stratum=None, metric=metric)
     with reader, pytest.raises(InvalidRequestError) as exc:
         run(experiment, reader)
     assert exc.value.code == "spillover.log.keys"
     assert exc.value.context["field"] == "group_policy"
+
+    planning["group_policy"] = frames["group_policy"]
+    for field, columns in (
+        ("offered", ["customer", "store"]),
+        ("outcomes", ["customer", "store", "assignment"]),
+    ):
+        planning["roster"] = roster[columns]
+        _, reader = _register(planning, design, stratum=None, metric=metric)
+        with reader, pytest.raises(InvalidRequestError) as missing:
+            run(experiment, reader)
+        assert missing.value.code == "spillover.log.keys"
+        assert missing.value.context["field"] == field
+
+    planning["roster"] = roster
+    roster["visited"] = pd.array([0] * len(roster), dtype="Int64")
+    _, reader = _register(planning, design, stratum=None, metric=metric)
+    with reader:
+        assert _effect(experiment, reader).estimate == 0
+        roster.at[2, "visited"] = pd.NA
+        with pytest.raises(InvalidRequestError) as unknown:
+            run(experiment, reader)
+        assert unknown.value.code == "spillover.log.keys"
+        assert unknown.value.context["field"] == "outcomes"
+
+
+def test_multiple_declared_strata_require_a_stratum_column():
+    frames = _frames()
+    design = _design(groups_per_policy={s: {"half": 1, "zero": 1, "full": 1} for s in ("x", "y")})
+    with pytest.raises(InvalidRequestError) as ambiguous:
+        _register(frames, design, stratum=None)
+    assert ambiguous.value.code == "spillover.design.invalid"
+    assert ambiguous.value.context["field"] == "stratum"
+
+
+def test_changing_only_the_selected_outcome_column_invalidates_a_saved_registration():
+    frames = _frames()
+    original, reader = _register(frames)
+    with reader:
+        saved = original.to_json()
+    # No measurement column yet: the mismatch must be detected before reading outcomes.
+    metric = _METRIC.model_copy(update={"value_column": "visited_later"})
+    _, rebound = _register(frames, metric=metric)
+    with rebound, pytest.raises(CodedError) as stale:
+        run(Experiment.from_json(saved), rebound)
+    assert stale.value.code == "kernel.run.execution_unavailable"

@@ -51,6 +51,7 @@ from increment.semantics.models import (
     ActiveMetric,
     ConversionMetric,
     Experiment,
+    Exposure,
     FactNullPolicy,
     FactRef,
     Filter,
@@ -375,6 +376,23 @@ def _reject_null_identity(table: ir.Table, *columns: str) -> ir.Table:
         c = table[col].notnull()
         condition = c if condition is None else (condition & c)
     return table if condition is None else table.filter(condition)
+
+
+def declared_exposure_rows(
+    rows: ir.Table, exposure: Exposure, experiment: Experiment, *, keyed: bool
+) -> ir.Table:
+    """Scope the raw assignment stream without deduplicating any draws."""
+    if keyed:
+        # An entirely NULL key is an unused optional column. Mixed NULLs are
+        # unrelated rows, just like nonmatching experiment keys.
+        unused = ~rows.experiment_id.notnull().any()
+        rows = rows.mutate(experiment_id=ibis.ifelse(unused, experiment.name, rows.experiment_id))
+        rows = rows.filter(rows.experiment_id == experiment.name)
+    elif exposure.sql is not None:
+        rows = rows.mutate(experiment_id=ibis.literal(experiment.name))
+    for flt in exposure.filters:
+        rows = _apply_filter(rows, flt)
+    return rows
 
 
 def _scope_exposure_events(exposure_events: ir.Table, experiment: Experiment) -> ir.Table:

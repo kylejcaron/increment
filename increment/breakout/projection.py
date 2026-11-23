@@ -723,6 +723,14 @@ def _null_columns_typed_like_values(frames: Sequence[nw.DataFrame[Any]]) -> list
     return aligned
 
 
+def with_view_partial(frame: IntoDataFrame, *, partial: bool | None) -> IntoDataFrame:
+    return (
+        nw.from_native(frame, eager_only=True)
+        .with_columns(nw.lit(partial, dtype=nw.Boolean).alias("view_partial"))
+        .to_native()
+    )
+
+
 def result_frame(
     groups: Sequence[tuple[type[BaseModel], Sequence[Any]]],
     metadata: ReadoutMetadata | None,
@@ -750,7 +758,7 @@ def result_frame(
     )
 
     presets = tuple(summary_columns(model) for model, _ in groups) if columns == "summary" else None
-    interpretation = interpret_readout([row for _, rows in groups for row in rows], metadata)
+    interpretation = None
     frames = []
     available: dict[str, None] = {}
     summary: dict[str, None] = {}
@@ -758,7 +766,17 @@ def result_frame(
         if model is ContrastResult:
             native = ContrastResults(rows, metadata=metadata).to_frame(backend=backend)
             typed = CONTRAST_FRAME_COLUMNS
+        elif model.__name__ == "SpilloverEffect":
+            typed = projection_columns(model, rows)
+            native = with_view_partial(
+                to_frame(rows, model=model, backend=backend),
+                partial=None if metadata is None else metadata.partial,
+            )
         else:
+            if interpretation is None:
+                interpretation = interpret_readout(
+                    [row for _, items in groups for row in items], metadata
+                )
             typed = projection_columns(model, rows)
             native = with_readout_evidence(
                 to_frame(rows, model=model, backend=backend),

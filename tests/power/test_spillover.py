@@ -1,5 +1,6 @@
 """Operating characteristics for the prospective two-stage binary model."""
 
+import json
 from dataclasses import FrozenInstanceError
 from functools import cache
 from itertools import combinations, product
@@ -13,8 +14,26 @@ from scipy.special import logsumexp
 from scipy.stats import binom
 
 from calibration.spillover import certify_decisions, certify_sampling, three_levels
+from increment import Experiment, Spillover, SpilloverComparison
 from increment.errors import CodedError
-from increment.spillover import SpilloverComparison, SpilloverDesign, from_frame
+from increment.power import spillover_power
+from tests.spillover_trial import bind_summary, frame_trial, three_policy_trial
+
+
+def test_offline_power_refuses_edited_group_quotas_under_the_saved_registration():
+    design, frames = three_policy_trial()
+    design["comparisons"][0]["baseline_rate"] = 0.5
+    trial, reader = frame_trial(design, frames, planning=True)
+    with reader:
+        payload = json.loads(trial.to_json())
+    # Each quota is individually valid, but the first comparison can no longer change any offers.
+    for _, _, offers in payload["analysis_context"]["planning_groups"]:
+        offers[1] = offers[0]
+    edited = Experiment.from_json(json.dumps(payload))
+    assert edited.registration == trial.registration
+    with pytest.raises(CodedError) as stale:
+        spillover_power(edited)
+    assert stale.value.code == "kernel.request.invalid"
 
 
 def _comparison(rate=0.4, effect=0.1, policy="upper"):
@@ -38,12 +57,11 @@ def _plan(
     if strata is None:
         strata = ["all"] * len(sizes)
     quotas = quotas or {"all": {"base": len(sizes) - len(sizes) // 2, "upper": len(sizes) // 2}}
-    design = SpilloverDesign(
+    design = Spillover(
+        control_group="no_offer",
+        offered_group="offered",
         groups_per_policy=quotas,
         comparisons=comparisons or (_comparison(),),
-        outcome="renewed",
-        horizon="90 days",
-        alpha=alpha,
     )
     if offers is None:
         offers = [(1, n - 2) for n in sizes]
@@ -54,16 +72,19 @@ def _plan(
             "stratum": np.repeat(strata, sizes),
         }
     )
+    policies = sorted(next(iter(quotas.values())))
     counts = pa.table(
         {
-            "group_id": np.repeat(groups, len(design.policies)),
-            "policy": list(design.policies) * len(sizes),
+            "group_id": np.repeat(groups, len(policies)),
+            "policy": policies * len(sizes),
             "offers": [q for row in offers for q in row],
         }
     )
-    experiment, reader = from_frame(roster, offer_counts=counts, design=design)
+    experiment, reader = bind_summary(
+        roster, counts, None, design, metric="renewed", window_days=90, alpha=alpha
+    )
     with reader:
-        return tuple(plan.evidence for plan in experiment.planning)
+        return tuple(plan.evidence for plan in spillover_power(experiment))
 
 
 @cache
@@ -375,14 +396,12 @@ def test_scarce_sibling_keeps_family_and_simulation_tails():
 @pytest.mark.slow
 @pytest.mark.numerical_certification
 def test_three_policy_plans_assess_detection_with_simultaneous_bounds():
-    design, frames = three_levels()
-    experiment, reader = from_frame(
-        frames["roster"], offer_counts=frames["offer_counts"], design=design
-    )
+    experiment, reader = frame_trial(*three_levels(), planning=True)
     # Forward binomial tests, independent of the reported inverse-beta bounds.
     with reader:
-        assert len(experiment.planning) == 2
-        for plan in experiment.planning:
+        plans = spillover_power(experiment)
+        assert len(plans) == 2
+        for plan in plans:
             rows = plan.evidence.scenarios
             assert len(rows) == 12 and {s.attempts for s in rows} == {4096}
             for row in rows:
@@ -435,6 +454,38 @@ def test_group_renaming_preserves_models_and_sampling_with_structural_ties():
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    ("labels", "renamed", "allocation"),
+    [
+        (("a", "z"), ("z", "a"), (4, 4)),
+        (("m", "n", "a", "b"), ("m", "n", "b", "a"), (2, 2, 1, 3)),
+    ],
+    ids=["compared_policies", "other_policies"],
+)
+def test_policy_renaming_preserves_schedule_feasibility_and_evidence(labels, renamed, allocation):
+    # Of 40 reference events, filling tied groups in reference-then-policy order
+    # leaves both events and nonevents in groups whose offer counts can change.
+    pairs = ((0, 0),) * 2 + ((0, 2),) * 3 + ((1, 1),) * 3
+
+    def advice(names):
+        reference, policy, *_ = names
+        columns = sorted(range(len(names)), key=names.__getitem__)
+        # When present, the two other policies copy the reference and policy quotas.
+        offers = [tuple((r, p, r, p)[i] for i in columns) for r, p in pairs]
+        (plan,) = _plan(
+            (10,) * 8,
+            comparisons=(SpilloverComparison(policy, reference, 0.1, 0.5),),
+            quotas={"all": dict(zip(names, allocation, strict=True))},
+            offers=offers,
+        )
+        return plan
+
+    original = advice(labels)
+    assert (original.status, len(original.scenarios)) == ("underpowered", 12)
+    assert advice(renamed) == original
+
+
+@pytest.mark.slow
 def test_region_names_do_not_decide_scenario_feasibility():
     # Eight events fill two tied groups. Only one region's groups can change.
     def advice(first, second):
@@ -453,15 +504,16 @@ def test_region_names_do_not_decide_scenario_feasibility():
 def test_stratified_three_policy_evidence_replays_under_region_renaming():
     # The groups have identical sizes and offer counts. Only the registered
     # policy allocations distinguish the two regions' assignment laws.
-    def advice(first, second):
+    def advice(first, second, reference="base", policy="upper"):
+        counts = {reference: 0, "middle": 1, policy: 3}
         (plan,) = _plan(
             (4,) * 32,
-            comparisons=(_comparison(0.25, 0.5),),
-            offers=((0, 1, 3),) * 32,
+            comparisons=(SpilloverComparison(policy, reference, 0.5, 0.25),),
+            offers=(tuple(counts[label] for label in sorted(counts)),) * 32,
             strata=(first,) * 16 + (second,) * 16,
             quotas={
-                first: {"base": 5, "middle": 2, "upper": 9},
-                second: {"base": 8, "middle": 3, "upper": 5},
+                first: {reference: 5, "middle": 2, policy: 9},
+                second: {reference: 8, "middle": 3, policy: 5},
             },
             alpha=0.5,
         )
@@ -470,6 +522,7 @@ def test_stratified_three_policy_evidence_replays_under_region_renaming():
     original = advice("A", "Z")
     assert len(original.scenarios) == 12
     assert advice("Z", "A") == original
+    assert advice("A", "Z", reference="upper", policy="base") == original
 
 
 @pytest.mark.slow

@@ -36,7 +36,6 @@ PROMISED_NAMESPACES = {
     "increment.query",
     "increment.results",
     "increment.simulate",
-    "increment.spillover",
     "increment.store",
     "increment.tables",
     "increment.workflows",

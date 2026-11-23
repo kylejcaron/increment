@@ -16,6 +16,7 @@ from increment import (
     MetricSpec,
     Randomized,
     RunResult,
+    Spillover,
     from_definitions,
     from_frame,
     from_moments,
@@ -29,7 +30,6 @@ from increment.frame import IntoDataFrame
 from increment.query.artifact_contract import ArtifactStore
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
 from increment.semantics.unit_cycle import UnitCycleReference
-from increment.spillover import SpilloverExperiment, SpilloverReader, SpilloverResult
 from increment.switchback import SwitchbackAssignment
 
 
@@ -164,14 +164,31 @@ def definitions_calls(path: str | PathLike[str], evidence: SourceSnapshotEvidenc
     from_definitions(path, store="invalid")  # ty: ignore[invalid-argument-type]
 
 
-def spillover_calls(path: str | PathLike[str], con: SQLBackend) -> None:
-    ordinary, reader = assert_type(from_definitions(path, con), tuple[Experiment, ExperimentReader])
-    assert_type(run(ordinary, reader), RunResult)
-    trial, logs = assert_type(
-        from_definitions(path, con, family="spillover", expected_registration=None),
-        tuple[SpilloverExperiment, SpilloverReader],
+def spillover_calls(
+    path: str | PathLike[str], con: SQLBackend, frame: IntoDataFrame, design: Spillover
+) -> None:
+    assert_type(from_definitions(path, con), tuple[Experiment, ExperimentReader])
+    trial, reader = assert_type(
+        from_definitions(path, con, experiment_name="pilot"), tuple[Experiment, ExperimentReader]
     )
-    assert_type(run(trial, logs), SpilloverResult)
+    assert_type(run(trial, reader), RunResult)
+    local, summary = assert_type(
+        from_frame(
+            frame,
+            shape="summary",
+            unit="customer",
+            group="assignment",
+            cluster="store",
+            stratum="region",
+            metrics=[MetricSpec(name="bought", type="conversion", window_days=7)],
+            plan=AnalysisPlan(primary="bought"),
+            design=design,
+            offer_counts=frame,
+            group_policy=frame,
+        ),
+        tuple[Experiment, ExperimentReader],
+    )
+    assert_type(run(local, summary), RunResult)
 
 
 def relative_prior_calls(frame: IntoDataFrame) -> None:

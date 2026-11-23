@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         RelativeConfidenceSet,
     )
     from increment.estimation.sitewide import AllocationBalance, SitewideImpact, SitewideRatioImpact
+    from increment.estimation.spillover_results import SpilloverEffect, SpilloverEffects
     from increment.estimation.targeting import (
         CateEvaluationPopulation,
         CateValidation,
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
         PowerCurve,
         PowerCurvePoint,
         PowerResult,
+        SpilloverPowerResult,
         SwitchbackPowerResult,
     )
     from increment.power.unit_cycle import (
@@ -98,6 +100,8 @@ __all__ = [
     "LiftEstimates",
     "ContrastResult",
     "ContrastResults",
+    "SpilloverEffect",
+    "SpilloverEffects",
     "SwitchbackAssignmentDiagnostic",
     "BreakoutEstimate",
     "BreakoutEstimates",
@@ -115,6 +119,7 @@ __all__ = [
     "RolloutSegment",
     "RolloutSegments",
     "PowerResult",
+    "SpilloverPowerResult",
     "SwitchbackPowerResult",
     "UnitCycleFailureCount",
     "UnitCycleLawMoments",
@@ -168,6 +173,8 @@ _LAZY_IMPORTS = {
     "LiftEstimates": ("increment.breakout.estimates", "LiftEstimates"),
     "ContrastResult": ("increment.estimation.contrast_results", "ContrastResult"),
     "ContrastResults": ("increment.estimation.contrast_results", "ContrastResults"),
+    "SpilloverEffect": ("increment.estimation.spillover_results", "SpilloverEffect"),
+    "SpilloverEffects": ("increment.estimation.spillover_results", "SpilloverEffects"),
     "SwitchbackAssignmentDiagnostic": (
         "increment.switchback",
         "SwitchbackAssignmentDiagnostic",
@@ -188,6 +195,7 @@ _LAZY_IMPORTS = {
     "RolloutSegment": ("increment.breakout.rollout", "RolloutSegment"),
     "RolloutSegments": ("increment.breakout.rollout", "RolloutSegments"),
     "PowerResult": ("increment.power", "PowerResult"),
+    "SpilloverPowerResult": ("increment.power._spillover", "SpilloverPowerResult"),
     "SwitchbackPowerResult": ("increment.power", "SwitchbackPowerResult"),
     "UnitCycleFailureCount": ("increment.power.unit_cycle", "UnitCycleFailureCount"),
     "UnitCycleLawMoments": ("increment.power.unit_cycle", "UnitCycleLawMoments"),
@@ -223,7 +231,9 @@ _LAZY_IMPORTS = {
     "ReadoutResults": ("increment.estimation.readout_types", "ReadoutResults"),
 }
 # Saved collections decode to the classes their defining modules register on import.
-_REGISTRANTS = {"ReadoutResults": ("increment.breakout.estimates",)}
+_REGISTRANTS = {
+    "ReadoutResults": ("increment.breakout.estimates", "increment.estimation.spillover_results")
+}
 
 
 def __getattr__(name: str):

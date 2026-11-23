@@ -29,6 +29,7 @@ from tests.capability_contracts import (
 )
 from tests.doc_evidence import resolve_evidence_function
 from tests.parity_harness.declarations import PARITY_DECLARATIONS
+from tests.parity_harness.matrix import SPILLOVER_DISPOSITIONS
 
 
 @dataclass(frozen=True)
@@ -1554,19 +1555,11 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
     ),
     _row(
         "untreated-spillover",
-        "Two-stage untreated spillover contrast",
+        "Two-stage spillover: policy difference under personal nonoffer",
         {
-            ingress: (
-                _consumer(
-                    "spillover_family_boundary",
-                    "warehouse_supported"
-                    if ingress == "from_definitions"
-                    else f"{ingress}_not_expressible",
-                ),
-            )
-            for ingress in INGRESSES
+            ingress: (_consumer("spillover", f"{ingress}_{status}"),)
+            for ingress, status in SPILLOVER_DISPOSITIONS.items()
         },
-        family=(_consumer("spillover_family_boundary", "dataframe_supported"),),
     ),
     _row(
         "logged-policy-contrast",

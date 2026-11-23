@@ -150,7 +150,6 @@ increment._run -> increment.kernel
 increment._run -> increment.kernel.resolver
 increment._run -> increment.semantics
 increment._run -> increment.semantics.models
-increment._run -> increment.spillover
 increment._runnability -> increment._analysis_config
 increment._runnability -> increment._day_axis
 increment._runnability -> increment._evidence_refusals
@@ -246,7 +245,6 @@ increment.builders -> increment.semantics.loader
 increment.builders -> increment.semantics.models
 increment.builders -> increment.sequential_source
 increment.builders -> increment.sources
-increment.builders -> increment.spillover
 increment.builders -> increment.switchback
 increment.cate -> increment._source_identity
 increment.decide -> increment.plan
@@ -766,7 +764,6 @@ increment.sources -> increment.semantics.design
 increment.sources -> increment.semantics.models
 increment.sources -> increment.sequential_source
 increment.sources -> increment.sequential_state
-increment.spillover -> increment._frame_spillover
 increment.store -> increment.store
 increment.store -> increment.store.types
 increment.store.decision_log -> increment.decide
@@ -813,6 +810,7 @@ increment._readout_request
 increment._runnability
 increment._sequential_readouts
 increment._source_admission
+increment._spillover_registration
 increment.breakout.estimates
 increment.breakout.projection
 increment.estimation._adjust.clustered_unadjusted

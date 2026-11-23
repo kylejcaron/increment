@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from increment.semantics.artifact import ArtifactExtensionRequest, UnitDayArtifactRef
     from increment.semantics.models import Experiment, Metric
 
-from increment._binding import SourceBinding, binding_for
+from increment._binding import SourceBinding, SpilloverBinding, binding_for, verified_reader
 from increment._canonical import canonical_json_bytes
 from increment._exploratory import available_metrics as _available_metrics
 from increment._optional import require_warehouse
@@ -29,6 +29,7 @@ from increment._source_operations import (
 from increment._source_types import declared_evidence
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
+from increment.kernel.contracts import _refuse
 from increment.query.artifact_contract import (
     ArtifactContractError,
     unit_day_artifact_extension_catalog,
@@ -203,16 +204,21 @@ def _experiment_definition_binding(binding: SourceBinding) -> Experiment:
 def experiment_definition(experiment: KernelExperiment, reader: ExperimentReader) -> Experiment:
     """Return the semantic experiment declaration carried by the source."""
     require_warehouse("experiment_definition")
-    return _experiment_definition_binding(binding_for(experiment, reader))
-
-
-def _metrics_binding(binding: SourceBinding) -> list[Metric]:
-    return binding.metrics
+    binding = verified_reader(experiment, reader)._active
+    if isinstance(binding, SpilloverBinding):
+        if binding.definition is None:
+            _refuse(
+                "kernel.request.invalid",
+                field="use from_definitions to inspect the experiment declaration",
+            )
+        return binding.definition
+    return _experiment_definition_binding(binding)
 
 
 def metrics(experiment: KernelExperiment, reader: ExperimentReader) -> list[Metric]:
     """Return the source's declared metrics and guardrails."""
-    return _metrics_binding(binding_for(experiment, reader))
+    binding = verified_reader(experiment, reader)._active
+    return [binding.metric] if isinstance(binding, SpilloverBinding) else binding.metrics
 
 
 def _compiled_decision_plan_binding(binding: SourceBinding) -> CompiledDecisionPlan:
@@ -235,7 +241,8 @@ def compiled_decision_plan(
 def available_metrics(experiment: KernelExperiment, reader: ExperimentReader) -> list[Metric]:
     """Return eligible saved metrics not declared by the experiment, in catalog order."""
     require_warehouse("available_metrics")
-    return _available_metrics(binding_for(experiment, reader))
+    binding = verified_reader(experiment, reader)._active
+    return [] if isinstance(binding, SpilloverBinding) else _available_metrics(binding)
 
 
 def breakout_summaries(

@@ -1,15 +1,30 @@
 """A two-stage offer design needs both assignment logs, not an ordinary arm label."""
 
-import pytest
-from pydantic import TypeAdapter, ValidationError
+from contextlib import ExitStack
+from inspect import signature
 
-from increment import from_definitions, run, runnable
+import pyarrow as pa
+import pytest
+
+from increment import (
+    MetricSpec,
+    RunResult,
+    Spillover,
+    SpilloverComparison,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+    from_unit_day_artifact,
+    run,
+    runnable,
+)
 from increment.errors import CodedError
-from increment.semantics.assignment import Assignment
+from increment.power import spillover_power
+from increment.results import SpilloverEffects
 from tests.capability_consumers_auxiliary import assert_expected, assert_support
-from tests.parity_harness.matrix import SPILLOVER_DISPOSITIONS
 from tests.spillover_trial import (
-    frame_design,
+    frame_trial,
     run_three_policy_probe,
     three_policy_trial,
     warehouse_run,
@@ -17,24 +32,47 @@ from tests.spillover_trial import (
 )
 
 
-def test_ordinary_and_two_stage_assignments_are_not_interchangeable():
-    design, _ = three_policy_trial()
-    with pytest.raises(ValidationError):
-        TypeAdapter(Assignment).validate_python(frame_design(design))
-    for ingress in (
-        i for i, status in SPILLOVER_DISPOSITIONS.items() if status == "not_expressible"
-    ):
-        assert_expected(
-            "spillover_family_boundary", f"{ingress}_not_expressible", kind="not_expressible"
+def _comparisons(result: RunResult) -> SpilloverEffects:
+    rows = result.readout()
+    assert isinstance(rows, SpilloverEffects)
+    return rows
+
+
+def test_other_inputs_cannot_declare_both_random_draws():
+    design = Spillover(
+        control_group="no_offer",
+        offered_group="offered",
+        groups_per_policy={"all": {"few": 2, "many": 2}},
+        comparisons=(SpilloverComparison("many", "few", 0.05),),
+    )
+    panel = pa.table({"person": ["a"], "day": [1], "arm": ["no_offer"], "bought": [0]})
+    with pytest.raises(CodedError) as refused:
+        from_frame(
+            panel,
+            shape="panel",
+            unit="person",
+            date="day",
+            group="arm",
+            metrics=[MetricSpec(name="bought", type="conversion", window_days=7)],
+            design=design,  # ty: ignore[invalid-argument-type]  # Test a summary-only design.
         )
+    assert refused.value.code == "kernel.request.invalid"
+    assert_expected("spillover", "from_unit_panel_not_expressible", kind="not_expressible")
+
+    for ingress, builder in (
+        ("from_switchback_panel", from_switchback_frame),
+        ("from_moments", from_moments),
+        ("from_unit_day_artifact", from_unit_day_artifact),
+    ):
+        # These constructors have no input for the first draw or the per-policy quotas.
+        assert {"offer_counts", "group_policy"}.isdisjoint(signature(builder).parameters)
+        assert_expected("spillover", f"{ingress}_not_expressible", kind="not_expressible")
 
 
 @pytest.mark.integration
-def test_families_share_a_definitions_directory(example_definitions, con):
-    from contextlib import ExitStack
-
+def test_named_experiments_share_a_definitions_directory(example_definitions, con):
     design, frames = three_policy_trial()
-    names = {role: f"mixed_families_{role}" for role in frames}
+    names = {role: f"store_offers_{role}" for role in frames if role != "summary"}
     write_study(example_definitions / "offers.yaml", design, names)
     with ExitStack() as stack:
         for role in ("roster", "offer_counts"):
@@ -45,44 +83,45 @@ def test_families_share_a_definitions_directory(example_definitions, con):
         )
         stack.enter_context(reader)
         trial, spillover_reader = from_definitions(
-            example_definitions, con, family="spillover", experiment_name="pilot"
+            example_definitions, con, experiment_name="pilot"
         )
         stack.enter_context(spillover_reader)
         assert ordinary.experiment_id == "new_onboarding_v2"
-        assert [p.policy for p in trial.planning] == ["middle", "upper"]
+        assert [p.policy for p in spillover_power(trial)] == ["middle", "upper"]
 
 
-def test_ordinary_preflight_refuses_spillover_before_observations():
-    from increment.spillover import from_frame
-
-    design, frames = three_policy_trial()
-    trial, reader = from_frame(
-        frames["roster"], offer_counts=frames["offer_counts"], design=frame_design(design)
-    )
-    with reader, pytest.raises(CodedError) as exc:
-        runnable(trial, "bought")  # ty: ignore[invalid-argument-type]  # Unsupported family.
-    assert exc.value.code == "kernel.request.invalid"
+def test_preflight_defers_assignment_checks_without_reading_outcomes():
+    trial, reader = frame_trial(*three_policy_trial(), planning=True)
+    with reader:
+        methods = runnable(trial, "bought")
+    assert set(methods) == {"spillover.two_stage"}
+    assert not methods["spillover.two_stage"].static_refusals
+    assert methods["spillover.two_stage"].deferred_checks
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("alpha", [0.01, 0.05])
 def test_named_spillover_comparisons_match_through_frame_and_definitions(con, tmp_path, alpha):
-    from increment.spillover import from_frame
-
     design, frames = three_policy_trial(alpha=alpha)
-    exp, reader = from_frame(**frames, design=frame_design(design))
+    exp, reader = frame_trial(design, frames)
     with reader:
         local = run(exp, reader)
     warehouse = run_three_policy_probe(con, tmp_path, alpha=alpha)
-    assert_support("spillover_family_boundary", "dataframe_supported", local)
-    assert_support("spillover_family_boundary", "warehouse_supported", warehouse)
-    for frame, db in zip(local.comparisons, warehouse.comparisons, strict=True):
-        assert (frame.policy, frame.reference) == (db.policy, db.reference)
+    assert_support("spillover", "from_unit_summary_supported", local)
+    assert_support("spillover", "from_definitions_supported", warehouse)
+    for frame, db in zip(_comparisons(local), _comparisons(warehouse), strict=True):
+        assert (frame.metric, frame.window_days, frame.policy, frame.reference) == (
+            db.metric,
+            db.window_days,
+            db.policy,
+            db.reference,
+        )
         assert frame.estimate == pytest.approx(db.estimate, abs=1e-14, rel=0)
         assert (frame.lower, frame.upper) == pytest.approx((db.lower, db.upper), abs=1e-10, rel=0)
         assert frame.direction == db.direction
         assert frame.unavailable_reason == db.unavailable_reason
-        assert frame.method == exp.method == db.method
+        assert frame.range_basis == db.range_basis
+        assert frame.method == db.method == "two-stage-fixed-bet-v2"
         assert (frame.family_size, frame.policy_count, frame.alpha) == (
             db.family_size,
             db.policy_count,
@@ -91,12 +130,10 @@ def test_named_spillover_comparisons_match_through_frame_and_definitions(con, tm
 
 
 @pytest.mark.integration
-def test_both_public_paths_reject_a_missing_untreated_outcome(con, tmp_path):
-    from increment.spillover import from_frame
-
+def test_both_public_paths_reject_missing_store_assignments(con, tmp_path):
     design, frames = three_policy_trial()
-    frames["outcomes"] = frames["outcomes"].slice(1)
-    exp, reader = from_frame(**frames, design=frame_design(design))
+    frames["group_policy"] = frames["group_policy"].slice(1)
+    exp, reader = frame_trial(design, frames)
     with reader, pytest.raises(CodedError) as local:
         run(exp, reader)
     with pytest.raises(CodedError) as warehouse:
@@ -111,15 +148,15 @@ def test_both_public_paths_reject_a_missing_untreated_outcome(con, tmp_path):
 @pytest.mark.parametrize("source", ["frame", "warehouse"])
 def test_family_reports_direction_and_interval_for_constant_sibling(source, con, tmp_path):
     from calibration.spillover import three_levels
-    from increment.spillover import from_frame
 
     design, frames = three_levels()
     if source == "frame":
-        experiment, reader = from_frame(**frames, design=design)
+        experiment, reader = frame_trial(design, frames)
         with reader:
-            middle, upper = run(experiment, reader).comparisons
+            result = run(experiment, reader)
     else:
-        middle, upper = warehouse_run(con, tmp_path, design.declaration(), frames).comparisons
+        result = warehouse_run(con, tmp_path, design, frames)
+    middle, upper = _comparisons(result)
     # Middle has 139 successes among 300 binary group rates, upper has none
     # of 300 and base none of 400. The tail product is (1-t)^(n-s) *
     # (1-t+t/m)^s for s successes; average over dyadic bets and invert

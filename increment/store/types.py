@@ -317,6 +317,24 @@ class HistorySelector:
     scope_hash: str
     contrast: str | None = None
     role: str | None = None
+    policy: str | None = None
+    reference: str | None = None
+
+    def _matches(self, run: Run, cell: ResultCell) -> bool:
+        identity = cell.identity
+        key = identity.key
+        return (
+            identity.metric_hash == self.metric_hash
+            and identity.estimator_id == self.estimator_id
+            and identity.method_config_hash == self.method_config_hash
+            and identity.method_instance_id == self.method_instance_id
+            and identity.scope is not None
+            and identity.scope.hash() == self.scope_hash
+            and (self.contrast is None or _matches_contrast(run, cell, self.contrast))
+            and (self.role is None or key.method_role == self.role)
+            and (self.policy is None or key.policy == self.policy)
+            and (self.reference is None or key.reference == self.reference)
+        )
 
 
 def _matches_contrast(run: Run, cell: ResultCell, contrast: str) -> bool:

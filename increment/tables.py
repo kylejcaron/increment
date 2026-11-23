@@ -52,6 +52,8 @@ from increment.estimation.results import (
     row_decision_scale,
     row_favorable_side,
 )
+from increment.estimation.spillover_results import SpilloverEffect, SpilloverEffects
+from increment.kernel.contracts import _refuse
 
 if TYPE_CHECKING:
     from datetime import date, datetime
@@ -517,19 +519,30 @@ def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
     }
 
 
+def _spillover_readout_rows(
+    effects: Sequence[SpilloverEffect], *, partial: bool | None
+) -> list[dict[str, ReadoutValue]]:
+    return [effect.model_dump(mode="json") | {"view_partial": partial} for effect in effects]
+
+
 def estimates_to_readout(
     estimates: Sequence[
         LiftEstimate | BreakoutEstimate | DailyLiftEstimate | DailyMetricValue | ContrastResult
-    ],
+    ]
+    | SpilloverEffects,
 ) -> list[dict[str, ReadoutValue]]:
     """Convert estimates into readout rows with explicitly posterior-qualified values.
 
     Rows from a scoped collection also carry ``view_partial`` from their
     source metadata; filtered views remain explicitly partial. Plain lists
     leave that scope status unknown.
+    Spillover comparisons retain their policy and reference separately and
+    their signed differences in probability, not relative lift.
     """
     metadata = getattr(estimates, "metadata", None)
     view_partial = None if metadata is None else metadata.partial
+    if isinstance(estimates, SpilloverEffects):
+        return _spillover_readout_rows(estimates, partial=view_partial)
     interpretation = interpret_readout(estimates, metadata) if metadata is not None else None
     rows: list[dict[str, ReadoutValue]] = []
     for est in estimates:
@@ -1859,6 +1872,12 @@ def _posterior_query_disclosure(rows: Sequence[Mapping[str, object]]) -> str:
 def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[str, Any]]]:
     """Keep source-qualified evidence separate from the plot's display labels."""
     metadata = getattr(data, "metadata", None)
+    if isinstance(data, SpilloverEffects) or (
+        isinstance(data, _EnvelopeReadoutRows) and data and isinstance(data[0], SpilloverEffect)
+    ):
+        rows = _spillover_readout_rows(data, partial=None if metadata is None else metadata.partial)
+        native = pd.DataFrame(rows, columns=[*SpilloverEffect.model_fields, "view_partial"])
+        return nw.from_native(native, eager_only=True), rows
     interpretation = None
     if isinstance(data, _EnvelopeReadoutRows):
         if metadata is not None:
@@ -1947,6 +1966,8 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, list[dict[st
 def _readout_envelope_rows(data: Any) -> Any:
     from importlib import import_module
 
+    if isinstance(data, SpilloverEffects):
+        return data
     envelope_module = import_module("increment.result_envelope")
     RunResult = import_module("increment._run").RunResult
     if isinstance(data, RunResult):
@@ -2034,6 +2055,73 @@ def _readout_coef_table_type(base_type: type[Any]) -> type[Any]:
     return ReadoutCoefTable
 
 
+def _spillover_range_note(row: Mapping[str, Any], *, show_level: bool) -> str:
+    basis = row["range_basis"]
+    if basis == "identical_offer_counts":
+        return "Identical offer counts: zero if only the number of offers matters"
+    if basis == "attainable_range":
+        return "Range allowed by the offer counts"
+    if basis == "unavailable":
+        return "Unavailable: " + escape_html(_markdown_literal(row["unavailable_reason"]))
+    if basis != "family_interval":
+        _refuse("kernel.request.invalid", field="unrecognized range basis for a policy comparison")
+    if not show_level:
+        return "Family interval"
+    alpha = row["alpha"]
+    return f"{format_coverage(1 - alpha, alpha)} family interval"
+
+
+def _spillover_table(
+    frame: Any,
+    rows: list[dict[str, Any]],
+    *,
+    title: str,
+    subtitle: str,
+    theme: Theme | None,
+    incompatible_options: bool,
+    partial: bool,
+    show_interval_level: bool,
+) -> CoefTable:
+    import coeftable as ct
+    from coeftable.theme import DEFAULT
+
+    if any(row.get("estimand") != "spillover" for row in rows):
+        _refuse("kernel.request.invalid", field="show policy comparisons in their own table")
+    if incompatible_options:
+        _refuse(
+            "kernel.request.invalid",
+            field="omit nest_by, advisory and trend for policy comparisons",
+        )
+
+    display = frame.to_pandas().assign(
+        Metric=[f"{r['metric']} ({r['window_days']} days)" for r in rows],
+        Policy=[_markdown_literal(r["policy"]) for r in rows],
+        Reference=[_markdown_literal(r["reference"]) for r in rows],
+        range_note=[_spillover_range_note(r, show_level=show_interval_level) for r in rows],
+        direction_note=[escape_html(_markdown_literal(r["direction"])) for r in rows],
+    )
+    target = (
+        "How does the policy affect all eligible people if they receive no offer themselves? "
+        "Estimated using outcomes from people who received no offer."
+    )
+    if partial or any(r.get("view_partial") for r in rows):
+        target += " Showing a subset of the registered comparisons."
+    return (
+        ct.CoefTable(
+            display, rows="Policy", nest="Reference", groups="Metric", theme=theme or DEFAULT
+        )
+        .estimate(
+            "Policy minus reference (percentage points)",
+            "estimate",
+            ci=("lower", "upper"),
+            fmt=lambda value: f"{100 * value:+.4g}",
+        )
+        .passthrough("Range basis", "range_note")
+        .passthrough("Direction", "direction_note")
+        .header(title or "Policy comparisons", " ".join(filter(None, (subtitle, target))))
+    )
+
+
 # Keep trend labels aligned with ``_resolve_trend_frame``. Row dicts may hold any cell type
 # pandas accepts; ``V`` keeps caller-typed rows assignable to the invariant ``list``.
 def readout_table[V](
@@ -2044,6 +2132,7 @@ def readout_table[V](
     | EstimateList[DailyLiftEstimate]
     | EstimateList[DailyMetricValue]
     | ContrastResults
+    | SpilloverEffects
     | AnalysisEnvelope
     | RunResult,
     *,
@@ -2057,9 +2146,13 @@ def readout_table[V](
     trend_label: str = "Trend",
     trend_max_ylim: float | None = None,
 ) -> CoefTable:
-    """Build a ``coeftable`` HTML readout table from lift-estimate rows.
+    """Build a ``coeftable`` HTML readout table from experiment results.
 
-    ``data`` needs ``metric``, ``method``, ``lift``, ``lower``,
+    A spillover readout shows each policy minus its reference in percentage
+    points for people who receive no offer, with a range and direction.
+    It has no arm, posterior statistics or daily trend.
+
+    For ordinary lift readouts, ``data`` needs ``metric``, ``method``, ``lift``, ``lower``,
     ``higher``, ``stat_sig``, ``group_id`` (plus ``segment`` for
     ``nest_by="segment"``), as a narwhals-wrappable frame or
     ``estimates_to_readout`` row dicts. Optional columns change the
@@ -2125,12 +2218,24 @@ def readout_table[V](
     data = _readout_envelope_rows(data)
 
     frame, evidence_rows = _readout_input_frame(data, nw, pd)
+    if {"estimand", "policy", "reference"}.issubset(frame.columns) and (
+        not evidence_rows or any(row.get("estimand") == "spillover" for row in evidence_rows)
+    ):
+        return _spillover_table(
+            frame,
+            evidence_rows,
+            title=title,
+            subtitle=subtitle,
+            theme=theme,
+            incompatible_options=nest_by is not None or advisory or trend is not None,
+            partial=getattr(getattr(data, "metadata", None), "partial", False),
+            show_interval_level=show_interval_level,
+        )
     multiplicity_markers = _multiplicity_markers(
         [row.get("multiplicity_status") for row in evidence_rows]
     )
-    caveat_rows = frame.iter_rows(named=True)
     result_markers, caveat_source_notes = _number_readout_caveats(
-        caveat_rows, tuple(multiplicity_markers.values())
+        frame.iter_rows(named=True), tuple(multiplicity_markers.values())
     )
     nest_by = _default_nest_by(frame) if nest_by is None else nest_by
     if nest_by == "segment" and not len(frame) and "segment" not in frame.columns:

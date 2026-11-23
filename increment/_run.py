@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
-from functools import wraps
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
 from increment._binding import require_reader
 from increment._compile_gaps import translating_compile_gaps
+from increment._evidence_loaders import observe_spillover
 from increment._execute import _run_identity_hashes
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, WireFormatError, refuse
@@ -17,6 +17,7 @@ from increment.estimation.readout_types import (
     ScopedReadout,
     merge_collection_metadata,
 )
+from increment.estimation.spillover_results import SpilloverEffects
 from increment.kernel.contracts import (
     BreakoutIdentity,
     CellKey,
@@ -38,6 +39,7 @@ from increment.kernel.ports import (
     program_store_operations,
 )
 from increment.kernel.program_refusals import refuse_store
+from increment.readouts._spillover_result import finish_spillover
 from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order, result_rows
 
 if TYPE_CHECKING:
@@ -62,7 +64,6 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
     from increment.kernel.context import EvidenceExecutionContext
     from increment.semantics.models import Metric
-    from increment.spillover import SpilloverExperiment, SpilloverReader, SpilloverResult
 
 
 _CONTRAST_CONTEXT_NOT_PORTABLE = RefusalSpec(
@@ -112,12 +113,33 @@ class RunResult:
     _input_backend: Backend | None = field(default=None, compare=False)
 
     @classmethod
+    def _from_record(
+        cls,
+        record: RunRecord,
+        *,
+        registration: Registration,
+        results_store: ResultsStorePort | None,
+        input_backend: Backend | None,
+    ) -> RunResult:
+        if results_store is None:
+            handle: RunHandlePort = _InMemoryRunHandle(record)
+        else:
+            results_store.put(record)
+            handle = results_store.open_run(
+                record.experiment_id, record.analysis_spec_hash, record.run_id
+            )
+        result = cls.from_handle(handle, registration=registration)
+        return (
+            replace(result, _input_backend=input_backend) if input_backend is not None else result
+        )
+
+    @classmethod
     def from_handle(cls, handle: RunHandlePort, *, registration: Registration) -> RunResult:
         """Restore a saved run's portable cells and decide them again under ``registration``.
 
-        The saved decision plan must belong to ``registration``. Live readouts are
-        not stored, so every restored cell reports none and ``readout`` refuses. A
-        saved switchback run keeps no decision plan and refuses with
+        Spillover comparisons can be read directly from their saved rows. Ordinary
+        arm runs require the matching decision plan and do not restore live readouts.
+        A saved switchback run keeps no decision plan and refuses with
         ``store.decision.reference_invalid``; read its cells with
         ``handle.envelope()``, ``store.query`` or ``store.history``.
         """
@@ -146,14 +168,25 @@ class RunResult:
     def readout(
         self, view: View | None = None
     ) -> (
-        LiftEstimates | DailyLiftEstimates | DailyMetricValues | BreakoutEstimates | ContrastResults
+        LiftEstimates
+        | DailyLiftEstimates
+        | DailyMetricValues
+        | BreakoutEstimates
+        | ContrastResults
+        | SpilloverEffects
     ):
         """Return the result collection one executed view produced, unchanged.
 
         ``view`` may be omitted only when the run executed one view. A result
-        restored from a store or a pickle keeps its portable cells only.
+        restored from a store or a pickle reconstructs spillover comparisons from its cells.
         """
         if not self._scoped:
+            if self.cells and self.cells[0].row_kind == "spillover" and self.metadata is not None:
+                if view is not None and view != self.cells[0].identity.scope:
+                    refuse(_READOUT_SCOPE_UNKNOWN, run_id=self.run.run_id, scope_hash=view.hash())
+                return SpilloverEffects(
+                    tuple(result_rows(self.cells)), self.metadata, self._input_backend
+                )
             refuse(_READOUT_NOT_RETAINED, run_id=self.run.run_id)
         if view is None:
             if len(self._scoped) != 1:
@@ -235,6 +268,7 @@ class RunResult:
             "daily": "Daily",
             "asof": "As-of",
             "switchback": "Switchback",
+            "spillover": "Spillover",
         }
         for indexes in views.values():
             scope = self.cells[indexes[0]].identity.scope
@@ -259,9 +293,9 @@ class RunResult:
                 lines.append(f"{indent}… {len(indexes) - _REPR_CELLS_PER_VIEW} more cells")
         readout = (
             ""
-            if not self._scoped
+            if not self._scoped and not (self.cells and self.cells[0].row_kind == "spillover")
             else " or result.readout()"
-            if len(self._scoped) == 1
+            if len(self._scoped) <= 1
             else " or result.readout(view)"
         )
         lines.append(f"Full readout: render(result){readout}")
@@ -301,6 +335,9 @@ def _compact_cell_line(
         _retained_set_text,
         _retained_unavailable_reason,
     )
+
+    if cell.row_kind == "spillover":
+        return row._display()
 
     # A set its bounds cannot show (every value, none, typed endpoints) is printed
     # from the row's own set, and the point is printed without bounds.
@@ -1194,56 +1231,6 @@ def _preflight_persistence(
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
 
 
-def _dispatch_run(ordinary: Callable[..., RunResult]) -> Callable[..., RunResult | SpilloverResult]:
-    """Route the exact keywords supplied without importing spillover on ordinary calls."""
-
-    @wraps(ordinary)
-    def dispatch(
-        experiment: object, reader: object, **kwargs: object
-    ) -> RunResult | SpilloverResult:
-        if not isinstance(experiment, Experiment):
-            from increment.spillover import SpilloverExperiment, SpilloverReader, _unsupported
-
-            if isinstance(experiment, SpilloverExperiment):
-                if kwargs:
-                    _unsupported(kwargs)
-                if not isinstance(reader, SpilloverReader):
-                    _refuse("kernel.run.reader_required", received=type(reader).__name__)
-                with translating_compile_gaps():
-                    return reader._read(experiment)
-        return ordinary(experiment, reader, **kwargs)
-
-    return dispatch
-
-
-@overload
-def run(
-    experiment: Experiment,
-    reader: ExperimentReader,
-    *,
-    views: Sequence[View] | None = None,
-    run_id: str | None = None,
-    results_store: ResultsStorePort | None = None,
-    decision_log: DecisionLogPort | None = None,
-    capture: SequentialCaptureRequest | None = None,
-    execution_context: EvidenceExecutionContext | None = None,
-    decision_method: Method | _Unset = UNSET,
-    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-    prior: Prior | None | _Unset = UNSET,
-    metrics: Sequence[str | Metric] | None = None,
-    estimands: Sequence[str] | None = None,
-    value_scale: Mapping[str, ValueScale] | None = None,
-    exploratory_metrics: Sequence[str] | None = None,
-    population: Literal["assigned", "triggered"] | None = None,
-    coherence: Literal["captured", "live"] | _Unset = UNSET,
-) -> RunResult: ...
-
-
-@overload
-def run(experiment: SpilloverExperiment, reader: SpilloverReader) -> SpilloverResult: ...
-
-
-@_dispatch_run
 def run(  # noqa: PLR0913
     experiment: Experiment,
     reader: ExperimentReader,
@@ -1274,6 +1261,8 @@ def run(  # noqa: PLR0913
     the run under the experiment's registration, checked before the source is
     read; ``run_id`` is generated when omitted.
     """
+    from uuid import uuid4
+
     from increment.kernel.resolver import _select_views
     from increment.kernel.resolver import run as run_experiment
 
@@ -1298,6 +1287,29 @@ def run(  # noqa: PLR0913
                 "A complete run identity is required",
                 field="run_id",
             )
+        identity = f"run-{uuid4().hex}" if run_id is None else run_id
+        if selected.design.get("kind") == "spillover":
+            from increment._runnability import require_spillover_request
+            from increment.kernel.resolver import _resolve_verified
+
+            if decision_log is not None or capture is not None or execution_context is not None:
+                _refuse(
+                    "kernel.request.invalid",
+                    field="spillover does not support decision logging, sequential or external captures",
+                )
+            require_spillover_request(selected, {**selected.request_options, **overrides})
+            _resolve_verified(selected, reader)
+            binding = reader._spillover
+            cells = observe_spillover(binding.source, binding.population)
+            return finish_spillover(
+                selected,
+                binding.population,
+                cells,
+                run_id=identity,
+                results_store=results_store,
+                input_backend=binding.input_backend,
+                result_type=RunResult,
+            )
         if results_store is not None or decision_log is not None:
             _preflight_persistence(
                 reader,
@@ -1313,13 +1325,11 @@ def run(  # noqa: PLR0913
             capture=capture,
             execution_context=execution_context,
         )
-        from uuid import uuid4
-
         return _experiment_result(
             reader._binding,
             selected,
             scoped,
-            run_id=f"run-{uuid4().hex}" if run_id is None else run_id,
+            run_id=identity,
             results_store=results_store,
             decision_log=decision_log,
         )

@@ -1,111 +1,76 @@
-"""Named spillover trials declared against fixed warehouse relations."""
+"""Admission of a named conversion for a two-stage offer experiment."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
+from increment._spillover_design import refuse_input
 
-from increment._spillover_design import SpilloverComparison, SpilloverDesign, refuse_input
-from increment.errors import CodedError, refuse
-from increment.semantics.artifact import RelationLocator
-from increment.semantics.loader import (
-    _DUPLICATES,
-    _ORDINARY_SECTIONS,
-    _check_category_duplicates,
-    _raw_definitions,
-)
-
-_ROLES = {"roster", "offer_counts", "group_policy", "offered", "outcomes"}
+if TYPE_CHECKING:
+    from increment.semantics.models import AnalysisPlan, ConversionMetric, Definitions, Experiment
 
 
-def _fields(
-    raw: object, field: str, required: set[str], optional: frozenset[str] = frozenset()
-) -> Mapping[str, Any]:
-    if not isinstance(raw, Mapping) or not required <= raw.keys() <= required | optional:
-        refuse_input("spillover.design.invalid", field)
-    return cast(Mapping[str, Any], raw)
-
-
-def _locator(raw: object) -> str:
-    if isinstance(raw, str):
-        parts = raw.split(".")
-        if not 1 <= len(parts) <= 3:
-            refuse_input("spillover.design.invalid", "relations")
-        raw = dict(zip(("catalog", "schema", "name")[-len(parts) :], parts, strict=True))
-    fields = _fields(raw, "relations", {"name"}, frozenset({"catalog", "schema"}))
-    if fields.get("catalog") is not None and fields.get("schema") is None:
-        refuse_input("spillover.design.invalid", "relations")
-    try:
-        locator = RelationLocator.model_validate(fields, strict=True)
-    except (CodedError, ValidationError):
-        pass
+def validate_spillover_plan(plan: AnalysisPlan, metric_name: str) -> None:
+    """Require one primary conversion and one fixed-horizon error budget."""
+    primaries = plan.primaries
+    if len(primaries) != 1:
+        refuse_input("spillover.design.invalid", "plan")
+    entry = primaries[0]
+    if isinstance(entry, str):
+        name = entry
     else:
-        return ".".join(
-            p for p in (locator.catalog, locator.schema_name, locator.name) if p is not None
-        )
-    refuse_input("spillover.design.invalid", "relations")
+        name = entry.metric
+        if (
+            entry.decision_method is not None
+            or entry.sensitivity_methods
+            or entry.prior is not None
+            or entry.margin is not None
+            or entry.margin_abs is not None
+        ):
+            refuse_input("spillover.design.invalid", "plan")
+    if (
+        name != metric_name
+        or plan.secondaries
+        or plan.guardrails
+        or plan.inference is not None
+        or plan.compliance is not None
+        or plan.view_multiplicity is not None
+        or plan.alternative != "two-sided"
+        or "q" in plan.model_fields_set
+    ):
+        refuse_input("spillover.design.invalid", "plan")
 
 
-def relation_names(raw: object) -> dict[str, str]:
-    """Validate the five table roles; flatten equivalent qualified locators identically."""
-    return {role: _locator(value) for role, value in _fields(raw, "relations", _ROLES).items()}
-
-
-@dataclass(frozen=True, slots=True)
-class _Trial:
-    name: str
-    design: SpilloverDesign
-    relations: dict[str, str]
-
-
-def _trial(raw: object) -> _Trial:
-    fields = _fields(raw, "spillovers", {"name", "design", "relations"})
-    name = fields["name"]
-    if not isinstance(name, str) or not name.strip():
-        refuse_input("spillover.design.invalid", "experiment_id")
-    design = dict(
-        _fields(
-            fields["design"],
-            "design",
-            {"groups_per_policy", "comparisons", "outcome", "horizon"},
-            frozenset({"alpha"}),
-        )
-    )
-    comparisons = design.pop("comparisons")
-    if not isinstance(comparisons, list):
-        refuse_input("spillover.design.invalid", "comparisons")
-    return _Trial(
-        name=name,
-        design=SpilloverDesign(
-            **design,
-            comparisons=tuple(
-                SpilloverComparison(
-                    **_fields(
-                        c,
-                        "comparisons",
-                        {"policy", "reference", "meaningful_effect"},
-                        frozenset({"baseline_rate"}),
-                    )
-                )
-                for c in comparisons
-            ),
-        ),
-        relations=relation_names(fields["relations"]),
-    )
-
-
-def load_trials(path: Path) -> dict[str, _Trial]:
-    raw, provenance = _raw_definitions(path, advise=False)
-    entries = _fields(raw, "spillovers", {"spillovers"}, _ORDINARY_SECTIONS)["spillovers"]
-    trials = tuple(_trial(item) for item in entries)
-    duplicates: list[str] = []
-    _check_category_duplicates(entries, "spillover", provenance.origins, duplicates)
-    if duplicates:
-        refuse(
-            _DUPLICATES, message="; ".join(duplicates), path=str(path), sources=provenance.origins
-        )
-    return {t.name: t for t in trials}
+def selected_spillover_metric(definitions: Definitions, experiment: Experiment) -> ConversionMetric:
+    """Resolve the registered conversion without substituting a one-stage analysis."""
+    if experiment.design is None or experiment.design.mechanism != "spillover":
+        refuse_input("spillover.design.required", "design")
+    if (
+        experiment.trigger is not None
+        or experiment.cluster is not None
+        or experiment.intervention_grain != "unit"
+        or experiment.n_pre_periods
+        or experiment.breakouts
+        or experiment.factors
+        or experiment.allocation is not None
+        or experiment.allocation_scheme is not None
+        or experiment.assignment_ledger is not None
+    ):
+        refuse_input("spillover.design.invalid", "experiment")
+    names = experiment.metric_names
+    if len(names) != 1:
+        refuse_input("spillover.design.invalid", "plan")
+    name = names[0]
+    validate_spillover_plan(experiment.plan, name)
+    metric = definitions.metric(name)
+    if (
+        metric is None
+        or metric.type != "conversion"
+        or metric.entity != experiment.unit
+        or metric.window_days is None
+        or metric.margin is not None
+        or metric.margin_abs is not None
+        or metric.rollout_cost is not None
+    ):
+        refuse_input("spillover.design.invalid", "metric")
+    return metric

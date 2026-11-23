@@ -319,6 +319,8 @@ These records compare the named estimator and assumptions, not every use of the 
 
 For the three-policy trial, the offer counts were 1, 2 and 3. The six groups were assigned base, middle, upper, base, middle, upper; counts of untreated successes were 0, 2, 2, 3, 1 and 4. These checks validate points and variances, not coverage. To reproduce, save the pinned R source above (SHA-256 `db9f91a162f366af68974757d0a485d2a02fd5b55c624ecf45f5a2ec3473d648`) and run `Rscript tests/oracles/generate/gen_spillover_oracle.R /path/to/CalAPO.R`.
 
+The point and variance comparisons take completed binary outcomes as inputs. On a one-row-per-person frame, those are supplied measurements. In a named warehouse experiment they come from the registered conversion and the individual assignment time, not a separately prepared purchase flag. Interval coverage assumes the two random draws; it cannot establish that a missing purchase feed was complete.
+
 **Where the old interval failed.** In a nine-group trial, gains and losses cancelled exactly, yet the approximate 95% interval excluded zero on 12 of 60 assignments. This isn't just a small-study issue. In a 240-store trial, every store had 59 people. Four stores had 59 events each; every other store had 14. Half the stores made one offer and half made none. Offers changed **nobody's** outcome. The old interval called a difference on **10.74%** of assignments, although the historical event rate was exactly right. The new interval contained zero in **all 595 possible observed summaries** at both .05 and .01. That checks this population, not every experiment.
 
 One possible draw gave a +2.54-point estimate. These are ranges for the **same observation**, not coverage rates:

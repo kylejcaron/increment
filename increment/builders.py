@@ -8,9 +8,8 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from functools import wraps
 from inspect import signature
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
@@ -18,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
+    from increment._literals import Backend
     from increment._metric_specs import MetricsArg
     from increment.artifacts import SourceSnapshotEvidence
     from increment.decision import ContrastSource
@@ -30,13 +30,16 @@ if TYPE_CHECKING:
     from increment.semantics.models import Experiment as AnalysisExperiment
     from increment.semantics.unit_cycle import UnitCycleReference
     from increment.sources import EvidenceSource
-    from increment.spillover import SpilloverExperiment, SpilloverReader
     from increment.switchback import SwitchbackAssignment
 
 
 from increment._analysis_config import UNSET, _Unset
 from increment._binding import ExperimentReader, SourceBinding, resolver_for
+from increment._frame_spillover import summary_spillover_source
+from increment._metric_specs import coerce_metrics, synthesise_metric
 from increment._optional import require_warehouse
+from increment._spillover_binding import bind_spillover
+from increment._spillover_design import Spillover
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.kernel.contracts import _refuse
 from increment.kernel.experiment import Experiment
@@ -150,39 +153,22 @@ def bind_source(
 
 
 def _bind_definitions(
-    experiment_name: str,
-    definitions_path: str | Path,
+    experiment: AnalysisExperiment,
+    defs: Definitions,
     con: SQLBackend,
     *,
     backend: str | None = None,
     store: Literal["auto", "always", "none"] = "auto",
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    definitions: Definitions | None = None,
-) -> tuple[SourceBinding, str]:
+) -> SourceBinding:
     from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
     from increment.query.native_source import DefinitionsMomentSource
     from increment.query.session import WarehouseSession
-    from increment.semantics.loader import load, verify_sql_admission_matches_execution
+    from increment.semantics.loader import verify_sql_admission_matches_execution
     from increment.semantics.models import Experiment as AnalysisExperiment
     from increment.sequential_source import native_observation_mapping
 
-    if on_mixed_assignment not in ("error", "warn", "exclude"):
-        _bind_raise(
-            "facade.analysis.invalid_mixed_assignment_policy",
-            on_mixed_assignment=on_mixed_assignment,
-        )
-    if store not in ("auto", "always", "none"):
-        _bind_raise("facade.analysis.invalid_store_policy", store=store)
-    defs = load(definitions_path) if definitions is None else definitions
-    definitions_digest = _definitions_digest(Path(definitions_path), definitions=defs)
-    experiment = defs.experiment(experiment_name)
-    if experiment is None:
-        _bind_raise(
-            "facade.analysis.unknown_experiment",
-            requested=experiment_name,
-            available=tuple(sorted(e.name for e in defs.experiments)),
-        )
     metrics_by_name = {m.name: m for m in defs.metrics}
     metrics = [metrics_by_name[name] for name in experiment.metric_names if name in metrics_by_name]
     design = experiment.resolved_design()
@@ -230,19 +216,18 @@ def _bind_definitions(
     )
     if defs._shared_metrics is not None:
         src.validate_shared_metrics()
-    binding = bind_source(
+    return bind_source(
         src,
         design,
         defs=defs,
         experiment=experiment,
         con=con,
         session=session,
-        experiment_name=experiment_name,
+        experiment_name=experiment.name,
         backend=backend,
         store=store,
         on_mixed_assignment=on_mixed_assignment,
     )
-    return binding, definitions_digest
 
 
 def _input_backend_of(frame: IntoDataFrame) -> Any:
@@ -704,6 +689,25 @@ def from_frame(
     shape: Literal["summary"],
     unit: str,
     group: str,
+    cluster: str,
+    design: Spillover,
+    metrics: MetricsArg,
+    offer_counts: IntoDataFrame,
+    group_policy: IntoDataFrame | None = None,
+    stratum: str | None = None,
+    control: object | None = None,
+    plan: AnalysisPlan | None = None,
+    experiment_id: str = "frame",
+) -> tuple[Experiment, ExperimentReader]: ...
+
+
+@overload
+def from_frame(
+    frame: IntoDataFrame,
+    *,
+    shape: Literal["summary"],
+    unit: str,
+    group: str,
     control: object | None = None,
     metrics: MetricsArg,
     experiment_id: str = "frame",
@@ -750,7 +754,7 @@ def from_frame(  # noqa: PLR0913
     control: object | None = None,
     metrics: MetricsArg | _Unset = UNSET,
     experiment_id: str = "frame",
-    design: Randomized | Encouragement | Observational | None = None,
+    design: Randomized | Encouragement | Observational | Spillover | None = None,
     plan: AnalysisPlan | None = None,
     uptake: str | None = None,
     on_unassigned: Literal["error", "exclude"] = "error",
@@ -759,11 +763,48 @@ def from_frame(  # noqa: PLR0913
     exposure_date: str | None = None,
     observation_end: dt.date | dt.datetime | str | int | float | None | _Unset = UNSET,
     breakouts: Sequence[str] = (),
+    offer_counts: IntoDataFrame | _Unset = UNSET,
+    group_policy: IntoDataFrame | None | _Unset = UNSET,
+    stratum: str | None | _Unset = UNSET,
 ) -> tuple[Experiment, ExperimentReader]:
     """Build an experiment from a unit-summary or unit-panel frame.
 
     Each shape accepts only the keywords its overload declares.
     """
+    if isinstance(design, Spillover):
+        if (
+            shape != "summary"
+            or not isinstance(unit, str)
+            or not isinstance(group, str)
+            or not isinstance(cluster, str)
+            or isinstance(metrics, _Unset)
+            or isinstance(offer_counts, _Unset)
+            or (control is not None and control != design.control_group)
+            or not isinstance(date, _Unset)
+            or not isinstance(intervention_grain, _Unset)
+            or not isinstance(observation_end, _Unset)
+            or exposure_date is not None
+            or uptake is not None
+            or on_unassigned != "error"
+            or breakouts
+        ):
+            _refuse(
+                "kernel.request.invalid",
+                field="spillover needs summary rows with unit, group, cluster, metrics and offer_counts",
+            )
+        return _from_spillover_summary(
+            frame,
+            unit=unit,
+            group=group,
+            cluster=cluster,
+            stratum=None if isinstance(stratum, _Unset) else stratum,
+            design=design,
+            metrics=metrics,
+            offer_counts=offer_counts,
+            group_policy=None if isinstance(group_policy, _Unset) else group_policy,
+            plan=plan,
+            experiment_id=experiment_id,
+        )
     supplied = {
         name: value
         for name, value in (
@@ -782,6 +823,9 @@ def from_frame(  # noqa: PLR0913
             ("exposure_date", exposure_date),
             ("observation_end", observation_end),
             ("breakouts", breakouts),
+            ("offer_counts", offer_counts),
+            ("group_policy", group_policy),
+            ("stratum", stratum),
         )
         if not isinstance(value, _Unset)
     }
@@ -837,86 +881,96 @@ def from_frame(  # noqa: PLR0913
     return resolver_for(binding)
 
 
-def _check_family_options[**P, R](builder: Callable[P, R]) -> Callable[P, R]:
-    """Check the keywords actually supplied, including explicit ordinary defaults."""
+def _from_spillover_summary(
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    group: str,
+    cluster: str,
+    stratum: str | None,
+    design: Spillover,
+    metrics: MetricsArg,
+    offer_counts: IntoDataFrame,
+    group_policy: IntoDataFrame | None,
+    plan: AnalysisPlan | None,
+    experiment_id: str,
+) -> tuple[Experiment, ExperimentReader]:
+    from increment.semantics._spillover import validate_spillover_plan
+    from increment.semantics.models import AnalysisPlan, ConversionMetric
 
-    @wraps(builder)
-    def bind(*args: P.args, **kwargs: P.kwargs) -> R:
-        if kwargs.get("family") == "spillover":
-            unsupported = kwargs.keys() - {
-                "definitions_path",
-                "con",
-                "family",
-                "experiment_name",
-                "expected_registration",
-            }
-            if unsupported:
-                from increment.spillover import _unsupported
-
-                _unsupported(unsupported)
-        elif "expected_registration" in kwargs:
-            _refuse(
-                "kernel.request.invalid", field="expected_registration requires family='spillover'"
-            )
-        return builder(*args, **kwargs)
-
-    return bind
-
-
-def _spillover_definitions(
-    path: Path, con: SQLBackend, experiment_name: str | None, expected_registration: str | None
-) -> tuple[SpilloverExperiment, SpilloverReader]:
-    if experiment_name is not None and (
-        not isinstance(experiment_name, str) or not experiment_name.strip()
-    ):
-        _refuse("kernel.request.invalid", field="experiment_name must be a nonempty name")
-
-    from increment.semantics._spillover import load_trials
-    from increment.spillover import _bind
-
-    trials = load_trials(path)
-    if experiment_name is None:
-        if len(trials) != 1:
-            _refuse("kernel.request.invalid", field="experiment_name is required")
-        trial = next(iter(trials.values()))
-    elif experiment_name not in trials:
-        _bind_raise(
-            "facade.analysis.unknown_experiment",
-            requested=experiment_name,
-            available=tuple(sorted(trials)),
+    specs = coerce_metrics(metrics)
+    if len(specs) != 1:
+        _refuse(
+            "kernel.request.invalid", field="spillover needs one fixed-window conversion metric"
         )
-    else:
-        trial = trials[experiment_name]
-    require_warehouse("from_definitions")
-    from ibis.backends.sql import SQLBackend
-
-    from increment.query.spillover import WarehouseSpilloverSource
-
-    if not isinstance(con, SQLBackend):
-        _refuse("kernel.request.invalid", field="con must be an Ibis SQL connection")
-
-    source = WarehouseSpilloverSource(con, trial.relations)
-    return _bind(
+    spec = specs[0]
+    if (
+        spec.type != "conversion"
+        or spec.window_days is None
+        or spec.missing != "error"
+        or spec.decision_method is not None
+        or spec.sensitivity_methods
+        or spec.prior is not None
+    ):
+        _refuse(
+            "kernel.request.invalid",
+            field="spillover requires an unadjusted fixed-window conversion",
+        )
+    effective_plan = AnalysisPlan(primary=spec.name) if plan is None else plan
+    validate_spillover_plan(effective_plan, spec.name)
+    metric = cast("ConversionMetric", synthesise_metric(spec)).model_copy(update={"entity": unit})
+    source = summary_spillover_source(
+        frame,
+        unit=unit,
+        group=group,
+        cluster=cluster,
+        stratum=stratum,
+        design=design,
+        metric=spec,
+        offer_counts=offer_counts,
+        group_policy=group_policy,
+    )
+    return bind_spillover(
         source,
-        trial.design,
-        experiment_id=trial.name,
+        design=design,
+        metric=metric,
+        alpha=effective_plan.alpha,
         recipe=source.recipe,
-        expected_registration=expected_registration,
+        source_kind="unit_summary",
+        experiment_id=experiment_id,
+        input_backend=cast("Backend", source.frame.implementation.value),
     )
 
 
-@overload
-def from_definitions(
-    definitions_path: str | os.PathLike[str],
-    con: SQLBackend,
-    *,
-    family: Literal["spillover"],
-    experiment_name: str | None = None,
-    expected_registration: str | None = None,
-) -> tuple[SpilloverExperiment, SpilloverReader]: ...
+def _reopen_definitions(
+    path: Path, catalog: Path, experiment_name: str | None, *, protect: bool
+) -> tuple[Experiment, ExperimentReader]:
+    catalog_label = str(catalog if protect else path)
+    if not catalog.is_file():
+        _refuse("kernel.definitions.catalog_missing", path=catalog_label)
+    try:
+        contents = json.loads(catalog.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        _refuse("kernel.definitions.catalog_stale", path=catalog_label)
+    if not isinstance(contents, dict) or contents.get("schema_version") != _CATALOG_VERSION:
+        _refuse("kernel.definitions.catalog_stale", path=catalog_label)
+    _require_unchanged_definitions(path, contents.get("definitions_digest"))
+    experiments = contents.get("experiments")
+    if not isinstance(experiments, dict):
+        _refuse("kernel.definitions.catalog_stale", path=catalog_label)
+    if experiment_name is None:
+        if len(experiments) != 1:
+            _refuse("kernel.request.invalid", field="experiment_name is required")
+        name = next(iter(experiments))
+    else:
+        name = experiment_name
+    payload = experiments.get(name)
+    if not isinstance(payload, dict):
+        _refuse("kernel.definitions.catalog_missing", path=catalog_label)
+    experiment = Experiment.from_json(json.dumps(payload))
+    return experiment, ExperimentReader(None, experiment)
 
 
-@overload
 def from_definitions(
     definitions_path: str | os.PathLike[str],
     con: SQLBackend | None = None,
@@ -927,71 +981,22 @@ def from_definitions(
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     catalog_path: str | os.PathLike[str] | None = None,
-) -> tuple[Experiment, ExperimentReader]: ...
-
-
-@_check_family_options
-def from_definitions(
-    definitions_path: str | os.PathLike[str],
-    con: SQLBackend | None = None,
-    *,
-    experiment_name: str | None = None,
-    backend: str | None = None,
-    store: Literal["auto", "always", "none"] = "auto",
-    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    catalog_path: str | os.PathLike[str] | None = None,
-    family: Literal["spillover"] | None = None,
-    expected_registration: str | None = None,
-) -> tuple[Experiment, ExperimentReader] | tuple[SpilloverExperiment, SpilloverReader]:
+) -> tuple[Experiment, ExperimentReader]:
     """Bind warehouse definitions, including selected portable metrics, or reopen offline.
 
     ``catalog_path`` names the catalog file and puts its lock in the same
     directory. Use the same path to reopen offline. Omit it to keep both
     files beside the definitions.
 
-    Set ``family="spillover"`` with a connection to plan a registered two-stage trial.
-    On rebinding pass its saved ``expected_registration`` before reading observed logs.
+    A two-stage offer design uses the selected experiment's exposure and conversion metric.
+    Supply certified event-feed completeness on the measurement reader, not before launch.
     """
-    if family == "spillover":
-        if con is None:
-            _refuse(
-                "kernel.request.invalid",
-                field="a spillover experiment requires a warehouse connection",
-            )
-        return _spillover_definitions(
-            Path(definitions_path), con, experiment_name, expected_registration
-        )
-    if family is not None:
-        _refuse("kernel.request.invalid", field="family must be 'spillover' or omitted")
     require_warehouse("from_definitions")
     path = Path(definitions_path)
     catalog = _select_catalog_path(path, catalog_path)
     protect = catalog_path is not None
     if con is None:
-        catalog_label = str(catalog if protect else path)
-        if not catalog.is_file():
-            _refuse("kernel.definitions.catalog_missing", path=catalog_label)
-        try:
-            contents = json.loads(catalog.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            _refuse("kernel.definitions.catalog_stale", path=catalog_label)
-        if not isinstance(contents, dict) or contents.get("schema_version") != _CATALOG_VERSION:
-            _refuse("kernel.definitions.catalog_stale", path=catalog_label)
-        _require_unchanged_definitions(path, contents.get("definitions_digest"))
-        experiments = contents.get("experiments")
-        if not isinstance(experiments, dict):
-            _refuse("kernel.definitions.catalog_stale", path=catalog_label)
-        name = experiment_name
-        if name is None:
-            if len(experiments) != 1:
-                _refuse("kernel.request.invalid", field="experiment_name is required")
-            name = next(iter(experiments))
-        payload = experiments.get(name)
-        if not isinstance(payload, dict):
-            _refuse("kernel.definitions.catalog_missing", path=catalog_label)
-        experiment = Experiment.from_json(json.dumps(payload))
-        return experiment, ExperimentReader(None, experiment)
+        return _reopen_definitions(path, catalog, experiment_name, protect=protect)
 
     from increment.semantics.loader import load
 
@@ -1001,33 +1006,82 @@ def from_definitions(
         except OSError:
             _refuse("kernel.definitions.catalog_unwritable", path=str(catalog))
 
-    definitions = None
+    from increment.semantics.models import SpilloverDeclaration
+
+    if on_mixed_assignment not in ("error", "warn", "exclude"):
+        _bind_raise(
+            "facade.analysis.invalid_mixed_assignment_policy",
+            on_mixed_assignment=on_mixed_assignment,
+        )
+    if store not in ("auto", "always", "none"):
+        _bind_raise("facade.analysis.invalid_store_policy", store=store)
+    definitions = load(path)
     if experiment_name is None:
-        definitions = load(path)
         if len(definitions.experiments) != 1:
             _refuse("kernel.request.invalid", field="experiment_name is required")
         experiment_name = definitions.experiments[0].name
-    assert con is not None
-    binding, definitions_digest = _bind_definitions(
-        experiment_name,
-        path,
-        con,
-        backend=backend,
-        store=store,
-        on_mixed_assignment=on_mixed_assignment,
-        source_snapshot_evidence=source_snapshot_evidence,
-        definitions=definitions,
-    )
+    declared = definitions.experiment(experiment_name)
+    if declared is None:
+        _bind_raise(
+            "facade.analysis.unknown_experiment",
+            requested=experiment_name,
+            available=tuple(sorted(e.name for e in definitions.experiments)),
+        )
+    definitions_digest = _definitions_digest(path, definitions=definitions)
 
     def write_catalog(captured: Experiment) -> None:
         _write_catalog(path, catalog, captured, definitions_digest, protect=protect)
 
-    experiment, reader = resolver_for(
-        binding,
-        record_schema=True,
-        catalog_writer=write_catalog,
-        definitions_guard=lambda: _require_unchanged_definitions(path, definitions_digest),
-    )
+    def guard_definitions() -> None:
+        _require_unchanged_definitions(path, definitions_digest)
+
+    if isinstance(declared.design, SpilloverDeclaration):
+        from increment.query.spillover import WarehouseSpilloverSource
+        from increment.semantics._spillover import selected_spillover_metric
+
+        if (
+            store != "auto"
+            or on_mixed_assignment != "error"
+            or (backend is not None and backend != con.name)
+        ):
+            _refuse(
+                "kernel.request.invalid", field="spillover requires captured, intact assignments"
+            )
+        metric = selected_spillover_metric(definitions, declared)
+        source = WarehouseSpilloverSource(
+            con,
+            definitions=definitions,
+            experiment=declared,
+            metric=metric,
+            source_snapshot_evidence=source_snapshot_evidence,
+        )
+        experiment, reader = bind_spillover(
+            source,
+            design=declared.design.parameters(declared.control_group),
+            metric=metric,
+            alpha=declared.plan.alpha,
+            recipe=source.recipe,
+            source_kind="definitions",
+            experiment_id=experiment_name,
+            definition=declared,
+            definitions_guard=guard_definitions,
+        )
+    else:
+        binding = _bind_definitions(
+            declared,
+            definitions,
+            con,
+            backend=backend,
+            store=store,
+            on_mixed_assignment=on_mixed_assignment,
+            source_snapshot_evidence=source_snapshot_evidence,
+        )
+        experiment, reader = resolver_for(
+            binding,
+            record_schema=True,
+            catalog_writer=write_catalog,
+            definitions_guard=guard_definitions,
+        )
     try:
         write_catalog(experiment)
     except BaseException:

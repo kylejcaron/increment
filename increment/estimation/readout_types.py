@@ -365,15 +365,25 @@ def carried_advisories(
     }
 
 
+class SpilloverFamilyTerms(_ReadoutModel):
+    """The registered conversion window and simultaneous miss probability."""
+
+    window_days: int = Field(gt=0)
+    alpha: float = Field(gt=0, lt=1)
+
+
 class FamilyScope(_ReadoutModel):
     family_id: str
     analysis_population: Population
     source_snapshot_id: str
-    view: Literal["run", "breakout", "daily", "asof"]
+    view: Literal["run", "breakout", "daily", "asof", "spillover"]
     dimension: str | None
     source: str | None
     name: str
     family: MultiplicityFamily | None = None
+    policy_interval: SpilloverFamilyTerms | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     identity_metric: str | None = Field(default=None, exclude_if=lambda value: value is None)
     identity_look: date | datetime | str | int | float | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -421,8 +431,19 @@ class FamilyScope(_ReadoutModel):
 
     @model_validator(mode="after")
     def _canonical_members(self):
-        if tuple(sorted(set(self.members), key=cell_order)) != self.members:
+        # The registered order itself is part of a directed policy comparison roster.
+        members = set(self.members)
+        if len(members) != len(self.members) or (
+            self.view != "spillover" and tuple(sorted(members, key=cell_order)) != self.members
+        ):
             refuse_readout("readout.serialization.noncanonical_order", section="family members")
+        if (self.view == "spillover") != (self.policy_interval is not None):
+            refuse_readout(
+                "readout.serialization.identity_mismatch",
+                source_snapshot_id=self.source_snapshot_id,
+                cell_key=None,
+                reason="registered interval terms must match the family view",
+            )
         expected = family_identity(
             self.source_snapshot_id,
             self.analysis_population,
@@ -433,6 +454,7 @@ class FamilyScope(_ReadoutModel):
             identity_metric=self.identity_metric,
             identity_look=self.identity_look,
             decision_snapshot_id=self.decision_snapshot_id,
+            policy_interval=self.policy_interval,
         )
         if self.family_id != expected:
             refuse_readout(
@@ -467,6 +489,7 @@ def family_identity(
     identity_metric: str | None = None,
     identity_look: date | datetime | str | int | float | None = None,
     decision_snapshot_id: str | None = None,
+    policy_interval: SpilloverFamilyTerms | None = None,
 ):
     payload = {
         "kind": "increment.readout.family",
@@ -492,6 +515,8 @@ def family_identity(
                 "value": serialized_look,
             }
         )
+    if policy_interval is not None:
+        payload["policy_interval"] = policy_interval.model_dump(mode="json")
     return "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
 
 
@@ -614,10 +639,11 @@ class ReadoutMetadata(_ReadoutModel):
     partial_reason: tuple[Literal["slice", "filter", "cross_snapshot_concat"], ...] = ()
     run_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     analysis_spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    registration_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source_content_digest: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    source_content_digest_unavailable_reason: Literal["method_fit_input_unavailable"] | None = (
-        Field(default=None, exclude_if=lambda value: value is None)
-    )
+    source_content_digest_unavailable_reason: (
+        Literal["method_fit_input_unavailable", "only_policy_summaries_captured"] | None
+    ) = Field(default=None, exclude_if=lambda value: value is None)
     artifact_manifest_sha256: str | None = Field(
         default=None, exclude_if=lambda value: value is None
     )

@@ -192,8 +192,7 @@ _NO_YAML_FILES_WARNING = WarningSpec(
 )
 
 # Names of top-level list-valued keys that the loader merges across files
-_MERGE_LISTS = {"fact_sources", "dim_sources", "exposures", "metrics", "experiments", "spillovers"}
-_ORDINARY_SECTIONS = frozenset(Definitions.model_fields) | {"metric_definitions"}
+_MERGE_LISTS = {"fact_sources", "dim_sources", "exposures", "metrics", "experiments"}
 
 
 class _FactSources(_Base):
@@ -221,7 +220,6 @@ def _raw_definitions(path_obj: Path, *, advise: bool) -> tuple[dict[str, Any], _
 def _load(path_obj: Path, *, advise: bool) -> Definitions:
     """Load and validate definitions, emitting load-time warnings only when ``advise``."""
     raw, provenance = _raw_definitions(path_obj, advise=advise)
-    raw.pop("spillovers", None)  # The spillover builder validates this separate family.
 
     dialect = raw.get("dialect")
 
@@ -577,7 +575,6 @@ def _record_origins(data: dict, file_path: str, origins: dict[str, list[str]]):
     _track_names(data.get("exposures", []), "exposure", file_path, origins)
     _track_names(data.get("metrics", []), "metric", file_path, origins)
     _track_names(data.get("experiments", []), "experiment", file_path, origins)
-    _track_names(data.get("spillovers", []), "spillover", file_path, origins)
 
 
 def _track_names(

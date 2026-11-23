@@ -94,7 +94,7 @@ class _ContractModel(CodedModel, BaseModel):
 
 
 class View(_ContractModel):
-    view: Literal["run", "daily", "asof", "breakout", "switchback"]
+    view: Literal["run", "daily", "asof", "breakout", "switchback", "spillover"]
     grain: Literal["total", "daily", "asof"] = "total"
     values: bool = Field(default=False, exclude_if=lambda value: not value)
     through_day: date | None = None
@@ -116,7 +116,7 @@ class View(_ContractModel):
                 else "asof"
                 if view == "asof"
                 else "total"
-                if view in ("run", "breakout", "switchback")
+                if view in ("run", "breakout", "switchback", "spillover")
                 else None
             )
             if grain is not None:
@@ -198,10 +198,19 @@ class View(_ContractModel):
     def _validate_scope(self) -> View:
         invalid = (
             (
-                self.view in {"run", "breakout", "switchback"}
+                self.view in {"run", "breakout", "switchback", "spillover"}
                 and (self.grain != "total" or self.through_day is not None or self.day_domain)
             )
             or (self.view == "run" and bool(self.segment))
+            or (
+                self.view == "spillover"
+                and (
+                    self.population != "assigned"
+                    or self.segment
+                    or self.completion_policy
+                    or self.time_basis != "calendar"
+                )
+            )
             or (self.view == "daily" and self.grain != "daily")
             or (self.view == "asof" and self.grain != "asof")
             or (
