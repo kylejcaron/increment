@@ -16,10 +16,12 @@ from increment import (
     runnable,
 )
 from increment.errors import CodedError
+from increment.estimation.readout_types import SamplingInference
 from increment.kernel.contracts import Registration
-from increment.results import ReadoutResults, SpilloverEffects
-from increment.store import HistorySelector, ParquetResultsStore, WarehouseResultsStore
+from increment.results import ReadoutResults, ResultCell, SpilloverEffect, SpilloverEffects
+from increment.store import HistorySelector, ParquetResultsStore, Run, WarehouseResultsStore
 from increment.store.types import pinned_run
+from tests._unit_boundary import backend_fixture
 
 _PAIRS = (("a:b", "c"), ("a", "b:c"))
 
@@ -61,21 +63,27 @@ def _bind(*, purchased=True):
     )
 
 
-@pytest.fixture(params=["parquet", pytest.param("warehouse", marks=pytest.mark.integration)])
-def store(request, tmp_path):
-    if request.param == "parquet":
-        yield ParquetResultsStore(tmp_path)
-    else:
-        import ibis
+@backend_fixture()
+def warehouse_store():
+    import ibis
 
-        con = ibis.duckdb.connect()
-        try:
-            yield WarehouseResultsStore(con)
-        finally:
-            con.disconnect()
+    con = ibis.duckdb.connect()
+    try:
+        yield WarehouseResultsStore(con)
+    finally:
+        con.disconnect()
 
 
-def test_reopened_policy_pairs_keep_direction_and_separate_histories(store):
+def test_reopened_policy_pairs_keep_direction_and_separate_histories(tmp_path):
+    _check_reopened_policy_pairs(ParquetResultsStore(tmp_path))
+
+
+@pytest.mark.integration
+def test_warehouse_policy_pairs_keep_direction_and_separate_histories(warehouse_store):
+    _check_reopened_policy_pairs(warehouse_store)
+
+
+def _check_reopened_policy_pairs(store):
     experiment, reader = _bind()
     with reader:
         (estimator_id,) = runnable(experiment, "bought")
@@ -197,27 +205,52 @@ def test_reopen_refuses_family_order_and_metadata_from_another_run(tmp_path):
         assert mismatch.value.code == code
 
 
-def test_failed_inversion_reopens_with_its_observed_point_and_null_bounds(tmp_path, monkeypatch):
-    from increment.estimation.spillover import SpilloverInterval
-
-    observed = SpilloverInterval.observed
-
-    def one_failed_interval(self, comparison, cells):
-        point, lower, upper, basis = observed(self, comparison, cells)
-        return point, lower, float("nan") if comparison.policy == "a:b" else upper, basis
-
-    monkeypatch.setattr(SpilloverInterval, "observed", one_failed_interval)
+def test_stored_unavailable_interval_reopens_without_losing_the_observed_point(tmp_path):
     experiment, reader = _bind()
-    store = ParquetResultsStore(tmp_path)
     with reader:
-        run(experiment, reader, results_store=store, run_id="failed-inversion")
+        result = run(experiment, reader, run_id="failed-inversion")
+    readout = result.readout()
+    assert isinstance(readout, SpilloverEffects)
+    failed = SpilloverEffect.model_validate(
+        {**readout[0].model_dump(), "lower": None, "upper": None}
+    )
+    record = result.run
+    assert isinstance(record, Run)
+    first, second = record.cells
+    failed_cell = ResultCell.from_report_payload(
+        row_kind="spillover",
+        identity=first.identity,
+        label=first.label,
+        row=failed,
+        family=first.family,
+    )
+    sampling = SamplingInference(available=False, reason_code="nonfinite_interval")
+    records = tuple(
+        item.model_copy(update={"sampling": sampling}) if item.cell == first.identity.key else item
+        for item in readout.metadata.cells
+    )
+    store = ParquetResultsStore(tmp_path)
+    store.put(
+        replace(
+            record,
+            cells=(replace(failed_cell, provenance=first.provenance), second),
+            metadata=readout.metadata.model_copy(update={"cells": records}),
+        )
+    )
     handle = store.open_run("coupon", experiment.analysis_spec_hash, "failed-inversion")
     restored = RunResult.from_handle(handle, registration=experiment.registration)
     frame = restored.to_frame(backend="pyarrow")
     assert isinstance(frame, pa.Table)
-    rows = frame.to_pylist()
-    assert rows[0]["estimate"] == pytest.approx(1)
-    assert rows[0]["lower"] is rows[0]["upper"] is None
-    assert rows[0]["direction"] == rows[0]["range_basis"] == "unavailable"
-    assert rows[0]["unavailable_reason"] == "nonfinite_interval"
+    unavailable, other = frame.to_pylist()
+    assert (unavailable["policy"], unavailable["reference"]) == _PAIRS[0]
+    # Every unoffered customer under a:b bought; none under c did.
+    assert unavailable["estimate"] == pytest.approx(1)
+    assert unavailable["lower"] is unavailable["upper"] is None
+    assert unavailable["direction"] == unavailable["range_basis"] == "unavailable"
+    assert unavailable["unavailable_reason"] == "nonfinite_interval"
+    assert (other["policy"], other["reference"]) == _PAIRS[1]
+    assert (other["estimate"], other["lower"], other["upper"]) == pytest.approx((0, 0, 0))
+    assert other["direction"] == "inconclusive"
+    assert other["range_basis"] == "identical_offer_counts"
+    assert other["unavailable_reason"] is None
     assert handle.envelope().to_arrow()["reason_code"].to_pylist() == ["nonfinite_interval", None]

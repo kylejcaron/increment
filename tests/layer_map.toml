@@ -8,7 +8,6 @@ core = [
   "increment._compile_gaps",
   "increment._posterior_projection",
   "increment.semantics*",
-  "increment.semantics._spillover",
   "increment.estimation*",
   "increment.estimation._relative_conjugate",
   "increment.estimation._relative_posterior",

@@ -239,7 +239,6 @@ increment.builders -> increment.query.session
 increment.builders -> increment.query.source
 increment.builders -> increment.query.spillover
 increment.builders -> increment.semantics
-increment.builders -> increment.semantics._spillover
 increment.builders -> increment.semantics.design
 increment.builders -> increment.semantics.loader
 increment.builders -> increment.semantics.models

@@ -39,11 +39,6 @@ layer = "core"
 depends_on = ["increment._spillover_design"]
 
 [[modules]]
-path = "increment.semantics._spillover"
-layer = "core"
-depends_on = ["increment._spillover_design"]
-
-[[modules]]
 path = "increment.query.spillover"
 layer = "core"
 depends_on = [
@@ -167,7 +162,7 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment.semantics"
 layer = "core"
-depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals", "increment._optional", "increment._spillover_design", "increment.semantics._spillover"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals", "increment._optional", "increment._spillover_design"]
 
 [[modules]]
 path = "increment._canonical"
@@ -533,7 +528,7 @@ depends_on = []
 [[modules]]
 path = "increment._evidence_types"
 layer = "core"
-depends_on = ["increment._immutable", "increment._moment_plan", "increment.errors", "increment.semantics"]
+depends_on = ["increment._immutable", "increment._moment_plan", "increment.errors"]
 
 [[modules]]
 path = "increment.estimation"
@@ -2075,7 +2070,6 @@ depends_on = [
   "increment._evidence_types",
   "increment._source_types",
   "increment._spillover_design",
-  "increment._spillover_registration",
   "increment._analysis_config", "increment._runnability", "increment.semantics",
   "increment.declarations",
   "increment.estimators.registry",
@@ -2109,6 +2103,7 @@ depends_on = [
   "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
   "increment._evidence_loaders",
   "increment._metric_specs",
+  "increment._spillover_registration",
   "increment._source_types", "increment._window", "increment.decision", "increment.kernel.contracts",
   "increment.plan",
   "increment.declarations", "increment.errors", "increment.readouts", "increment.semantics",
@@ -2125,7 +2120,7 @@ depends_on = [
   "increment.decision", "increment.errors", "increment.frame",
   "increment.kernel", "increment.kernel.contracts",
   "increment.plan", "increment.query", "increment.semantics",
-  "increment.query.spillover", "increment.semantics._spillover", "increment._spillover_binding",
+  "increment.query.spillover", "increment._spillover_binding",
   "increment._spillover_design", "increment._frame_spillover", "increment._metric_specs",
   "increment.sequential_source", "increment.sources", "increment.switchback",
 ]

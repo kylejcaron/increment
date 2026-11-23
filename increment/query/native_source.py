@@ -156,6 +156,7 @@ from increment.query.fact_resolution import (
     refuse_null_fact_values,
     resolve_fact_source_sql,
     resolve_shared_roster,
+    shared_fact_grain,
     validate_fact_source_schema,
     validate_shared_fact,
     validate_shared_roster,
@@ -525,8 +526,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 if fact in checked_facts:
                     continue
                 source = sources[fact.source]
-                validate_shared_fact(
-                    self._con.execute,
+                grain = shared_fact_grain(
                     resolve_fact_source_sql(self._session.source_sql, source),
                     source,
                     fact,
@@ -534,6 +534,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     unit=binding.unit,
                     captured=captured,
                 )
+                validate_shared_fact(self._con.execute(grain), source, fact, metric=binding.name)
                 checked_facts.add(fact)
             roster = binding.roster
             if roster is not None and roster not in checked_rosters:

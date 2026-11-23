@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -51,20 +51,26 @@ from increment.query._spillover_view_sources import ViewSources, view_sources
 from increment.query.artifact_ports import SQL_DIGEST_FORMAT
 from increment.query.builders import (
     _local_date,
+    _naive_utc,
     _naive_utc_ts,
     _scope_exposure_events,
+    declared_experiment_rows,
     declared_exposure_rows,
+    enrollment_window,
     measure_rows,
     metric_events,
     outcome_rows,
+    outcome_window,
 )
 from increment.query.fact_resolution import (
     _dim_joined_fact_table,
     _find_fact_source,
     _raise_definition,
+    _resolve_entity_source,
     null_value_count,
     refuse_null_fact_values,
     resolve_shared_roster,
+    shared_fact_grain,
     shared_roster_parts,
     validate_shared_fact,
     validate_shared_roster,
@@ -106,6 +112,9 @@ _PROJECTIONS = {
 }
 _DESIGN_ROLES = ("roster", "offer_counts")
 _SHARED_ROSTER = "shared_roster"
+_DRAW_ROWS = "draw_rows"
+_PURCHASE_ROWS = "purchase_rows"
+_EVENT_GRAIN = "event_grain"
 # str.strip() also treats these Unicode and control characters as whitespace;
 # SQL TRIM's default set depends on the warehouse.
 _LABEL_WHITESPACE = (
@@ -255,6 +264,10 @@ def _capture(
     views: ViewSources | None,
     queries: tuple[_Query, ...] = (),
     shared: BoundSharedMetric | None = None,
+    scope_streams: Callable[
+        [dict[str, Table], dict[str, tuple[str, ...]], dict[str, Exception]], None
+    ]
+    | None = None,
 ) -> Iterator[_Snapshot]:
     con = live.con
     inputs = {}
@@ -307,31 +320,37 @@ def _capture(
     checks = _source_checks(con, targets, locations, views) if targets else None
     if checks is not None and function_checks:
         checks = checks.mutate(**function_checks)
-    streams = dict(inputs)
+    streams = inputs
     if checks is not None:
-        for role, table in inputs.items():
-            streams[role] = table.filter(
+        streams = {
+            role: table.filter(
                 [cast(ir.BooleanScalar, checks[key].as_scalar()) for key in dependencies[role]]
             )
+            for role, table in inputs.items()
+        }
         streams["source_checks"] = checks
+    if scope_streams is not None:
+        scope_streams(streams, dependencies, unavailable)
     with translating_compile_gaps():
         pinned = live.pin_sources((), extra_relations=streams)
         try:
-            unbound = frozenset()
-            if checks is not None:
-                flags = pinned.fetch_arrow(pinned.source_sql("source_checks")).to_pylist()[0]
-                unbound = frozenset(
-                    role for role, keys in dependencies.items() if any(not flags[k] for k in keys)
-                )
+            unbound = _unbound_streams(pinned, dependencies) if checks is not None else frozenset()
             tables = {
                 role: _exact_keys(pinned.source_sql(role))
                 if role in names
                 else pinned.source_sql(role)
-                for role in inputs
+                for role in streams
             }
             yield _Snapshot(pinned, tables, unbound, unavailable)
         finally:
             pinned.drop_materialized()
+
+
+def _unbound_streams(
+    pinned: WarehouseSession, dependencies: dict[str, tuple[str, ...]]
+) -> frozenset[str]:
+    flags = pinned.fetch_arrow(pinned.source_sql("source_checks")).to_pylist()[0]
+    return frozenset(role for role, keys in dependencies.items() if any(not flags[k] for k in keys))
 
 
 def _key_kind(table: Table, key: str) -> str | None:
@@ -514,21 +533,78 @@ def _assigned_groups(snapshot: _Snapshot, frozen: _DesignTables, design: Spillov
     return assigned
 
 
-def _fact_table(snapshot: _Snapshot, source: FactSource, unit: str) -> Table:
-    dims = {dim.sql: dim for dim in snapshot.session.defs.dim_sources if dim.name in source.dims}
+def _draw_stream(
+    raw: Table, exposure: Exposure, source: FactSource | None, experiment: Experiment
+) -> tuple[Table, Table | None]:
+    if source is not None and "event" in raw.columns:
+        raw = raw.filter(raw.event == exposure.fact)
+    if "experiment_id" in raw.columns:
+        raw = declared_experiment_rows(_exact_keys(raw, ("experiment_id",)), experiment)
+    unit = (_resolve_entity_source(source, experiment.unit) if source else None) or "unit_id"
+    time = source.timestamp_column if source else "ts"
+    if time not in raw.columns or not raw[time].type().is_timestamp():
+        return raw.limit(0), None
+    # Keep undated and off-roster draws; reconciliation must still reject them.
+    raw = raw.filter(raw[time].isnull() | enrollment_window(raw[time], experiment))
+    if unit not in raw.columns:
+        return raw, None
+    keyed = _exact_keys(raw, (unit,))
+    return raw, keyed.select(unit_id=keyed[unit], first_exposure_ts=_naive_utc(keyed[time]))
 
-    def resolve(sql: str) -> Table:
-        dim = dims.get(sql)
-        field = source.name if sql == source.sql or dim is None else dim.name
-        return _exact_keys(snapshot.table(sql, field=field), (*source.entities, "unit_id"))
+
+def _purchase_stream(
+    raw: Table,
+    draws: Table | None,
+    roster: Table | None,
+    experiment: Experiment,
+    metric: ConversionMetric,
+    source: FactSource,
+) -> Table:
+    unit = _resolve_entity_source(source, experiment.unit) or "unit_id"
+    time = source.timestamp_column
+    if (
+        draws is None
+        or roster is None
+        or not {unit, time, "event"}.issubset(raw.columns)
+        or not raw[time].type().is_timestamp()
+        or _key_kind(raw, unit) not in ("string", "int64")
+        or _key_kind(raw, unit) != _key_kind(draws, "unit_id")
+        or _key_kind(raw, unit) != _key_kind(roster, "person_id")
+    ):
+        # Keep the schema for the original validation, not unmeasurable history.
+        return raw.limit(0)
+    roster = _exact_keys(roster, ("person_id",))
+    anchors = draws.semi_join(roster, draws.unit_id == roster.person_id)
+    raw = _exact_keys(raw.filter(raw.event == metric.fact), (unit,))
+    return raw.semi_join(
+        anchors,
+        [
+            raw[unit] == anchors.unit_id,
+            outcome_window(
+                cast(ir.TimestampColumn, _naive_utc(raw[time])),
+                anchors.first_exposure_ts,
+                experiment,
+                (0, metric.window_days),
+            ),
+        ],
+    )
+
+
+def _fact_table(snapshot: _Snapshot, source: FactSource, unit: str, *, stream: str) -> Table:
+    dims = [d for d in snapshot.session.defs.dim_sources if d.name in source.dims]
+    keys = (*source.entities, "unit_id")
+    dim_tables = {d.name: _exact_keys(snapshot.table(d.sql, field=d.name), keys) for d in dims}
+
+    def resolve_fact(_sql: str) -> Table:
+        return _exact_keys(snapshot.table(stream, field=source.name), keys)
 
     return _dim_joined_fact_table(
         snapshot.session.con,
         snapshot.session.defs,
         source,
         unit,
-        {},
-        resolve_sql=resolve,
+        dim_tables,
+        resolve_sql=resolve_fact,
         naive_utc=True,
         execute=snapshot.scalar,
     )
@@ -538,14 +614,12 @@ def _assignment_rows(
     snapshot: _Snapshot, experiment: Experiment, exposure: Exposure, source: FactSource | None
 ) -> Table:
     if exposure.sql is not None:
-        raw = snapshot.table(exposure.sql, field="offered")
+        raw = snapshot.table(_DRAW_ROWS, field="offered")
         validate_sql_exposure_columns(raw, experiment.name, exposure.name)
-        keyed = "experiment_id" in raw.columns
         raw = _naive_utc_ts(raw)
     else:
         assert exposure.fact is not None and source is not None
-        keyed = "experiment_id" in snapshot.table(source.sql, field="offered").columns
-        raw = _fact_table(snapshot, source, experiment.unit)
+        raw = _fact_table(snapshot, source, experiment.unit, stream=_DRAW_ROWS)
         raw = raw.filter(raw.event == exposure.fact)
     if (
         "group_id" not in raw.columns
@@ -554,7 +628,7 @@ def _assignment_rows(
     ):
         refuse_input("spillover.log.keys", "offered")
     raw = _exact_keys(raw, ("unit_id", "experiment_id", "group_id"))
-    scoped = declared_exposure_rows(raw, exposure, experiment, keyed=keyed)
+    scoped = declared_exposure_rows(raw, exposure, experiment, keyed=False)
     # An undated draw cannot be ruled out of enrollment, even if the same
     # person has another draw with a valid timestamp.
     if snapshot.any_rows(scoped.filter(scoped.ts.isnull())):
@@ -634,15 +708,9 @@ def _validate_shared_conversion(
     """Check the portable conversion's event grain and its full eligible population."""
     (fact,) = binding.facts
     assert binding.roster is not None
-    relation = snapshot.table(source.sql, field=source.name)
+    grain = snapshot.table(_EVENT_GRAIN, field=source.name)
     validate_shared_fact(
-        snapshot.scalar,
-        _exact_keys(relation, (fact.row_key,)),
-        source,
-        fact,
-        metric=binding.name,
-        unit=binding.unit,
-        captured=True,
+        snapshot.scalar(grain.valid.as_scalar()), source, fact, metric=binding.name
     )
     roster = snapshot.table("roster")
     validate_shared_roster(
@@ -662,7 +730,7 @@ def _group_conversions(
     source: FactSource,
     fact: Fact,
 ) -> Table:
-    rows = _fact_table(snapshot, source, experiment.unit)
+    rows = _fact_table(snapshot, source, experiment.unit, stream=_PURCHASE_ROWS)
     if (
         _key_kind(rows, "unit_id") != _key_kind(anchors, "unit_id")
         or not rows.ts.type().is_timestamp()
@@ -869,6 +937,51 @@ class WarehouseSpilloverSource:
             rows.extend((f"catalog:{k}", v) for k, v in sorted(self._locations.items()))
         self.recipe: tuple[tuple[str, str], ...] = tuple(rows)
 
+    def _scope_streams(
+        self,
+        streams: dict[str, Table],
+        dependencies: dict[str, tuple[str, ...]],
+        unavailable: dict[str, Exception],
+    ) -> None:
+        """Capture candidate draws and purchases, plus any whole-feed validity check."""
+        draw_sql = self._exposure.sql or cast(FactSource, self._assignment_source).sql
+        buy_sql = self._source.sql
+        aliases = {_DRAW_ROWS: draw_sql, _PURCHASE_ROWS: buy_sql}
+        if self._shared is not None:
+            aliases[_EVENT_GRAIN] = buy_sql
+        for alias, sql in aliases.items():
+            dependencies[alias] = dependencies[sql]
+            if sql in unavailable:
+                unavailable[alias] = unavailable[sql]
+
+        draws = None
+        if draw_sql in streams:
+            streams[_DRAW_ROWS], draws = _draw_stream(
+                streams[draw_sql], self._exposure, self._assignment_source, self._experiment
+            )
+        if buy_sql in streams:
+            raw = streams[buy_sql]
+            if self._shared is not None:
+                (fact,) = self._shared.facts
+                try:
+                    grain = shared_fact_grain(
+                        _exact_keys(raw, (fact.row_key,)),
+                        self._source,
+                        fact,
+                        metric=self._shared.name,
+                        unit=self._shared.unit,
+                        captured=True,
+                    )
+                    streams[_EVENT_GRAIN] = grain.name("valid").as_table()
+                except CodedError as exc:
+                    unavailable[_EVENT_GRAIN] = exc
+            streams[_PURCHASE_ROWS] = _purchase_stream(
+                raw, draws, streams.get("roster"), self._experiment, self._metric, self._source
+            )
+        # A dimension checks its whole key space, even if it shares a fact query.
+        for sql in {draw_sql, buy_sql} - {dim.sql for dim in self._session.defs.dim_sources}:
+            streams.pop(sql, None)
+
     def freeze(self, law: SpilloverDesign) -> SpilloverPopulation:
         if not isinstance(law, SpilloverDesign):
             refuse_input("spillover.design.required", "design")
@@ -888,6 +1001,7 @@ class WarehouseSpilloverSource:
             self._views,
             self._queries,
             self._shared,
+            self._scope_streams,
         ) as snapshot:
             frozen = _checked_design(snapshot, population.design)
             if frozen.digest != population.roster_digest:

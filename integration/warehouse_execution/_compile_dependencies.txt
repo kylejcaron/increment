@@ -1,4 +1,4 @@
-# Traced on commit: 5284235e2e667224f78a5004355c4eaa056d6bed
+# Traced on commit: 0921b3a003e93a34e952377ad05d89c5aae410a0
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -208,7 +208,6 @@ increment.readouts._srm
 increment.readouts._whole_window
 increment.result_envelope
 increment.semantics
-increment.semantics._spillover
 increment.semantics.artifact
 increment.semantics.assignment
 increment.semantics.design

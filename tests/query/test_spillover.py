@@ -281,9 +281,10 @@ metrics:
             "UPDATE main.eligible SET member_id = upper(member_id) WHERE member_id = 'store-0/0'",
             "eligible roster",
         ),
-        # A duplicate receipt invalidates the event grain even outside the web filter.
+        # A repeated receipt still invalidates a purchase by someone outside the trial.
         (
-            "INSERT INTO trial.purchases SELECT * FROM trial.purchases WHERE channel = 'shop'",
+            "INSERT INTO trial.purchases SELECT * REPLACE ('outside' AS person_id) "
+            "FROM trial.purchases WHERE channel = 'shop'",
             "order_id",
         ),
     ],
@@ -379,6 +380,38 @@ def test_frozen_profiles_and_bounded_two_stage_cells(trial, monkeypatch):
         for s in ("north", "south")
         for p, expected in [("base", (2, 0.5, 0.5, 6, 1)), ("more", (2, 4.0, 8.0, 6, 4))]
     }
+
+
+def test_shared_feed_history_does_not_enlarge_the_warehouse_capture(trial, monkeypatch):
+    con, design, source, launch = trial
+    population = source.freeze(design)
+    launch()
+    create = con.create_table
+    sizes = []
+
+    def count_written(*args, **kwargs):
+        table = create(*args, **kwargs)
+        if kwargs.get("temp"):
+            sizes.append(con.to_pyarrow(table.count()).as_py())
+        return table
+
+    monkeypatch.setattr(con, "create_table", count_written)
+    expected = source.observe(population)
+    initial = sum(sizes)
+    assert initial > 0
+    sizes.clear()
+    con.raw_sql("""
+        INSERT INTO trial.purchases
+        SELECT 99999, TIMESTAMP '2025-01-02', 'purchase', 'web', 1 FROM range(100)
+        UNION ALL
+        SELECT 0, TIMESTAMP '2020-01-01', 'purchase', 'web', 1 FROM range(100)
+        UNION ALL
+        SELECT 0, TIMESTAMP '2030-01-01', 'purchase', 'web', 1 FROM range(100);
+        INSERT INTO trial.assignments
+        SELECT 0, TIMESTAMP '2025-01-02', 'assignment', 'no_offer', 'other' FROM range(100)
+    """)
+    assert source.observe(population) == expected
+    assert sum(sizes) == initial
 
 
 @pytest.mark.slow

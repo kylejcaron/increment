@@ -164,6 +164,8 @@ con.create_table("purchase_load_receipts", load_receipt("first", september(9), s
 
 Match the purchase feed's **load receipt**, not today's date or the most recent purchase, to the declared window. A qualifying paid order strictly after assignment and before midnight at the start of September 9 counts once. Everyone's window must be complete, even if they have already bought. Only then does no qualifying order mean zero.
 
+The warehouse copies only purchases that could fall within an eligible customer’s measurement window, not the store’s full purchase history. If a shared metric requires unique order IDs, it still checks for duplicates across the full purchase feed.
+
 ```python
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CodedError

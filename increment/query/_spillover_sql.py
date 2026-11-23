@@ -145,6 +145,13 @@ def _qualified(con: SQLBackend, parts: tuple[str, ...], *, field: str = "relatio
         catalog = getattr(con, "current_catalog", None)
     if not catalog or not db:
         refuse_input("spillover.design.invalid", "relations")
+    if not isinstance(catalog, str) or not isinstance(db, str):
+        _refuse_design(
+            "spillover.design.invalid",
+            field=field,
+            requirement="use a connection that reads database and schema names as text "
+            "(on PostgreSQL, set client_encoding to UTF8)",
+        )
     return catalog, db, parts[-1]
 
 

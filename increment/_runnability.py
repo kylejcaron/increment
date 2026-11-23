@@ -31,6 +31,7 @@ from increment._source_types import (
     declared_day_axis_metric_objects_supported,
     effective_capabilities,
 )
+from increment._spillover_registration import require_registered_spillover
 from increment.decision import (
     CompiledDecisionPlan,
     margin_less_guardrail_route,
@@ -46,6 +47,7 @@ from increment.semantics.shared import _refuse_shared_trigger, _refuse_uncapture
 
 if TYPE_CHECKING:
     from increment._evidence_types import BreakoutIdentity
+    from increment.kernel.experiment import Experiment
     from increment.semantics.models import Metric
 
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
@@ -314,6 +316,12 @@ def require_spillover_request(experiment: Any, options: Mapping[str, Any]) -> No
             ):
                 return
         _refuse("kernel.request.invalid", field="request the registered spillover metric")
+
+
+def require_runnable_spillover_metric(experiment: Experiment, metric: object) -> None:
+    require_registered_spillover(experiment)
+    require_spillover_request(experiment, experiment.request_options)
+    require_spillover_request(experiment, {"metrics": [metric]})
 
 
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:

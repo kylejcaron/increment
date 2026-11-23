@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment._source_types import declared_day_axis_metric_objects_supported
 from increment._spillover_design import SPILLOVER_ESTIMATOR
-from increment._spillover_registration import require_registered_spillover
 from increment.errors import CodedError
 from increment.kernel.contracts import View, _refuse, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
@@ -413,12 +412,10 @@ def _runnable_metric(
 
 
 def _spillover_runnable(exp: Experiment, metric: object, estimator_id: str) -> Runnable:
-    from increment._runnability import require_spillover_request
+    from increment._runnability import require_runnable_spillover_metric
 
     try:
-        require_registered_spillover(exp)
-        require_spillover_request(exp, exp.request_options)
-        require_spillover_request(exp, {"metrics": [metric]})
+        require_runnable_spillover_metric(exp, metric)
         if estimator_id != SPILLOVER_ESTIMATOR:
             _refuse("kernel.request.invalid", field="use the registered two-stage spillover method")
     except CodedError as refusal:

@@ -895,8 +895,7 @@ def _from_spillover_summary(
     plan: AnalysisPlan | None,
     experiment_id: str,
 ) -> tuple[Experiment, ExperimentReader]:
-    from increment.semantics._spillover import validate_spillover_plan
-    from increment.semantics.models import AnalysisPlan, ConversionMetric
+    from increment.semantics.models import AnalysisPlan, ConversionMetric, validate_spillover_plan
 
     specs = coerce_metrics(metrics)
     if len(specs) != 1:
@@ -1037,7 +1036,7 @@ def from_definitions(
 
     if isinstance(declared.design, SpilloverDeclaration):
         from increment.query.spillover import WarehouseSpilloverSource
-        from increment.semantics._spillover import selected_spillover_metric
+        from increment.semantics.models import selected_spillover_metric
 
         if (
             store != "auto"

@@ -127,8 +127,7 @@ def validate_fact_source_schema(
         )
 
 
-def validate_shared_fact(
-    execute: Callable[[ir.Scalar], object],
+def shared_fact_grain(
     relation: Table,
     source: FactSource,
     binding: SharedFact,
@@ -136,8 +135,8 @@ def validate_shared_fact(
     metric: str,
     unit: str,
     captured: bool,
-) -> None:
-    """Check the native event stream still has the declared shared grain."""
+) -> ir.Scalar:
+    """Full-stream validity; a scoped capture can retain this one value."""
     validate_fact_source_schema(relation, source, require_values=not captured)
     key = binding.row_key
     route = "expose the declared non-null, unique row key on the native event stream"
@@ -146,16 +145,21 @@ def validate_shared_fact(
             metric, f"source {source.name!r} does not project {key!r}", route=route
         )
     rows = relation.filter(relation.event == binding.fact)
-    valid = (
+    return (
         (rows.count() == rows[key].nunique())
         & (rows.count() == rows[unit].count())
         & (rows.count() == rows[source.timestamp_column].count())
-    )
-    if not execute(valid.as_scalar()):
+    ).as_scalar()
+
+
+def validate_shared_fact(
+    valid: object, source: FactSource, binding: SharedFact, *, metric: str
+) -> None:
+    if not valid:
         refuse_shared_metric(
             metric,
-            f"source {source.name!r} has null units or event times, or null or repeated {key!r}",
-            route=route,
+            f"source {source.name!r} has null units or event times, or null or repeated {binding.row_key!r}",
+            route="expose the declared non-null, unique row key on the native event stream",
         )
 
 
