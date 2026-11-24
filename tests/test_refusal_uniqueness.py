@@ -313,10 +313,8 @@ def test_every_arm_contract_unsupported_code_is_registered_in_compatibility() ->
     ):
         _record(arm_planning_support(procedure, baseline=baseline))
 
-    # ContrastEvidenceContract's assignment guard is unreachable at its current
-    # field type: SwitchbackAssignment.sequence is a two-member discriminated
-    # union covering exactly the accepted schemes. Contrast inference has a
-    # separate direct-estimator guard, so only that code remains registered.
+    # The assignment field admits only declared switchback laws. The direct
+    # estimator, not this fixed-inference contract, owns the inference refusal.
     contract = ContrastEvidenceContract()
     window = SwitchbackWindow(washout_steps=0, observation_steps=4)
     assignment = SwitchbackAssignment(sequence=IndependentBernoulliOrder(), window=window)
@@ -332,7 +330,7 @@ def test_every_arm_contract_unsupported_code_is_registered_in_compatibility() ->
         fields: dict[str, object] = {
             "assignment": assignment,
             "inference": FixedInference(),
-            "estimand": "ate",
+            "estimand": "retained_window_total_difference",
             "metric": metric,
             "decision": AbsoluteDecisionPolicy(
                 alternative="two-sided",
@@ -362,6 +360,11 @@ def test_every_arm_contract_unsupported_code_is_registered_in_compatibility() ->
         },
     ):
         _record(contract.runtime_support(_contrast_request(**overrides)))
+    ratio = _contrast_request(
+        metric=metric.model_copy(update={"metric_type": "ratio"}),
+        estimand="retained_window_ratio_difference",
+    )
+    _record(contract.planning_support(ratio))
 
     assert codes, "the axis sweep above must produce at least one Unsupported code"
     missing = codes - set(ARM_COMPATIBILITY_REFUSALS)

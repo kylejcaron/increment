@@ -13,6 +13,7 @@ arm_order: Ordered assignment arms associated with a fitted adjustment.
 audience: Amount of detail to include when rendering result qualifications.
 as_of: Look or time at which to evaluate results.
 assignment: Declared assignment schedule.
+schedule: Independent assignment log, roster and cycle count for switchback observations.
 assignment_counts: Counts by arm used to check allocation.
 backend: Warehouse SQL dialect or selected execution backend.
 baseline: Expected control-arm values used for planning.
@@ -39,6 +40,7 @@ covariate: Pre-exposure covariate column or covariate definition.
 covariate_missing: Policy for missing covariate values.
 credible_level: Posterior probability level for allocation bands.
 cycle: Column identifying switchback cycles.
+cycles_per_unit: Number of independent schedule draws per unit; one for shared schedules.
 date: Column containing observation dates.
 day_domain: Ordered observation days requested for a temporal view.
 decision_method: Estimator or variance-reduction method.
@@ -46,6 +48,10 @@ definitions: Loaded experiment and metric definitions.
 definitions_id: Identifier for the definitions source.
 definitions_path: Path to YAML experiment definitions.
 delta: Effect size used for planning.
+effects: Signed absolute effects to evaluate on a planning grid.
+sizes: Independent unit or block counts to evaluate on a planning grid.
+repetitions: Number of simulated studies at each planning grid point.
+mc_error: Allowed probability of simulation intervals missing any grid point's power.
 deploy_grain: Unit or cluster level at which targeting is deployed.
 design: Experiment assignment and identification design.
 dimension: Name of a segment or breakout dimension.
@@ -101,6 +107,7 @@ planned_looks: Number or schedule of planned analysis looks.
 pooling: How factor-adjusted observations are pooled.
 population: Population to which the analysis applies.
 posterior_queries: Immutable recorded posterior query values and query-specific refusal contexts.
+pre_assignment_forecasts: Frozen period forecasts and timestamps for switchback adjustment.
 previous: Prior sequential checkpoint.
 run_id: Immutable identifier for one execution of an analysis.
 primary_key: Columns uniquely identifying relation rows.

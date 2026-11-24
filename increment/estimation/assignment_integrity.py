@@ -37,6 +37,31 @@ ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL = RefusalSpec(
 )
 
 
+def fixed_count_integrity(
+    *, periods: int, treated: int, grain: Literal["unit_cycle", "shared_block"], draws: int
+) -> IntegrityResult:
+    """Fixed arm counts cannot diagnose bias in how the positions were selected."""
+    from increment.estimation.readout_types import IntegrityResult
+
+    return IntegrityResult(
+        status="not_applicable",
+        analysis_population="assigned",
+        construction="none",
+        alpha=None,
+        observed=None,
+        expected=None,
+        code=None,
+        randomization_grain=grain,
+        context={
+            "randomization_law": "fixed_count",
+            "periods_per_cycle": periods,
+            "treated_periods": treated,
+            "treatment_probability": treated / periods,
+            "order_draws": draws,
+        },
+    )
+
+
 def assignment_integrity(
     design: object,
     counts: Mapping[str, int] | None,
@@ -61,11 +86,15 @@ def assignment_integrity(
         "randomization_grain": randomization_grain,
         "context": {},
     }
-    from increment.semantics.assignment import SwitchbackAssignment
+    from increment.semantics.assignment import FixedCountOrder, SwitchbackAssignment
 
     if isinstance(design, SwitchbackAssignment):
         sequence = design.sequence
-        probabilities = {"ct": sequence.probability_ct, "tc": 1.0 - sequence.probability_ct}
+        probabilities = (
+            None
+            if isinstance(sequence, FixedCountOrder)
+            else {"ct": sequence.probability_ct, "tc": 1.0 - sequence.probability_ct}
+        )
         expected_grain = sequence.independence_unit
         common.update(
             expected=probabilities,
@@ -86,6 +115,14 @@ def assignment_integrity(
                 status="not_checked_missing_counts",
                 code="integrity.triggered_population_not_checked",
             )
+        if isinstance(sequence, FixedCountOrder):
+            return fixed_count_integrity(
+                periods=design.periods_per_cycle,
+                treated=sequence.treated_periods,
+                grain=expected_grain,
+                draws=len(order_draws),
+            )
+        assert probabilities is not None
         observed = {name: sum(order == name for _, order in order_draws) for name in probabilities}
         common["observed"] = observed
         if not cumulative or not order_draws:

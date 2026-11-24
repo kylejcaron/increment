@@ -254,6 +254,9 @@ class WireContrastProcedure(_WireBase):
     alpha: float = Field(gt=0, lt=1, allow_inf_nan=False)
     preferred_direction: PreferredDirection | None = None
     reference: UnitCycleReference | None = None
+    forecast_column: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
     family: WireNoFamily = WireNoFamily()
     inference: WireFixedInference = WireFixedInference()
 
@@ -586,6 +589,7 @@ def _procedure_to_wire(procedure: object) -> WireProcedure:
             alpha=procedure.alpha,
             preferred_direction=procedure.preferred_direction,
             reference=procedure.reference,
+            forecast_column=procedure.forecast_column,
         )
     _raise(
         "wire.procedure.invalid",
@@ -604,6 +608,7 @@ def _procedure_from_wire(procedure: WireProcedure) -> DecisionProcedure:
             alpha=procedure.alpha,
             preferred_direction=procedure.preferred_direction,
             reference=procedure.reference,
+            forecast_column=procedure.forecast_column,
         )
     method_names = [
         procedure.decision_method.name,

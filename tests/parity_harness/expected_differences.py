@@ -1055,6 +1055,94 @@ _DISPOSITION_RECORDS += tuple(
     )
 )
 
+# The stored panels predate ratio contrasts and period-level forecast adjustment.
+_SWITCHBACK_PANEL = "from_switchback_panel"
+UNIT_T_CAPTURE = ("audit-switchback-neighboring-integers", _SWITCHBACK_PANEL)
+_DISPOSITION_RECORDS += tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=_SWITCHBACK_PANEL,
+        field="absence reason",
+        frozen=frozen,
+        current=current,
+        key="reason",
+        reason="The panel still lacks this contrast, not all ratios or forecast adjustment.",
+    )
+    for scenario, frozen, current in (
+        *(
+            (
+                case,
+                "SOURCE: switchback metrics must be type='mean' or type='conversion'; quantile "
+                "is refused before any frame is read (confirmed live: source.frame.switchback.metric).",
+                "SOURCE: a switchback panel cannot estimate a quantile contrast.",
+            )
+            for case in (
+                "audit-panel-pre-exposure-and-selection",
+                "audit-quantile-family",
+                "quantile_tied_rounded_outcomes",
+                "relative_prior_quantile_tied_rounded_outcomes",
+            )
+        ),
+        (
+            "sequential-mixed-quantile-catalog-checkpoint",
+            "SOURCE: switchback accepts only mean/conversion metrics and refuses a quantile catalog "
+            "(source.frame.switchback.metric); it also has no registered sequential construction. "
+            "This dataset has no switchback schedule.",
+            "SOURCE: switchback panels have neither a quantile contrast nor sequential inference. "
+            "This dataset has no switchback schedule.",
+        ),
+        (
+            "cuped_covariate_name_summary_panel",
+            "SOURCE: switchback contrasts do not use CUPED.",
+            "SOURCE: this unit-level covariate is not a pre-assignment forecast for each scheduled period.",
+        ),
+    )
+)
+_DISPOSITION_RECORDS += tuple(
+    ExpectedDifference(
+        scenario=scenario,
+        ingress=_SWITCHBACK_PANEL,
+        field="refusal context",
+        key="context",
+        frozen={
+            "message": f"switchback metrics must be type='mean' or type='conversion'; unsupported metrics: {[metric]}",
+            "metrics": [metric],
+            "reason": "unsupported_metric_type",
+        },
+        current={"field": field, "message": message, "metric": "revenue", "reason": reason},
+        reason="With ratios supported, the builder reaches the next incompatible metric option.",
+    )
+    for scenario, metric, field, reason, message in (
+        (
+            "categorical-cuped-moments-format-13",
+            "revenue_per_spend",
+            "covariates",
+            "cuped_linear_construction_unsupported",
+            "switchback metric 'revenue' cannot use cuped_multicovariate; use from_unit_summary, "
+            "from_unit_panel, definitions, or a covariate artifact for independent-unit randomized inference",
+        ),
+        (
+            "mixed-cuped-multicovariate-fixed-horizon",
+            "rpo",
+            "winsorization",
+            "ignored_metric_option",
+            "switchback metric 'revenue' declares winsorization, which switchback aggregation does not apply",
+        ),
+    )
+)
+_DISPOSITION_RECORDS += (
+    ExpectedDifference(
+        scenario="contrast.metric",
+        ingress="refusal",
+        field="refusal message",
+        key="message",
+        frozen="switchback contrasts support only additive sum or conversion any aggregation; "
+        "ratio, quantile, and retention adaptations are unsupported",
+        current="additive switchback statistics require sum or any aggregation",
+        reason="The additive estimator still rejects other aggregations; ratios use their own estimator.",
+    ),
+)
+
 
 def _by_case(
     records: tuple[Difference, ...],
@@ -1318,6 +1406,19 @@ READOUT_IDENTITY_DIFFERENCES += (
         for metric, frozen, current in _MIXED_LOCAL_MOMENTS
     ),
 )
+
+
+def without_unit_t_advisory(metadata: Any) -> dict[str, Any]:
+    """Validate the warning added to the frozen unit-t result before comparing its old fields."""
+    (record,) = metadata["cells"]
+    assert record["cell"]["method"] == "switchback_unit_t_approximation"
+    assert record["failure"] is None
+    (warning,) = record["advisories"]
+    assert warning["code"] == "estimation.contrast.approximate_t"
+    assert warning["context"] == {"reference": "unit_t_approximation"}
+    assert warning["severity"] == "warning"
+    assert isinstance(warning["message"], str) and warning["message"].strip()
+    return {**metadata, "cells": [{**record, "advisories": []}]}
 
 
 def without_guardrail_segments(rows: Any, metric: str, *, dropped: int) -> Any:

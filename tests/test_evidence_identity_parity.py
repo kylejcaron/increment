@@ -20,10 +20,12 @@ from tests.parity_harness import registrations_line5 as _line5
 from tests.parity_harness.comparison import TOLERANCE
 from tests.parity_harness.expected_differences import (
     CELL_KEY_DIFFERENCES,
+    UNIT_T_CAPTURE,
     with_declared_favorable_sides,
     with_expected_difference,
     without_gained_arm_facts,
     without_post_capture_family_size,
+    without_unit_t_advisory,
     without_value_row_scale,
 )
 from tests.parity_harness.registrations_line2 import (
@@ -1385,9 +1387,8 @@ NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE6_ADAPTERS}
 
 REGISTERED = {**REGISTERED, "line7": _LINE7_PAIRS}
 NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE7_ADAPTERS}
-_CONTRAST_PAIR = ("audit-switchback-neighboring-integers", "from_switchback_panel")
-REGISTERED = {**REGISTERED, "contrast": frozenset({_CONTRAST_PAIR})}
-NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, _CONTRAST_PAIR: _line1_actual_outcome}
+REGISTERED = {**REGISTERED, "contrast": frozenset({UNIT_T_CAPTURE})}
+NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, UNIT_T_CAPTURE: _line1_actual_outcome}
 
 
 def test_line7_registry_matches_frozen_artifact_inventory() -> None:
@@ -1521,6 +1522,8 @@ def test_frozen_capture_outcome(
         )
     if key == ("categorical-cuped-moments-format-13", "from_moments"):
         _assert_raw_moment_components_match_payload(actual)
+    if key == UNIT_T_CAPTURE:
+        actual = {**actual, "metadata": without_unit_t_advisory(actual["metadata"])}
     modes = _assert_outcome_matches(
         _migrated_capture(scenario_id, ingress, expected),
         actual,

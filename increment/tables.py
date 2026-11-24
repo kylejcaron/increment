@@ -47,6 +47,7 @@ from increment.estimation.results import (
     LiftEstimate,
     _outward,
     _selection_qualification,
+    contrast_p_value,
     conversion_route_label,
     row_decision_available,
     row_decision_scale,
@@ -375,23 +376,25 @@ def contrast_results_to_readout(
     for result in results:
         estimate = result.estimate
         stat_sig = contrast_stat_sig(result)
+        lower = None if estimate is None else estimate.lb
+        upper = None if estimate is None else estimate.ub
         rows.append(
             {
                 "metric": result.metric,
                 "method": result.method,
                 "method_role": result.method_role,
-                "lift": estimate.value,
-                "lower": estimate.lb,
-                "higher": estimate.ub,
-                "level": estimate.level,
+                "lift": None if estimate is None else estimate.value,
+                "lower": lower,
+                "higher": upper,
+                "level": None if estimate is None else estimate.level,
                 "stat_sig": stat_sig,
                 "group_id": result.treatment_group,
                 "control_group": result.control_group,
                 "treatment_group": result.treatment_group,
                 "null_lift": 0.0,
                 "null_abs": result.null_abs,
-                "abs_lb": estimate.lb,
-                "abs_ub": estimate.ub,
+                "abs_lb": lower,
+                "abs_ub": upper,
                 "estimand": result.estimand,
                 "value_scale": "absolute",
                 "preferred_direction": result.preferred_direction,
@@ -419,8 +422,8 @@ def contrast_results_to_readout(
                 "dof": result.dof,
                 "alternative": result.alternative,
                 "alpha": result.alpha,
-                "coverage_alpha": estimate.alpha,
-                "open_side": estimate.open_side,
+                "coverage_alpha": None if estimate is None else estimate.alpha,
+                "open_side": None if estimate is None else estimate.open_side,
                 "dof_unavailable_reason": result.dof_unavailable_reason,
                 "standard_error_unavailable_reason": result.standard_error_unavailable_reason,
                 "mean_slope": result.mean_slope,
@@ -430,7 +433,9 @@ def contrast_results_to_readout(
                 "effective_alpha": result.effective_alpha,
                 "source_snapshot_id": result.source_snapshot_id,
                 "metric_type": result.metric_type,
-                "decision_scope_complete": result.decision_scope_complete,
+                "decision_scope_complete": (
+                    result.decision_scope_complete if result.sampling_available else False
+                ),
                 "decision_scope_reason_code": result.decision_scope_reason_code,
                 "decision_scope_reason_context": result.decision_scope_reason_context,
                 "refusal_probability_upper": result.refusal_probability_upper,
@@ -456,6 +461,29 @@ def contrast_results_to_readout(
                 "family_size": None,
             }
         )
+        if (qualification := result.reference_qualification) is not None:
+            rows[-1]["reference_qualification"] = qualification
+        if result.randomization_law == "fixed_count":
+            rows[-1].update(
+                periods_per_cycle=result.periods_per_cycle,
+                treated_periods=result.treated_periods,
+                treatment_probability=result.treatment_probability,
+            )
+        if result.forecast_column is not None:
+            rows[-1]["forecast_column"] = result.forecast_column
+        if (
+            result.randomization_law == "fixed_count"
+            or result.aggregation == "ratio"
+            or result.forecast_column is not None
+        ):
+            rows[-1]["p_value"] = contrast_p_value(result)
+        if not result.sampling_available:
+            rows[-1].update(
+                failure_code=result.sampling_reason_code,
+                failure_context=result.sampling_reason_context,
+                point_available=estimate is not None,
+                sampling_available=False,
+            )
     return rows
 
 
@@ -1078,6 +1106,9 @@ def _row_caveats(
     note = row.get("note")
     if not _is_missing(note) and str(note):
         caveats.append(_ReadoutCaveat("note", str(note)))
+    reference_note = row.get("reference_qualification")
+    if not _is_missing(reference_note):
+        caveats.append(_ReadoutCaveat("note", str(reference_note)))
     low_reliability = row.get("low_reliability")
     if not _is_missing(low_reliability) and bool(low_reliability):
         caveats.append(

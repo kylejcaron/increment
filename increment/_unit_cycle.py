@@ -1,20 +1,21 @@
-"""Shared admission and prospective residual-envelope arithmetic.
+"""Shared switchback reference, admission and prospective envelope arithmetic.
 
-Only mathematical design inputs enter these cached calculations. No observed
-variance is used to create or replace a scientific envelope.
+Fixed-count analysis and planning use the same replicate moments and null test.
+No observed variance is used to create or replace a prospective envelope.
 """
 
 from __future__ import annotations
 
 import math
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_HALF_EVEN, Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 from functools import lru_cache
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
-from increment._literals import ALTERNATIVE_VALUES
+from increment._literals import ALTERNATIVE_VALUES, Alternative
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
 
@@ -62,6 +63,73 @@ def _float_outward(value: Fraction, *, upper: bool) -> float:
     if not math.isfinite(result):
         _refuse("unit_cycle.numerical", reason="outward_float_unrepresentable")
     return result
+
+
+def _fixed_count_moments(
+    numerators: Iterable[Fraction | int], n: int, denominator: int
+) -> tuple[Fraction, float]:
+    """Total and centered sum of squares for x_i = numerator_i / denominator.
+
+    Accumulate offsets from one exact numerator; do not round a replicate or
+    materialize a second copy. Both sums are rational, so the reduction does
+    not depend on which replicate comes first.
+    """
+    values = iter(numerators)
+    origin = next(values)
+    total: Fraction | int = 0
+    squares: Fraction | int = 0
+    for value in values:
+        offset = value - origin
+        total += offset
+        squares += offset * offset
+    m2 = (squares - total * Fraction(total, n)) / Fraction(denominator**2)
+    rounded_m2 = float(m2)
+    if m2 and not rounded_m2:
+        raise OverflowError("nonzero centered sum of squares is below binary64 range")
+    return Fraction(n * origin + total, denominator), rounded_m2
+
+
+def _fixed_count_t_test(
+    center: Fraction,
+    se: float,
+    dof: float,
+    critical: float,
+    *,
+    null_abs: float,
+    alternative: Alternative,
+) -> tuple[float, float, float, Literal["greater", "less", "split"]]:
+    """Test the declared null, not the rounded point or outward display bounds.
+
+    For a positive SE and a finite t critical value, enclose the endpoints
+    relative to those binary64 reference quantities. Round the standardized
+    difference only after subtracting the null and dividing by the SE.
+    """
+    p, side = _centered_t_tail(center, se, dof, null_abs=null_abs, alternative=alternative)
+    half = Fraction(critical) * Fraction(se)
+    lower = _float_outward(center - half, upper=False)
+    upper = _float_outward(center + half, upper=True)
+    return lower, upper, p, side
+
+
+def _centered_t_tail(
+    center: Fraction, se: float, dof: float, *, null_abs: float, alternative: Alternative
+) -> tuple[float, Literal["greater", "less", "split"]]:
+    """Round (estimate - null) / SE once, using the supplied binary64 standard error."""
+    from scipy.special import stdtr
+
+    distance = center - Fraction(null_abs)
+    try:
+        statistic = float(distance / Fraction(se))
+    except OverflowError:
+        statistic = math.inf if distance > 0 else -math.inf
+    if alternative == "two-sided":
+        p = 2 * stdtr(dof, -abs(statistic))
+    else:
+        p = stdtr(dof, -statistic if alternative == "greater" else statistic)
+    side: Literal["greater", "less", "split"] = (
+        "greater" if distance > 0 else "less" if distance < 0 else "split"
+    )
+    return float(p), side
 
 
 FINITE_MAX = Fraction(sys.float_info.max)
@@ -257,9 +325,9 @@ def unit_cycle_envelope_cutoff(
         _refuse("unit_cycle.invalid_design", reason="alpha must be in (0,1)")
     if alternative not in ALTERNATIVE_VALUES:
         _refuse("unit_cycle.invalid_design", reason="unsupported alternative")
-    rule = unit_cycle_admission_rule(
-        n * envelope.cycles_per_unit, envelope.assignment.sequence.probability_ct
-    )
+    sequence = envelope.assignment.sequence
+    assert sequence.scheme == "independent_bernoulli_order"  # validated by the envelope
+    rule = unit_cycle_admission_rule(n * envelope.cycles_per_unit, sequence.probability_ct)
     remaining = Fraction(alpha) - Fraction(rule.refusal_probability_upper)
     if remaining <= 0:
         _refuse(

@@ -32,10 +32,12 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Shared definition: completed-order ratio | [not comparable](#capability-ingresses-shared-warehouse-metric-from_unit_summary) | [not comparable](#capability-ingresses-shared-warehouse-metric-from_unit_panel) | [not comparable](#capability-ingresses-shared-warehouse-metric-from_switchback_panel) | [supported](#capability-ingresses-shared-warehouse-metric-from_definitions) | [supported](#capability-ingresses-shared-warehouse-metric-from_unit_day_artifact) | [not comparable](#capability-ingresses-shared-warehouse-metric-from_moments) |
 | Declared + exploratory metrics in one physical capture | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_unit_summary) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_unit_panel) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_switchback_panel) | [supported (conditional)](#capability-ingresses-shared-capture-exploratory-from_definitions) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-shared-capture-exploratory-from_moments) |
 | Whole-window + daily scopes in one physical capture | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_summary) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_panel) | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_switchback_panel) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_definitions) | [supported (conditional)](#capability-ingresses-shared-capture-multiview-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-shared-capture-multiview-from_moments) |
-| Mean CUPED, fixed horizon | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-mean-cuped-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_definitions) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_moments) |
+| Mean CUPED, fixed horizon | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_panel) | [supported / refused (conditional)](#capability-ingresses-mean-cuped-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_definitions) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-mean-cuped-fixed-horizon-from_moments) |
 | Ratio CUPED, fixed horizon | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-ratio-cuped-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_definitions) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-ratio-cuped-fixed-horizon-from_moments) |
 | Mixed-covariate CUPED, fixed-horizon mean/ratio | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_summary) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_panel) | [source limited (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_switchback_panel) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_definitions) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-mixed-covariate-cuped-fixed-horizon-from_moments) |
-| Ratio denominator-precision advisory, fixed horizon | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_summary) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_panel) | [refused](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_switchback_panel) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_definitions) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_moments) |
+| Unadjusted ratio, fixed horizon | [supported](#capability-ingresses-ratio-fixed-horizon-from_unit_summary) | [supported](#capability-ingresses-ratio-fixed-horizon-from_unit_panel) | [supported (conditional)](#capability-ingresses-ratio-fixed-horizon-from_switchback_panel) | [supported](#capability-ingresses-ratio-fixed-horizon-from_definitions) | [supported](#capability-ingresses-ratio-fixed-horizon-from_unit_day_artifact) | [supported](#capability-ingresses-ratio-fixed-horizon-from_moments) |
+| Fixed-horizon decisions with an explicit multiplicity policy | [supported](#capability-ingresses-fixed-horizon-decision-multiplicity-from_unit_summary) | [supported](#capability-ingresses-fixed-horizon-decision-multiplicity-from_unit_panel) | [refused (conditional)](#capability-ingresses-fixed-horizon-decision-multiplicity-from_switchback_panel) | [supported](#capability-ingresses-fixed-horizon-decision-multiplicity-from_definitions) | [supported](#capability-ingresses-fixed-horizon-decision-multiplicity-from_unit_day_artifact) | [supported](#capability-ingresses-fixed-horizon-decision-multiplicity-from_moments) |
+| Ratio denominator precision, fixed horizon | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_summary) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_panel) | [unavailable (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_switchback_panel) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_definitions) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_moments) |
 | Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_unit_summary) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_unit_panel) | [not comparable (conditional)](#capability-ingresses-informative-log-lift-priors-from_switchback_panel) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_definitions) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-informative-log-lift-priors-from_moments) |
 | Relative Normal/Student-t/mixture priors, fixed-horizon mean/ratio/conversion/mean CUPED | [supported (conditional)](#capability-ingresses-informative-relative-lift-priors-from_unit_summary) | [supported (conditional)](#capability-ingresses-informative-relative-lift-priors-from_unit_panel) | [not comparable (conditional)](#capability-ingresses-informative-relative-lift-priors-from_switchback_panel) | [supported (conditional)](#capability-ingresses-informative-relative-lift-priors-from_definitions) | [supported (conditional)](#capability-ingresses-informative-relative-lift-priors-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-informative-relative-lift-priors-from_moments) |
 | Relative Normal prior on breakout rows | [supported](#capability-ingresses-relative-prior-breakout-from_unit_summary) | [supported](#capability-ingresses-relative-prior-breakout-from_unit_panel) | [not comparable](#capability-ingresses-relative-prior-breakout-from_switchback_panel) | [supported](#capability-ingresses-relative-prior-breakout-from_definitions) | [supported](#capability-ingresses-relative-prior-breakout-from_unit_day_artifact) | [refused](#capability-ingresses-relative-prior-breakout-from_moments) |
@@ -47,7 +49,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Pooled percentile winsorization, fixed horizon, default size route | [supported (conditional)](#capability-ingresses-pooled-percentile-winsor-routes-from_unit_summary) | [refused (conditional)](#capability-ingresses-pooled-percentile-winsor-routes-from_unit_panel) | [refused](#capability-ingresses-pooled-percentile-winsor-routes-from_switchback_panel) | [supported (conditional)](#capability-ingresses-pooled-percentile-winsor-routes-from_definitions) | [supported (conditional)](#capability-ingresses-pooled-percentile-winsor-routes-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-pooled-percentile-winsor-routes-from_moments) |
 | Ratio metric under sequential inference | [supported](#capability-ingresses-ratio-sequential-from_unit_summary) | [supported](#capability-ingresses-ratio-sequential-from_unit_panel) | [refused](#capability-ingresses-ratio-sequential-from_switchback_panel) | [supported](#capability-ingresses-ratio-sequential-from_definitions) | [supported](#capability-ingresses-ratio-sequential-from_unit_day_artifact) | [supported](#capability-ingresses-ratio-sequential-from_moments) |
 | CUPED under sequential inference | [supported (conditional)](#capability-ingresses-mean-cuped-sequential-from_unit_summary) | [refused](#capability-ingresses-mean-cuped-sequential-from_unit_panel) | [refused](#capability-ingresses-mean-cuped-sequential-from_switchback_panel) | [supported](#capability-ingresses-mean-cuped-sequential-from_definitions) | [supported](#capability-ingresses-mean-cuped-sequential-from_unit_day_artifact) | [supported](#capability-ingresses-mean-cuped-sequential-from_moments) |
-| Ratio CUPED under sequential inference | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_unit_summary) | [refused (conditional)](#capability-ingresses-ratio-cuped-sequential-from_unit_panel) | [refused](#capability-ingresses-ratio-cuped-sequential-from_switchback_panel) | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_definitions) | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_moments) |
+| Ratio CUPED under sequential inference | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_unit_summary) | [refused (conditional)](#capability-ingresses-ratio-cuped-sequential-from_unit_panel) | [refused (conditional)](#capability-ingresses-ratio-cuped-sequential-from_switchback_panel) | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_definitions) | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-ratio-cuped-sequential-from_moments) |
 | Bounded conversion under asymptotic sequential inference | [supported (conditional)](#capability-ingresses-bounded-conversion-asymptotic-sequential-from_unit_summary) | [supported (conditional)](#capability-ingresses-bounded-conversion-asymptotic-sequential-from_unit_panel) | [refused](#capability-ingresses-bounded-conversion-asymptotic-sequential-from_switchback_panel) | [supported (conditional)](#capability-ingresses-bounded-conversion-asymptotic-sequential-from_definitions) | [supported (conditional)](#capability-ingresses-bounded-conversion-asymptotic-sequential-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-bounded-conversion-asymptotic-sequential-from_moments) |
 | Bounded retention (a start and end threshold) under asymptotic sequential inference | [refused](#capability-ingresses-bounded-retention-asymptotic-sequential-from_unit_summary) | [supported](#capability-ingresses-bounded-retention-asymptotic-sequential-from_unit_panel) | [refused](#capability-ingresses-bounded-retention-asymptotic-sequential-from_switchback_panel) | [supported](#capability-ingresses-bounded-retention-asymptotic-sequential-from_definitions) | [supported](#capability-ingresses-bounded-retention-asymptotic-sequential-from_unit_day_artifact) | [supported](#capability-ingresses-bounded-retention-asymptotic-sequential-from_moments) |
 | Bounded conversion under automatic exact Bernoulli monitoring without a registration | [supported (conditional)](#capability-ingresses-bounded-conversion-exact-bernoulli-from_unit_summary) | [supported (conditional)](#capability-ingresses-bounded-conversion-exact-bernoulli-from_unit_panel) | [refused](#capability-ingresses-bounded-conversion-exact-bernoulli-from_switchback_panel) | [supported (conditional)](#capability-ingresses-bounded-conversion-exact-bernoulli-from_definitions) | [supported (conditional)](#capability-ingresses-bounded-conversion-exact-bernoulli-from_unit_day_artifact) | [supported (conditional)](#capability-ingresses-bounded-conversion-exact-bernoulli-from_moments) |
@@ -422,15 +424,25 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Recorded path:** `from_switchback_panel`
 
-**Status:** refused
+**Condition:** separate pre-assignment forecasts
 
-**Classification:** SOURCE
+**Status:** supported
+
+**Reason:** runs; its fixed-horizon contrast is a different estimand, exercised on its own and never row-compared with the matched-arm ingresses once the request declares a separate table of retained-window forecasts fixed before assignment
+
+**Stage:** request
+
+**Condition:** the predictor column is present only in the response frame
+
+**Status:** refused
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback procedures apply no decision-method variance reduction
+**Reason:** A response column does not establish when the forecast was fixed.
 
-**Stage:** declaration
+**Operation:** `mean CUPED without a separate pre-assignment forecast table`
+
+**Stage:** construction
 
 <span id="capability-ingresses-mean-cuped-fixed-horizon-from_definitions"></span>
 
@@ -485,11 +497,11 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Status:** refused
 
-**Classification:** SOURCE
+**Classification:** CONSTRUCTION
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** forecast adjustment fits a signed retained-total difference for a mean, not a conversion probability or a difference of arm rates
 
 **Stage:** declaration
 
@@ -619,13 +631,155 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 **Stage:** read
 
 
+<span id="capability-ingresses-ratio-fixed-horizon"></span>
+
+### Unadjusted ratio, fixed horizon
+
+<span id="capability-ingresses-ratio-fixed-horizon-from_unit_summary"></span>
+
+#### Unadjusted ratio, fixed horizon — Unit summary
+
+**Recorded path:** `from_unit_summary`
+
+**Status:** supported
+
+**Reason:** runs and agrees with every other running matched-arm ingress
+
+**Stage:** request
+
+<span id="capability-ingresses-ratio-fixed-horizon-from_unit_panel"></span>
+
+#### Unadjusted ratio, fixed horizon — Unit panel
+
+**Recorded path:** `from_unit_panel`
+
+**Status:** supported
+
+**Reason:** runs and agrees with every other running matched-arm ingress
+
+**Stage:** request
+
+<span id="capability-ingresses-ratio-fixed-horizon-from_switchback_panel"></span>
+
+#### Unadjusted ratio, fixed horizon — Switchback panel
+
+**Recorded path:** `from_switchback_panel`
+
+**Condition:** treatment rate minus control rate
+
+**Status:** supported
+
+**Reason:** runs; its fixed-horizon contrast is a different estimand, exercised on its own and never row-compared with the matched-arm ingresses
+
+**Stage:** request
+
+<span id="capability-ingresses-ratio-fixed-horizon-from_definitions"></span>
+
+#### Unadjusted ratio, fixed horizon — Definitions
+
+**Recorded path:** `from_definitions`
+
+**Status:** supported
+
+**Reason:** runs and agrees with every other running matched-arm ingress
+
+**Stage:** request
+
+<span id="capability-ingresses-ratio-fixed-horizon-from_unit_day_artifact"></span>
+
+#### Unadjusted ratio, fixed horizon — Unit-day artifact
+
+**Recorded path:** `from_unit_day_artifact`
+
+**Status:** supported
+
+**Reason:** runs and agrees with every other running matched-arm ingress
+
+**Stage:** request
+
+<span id="capability-ingresses-ratio-fixed-horizon-from_moments"></span>
+
+#### Unadjusted ratio, fixed horizon — Portable moments
+
+**Recorded path:** `from_moments`
+
+**Status:** supported
+
+**Reason:** runs and agrees with every other running matched-arm ingress
+
+**Stage:** request
+
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity"></span>
+
+### Fixed-horizon decisions with an explicit multiplicity policy
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity-from_unit_summary"></span>
+
+#### Fixed-horizon decisions with an explicit multiplicity policy — Unit summary
+
+**Recorded path:** `from_unit_summary`
+
+**Status:** supported
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity-from_unit_panel"></span>
+
+#### Fixed-horizon decisions with an explicit multiplicity policy — Unit panel
+
+**Recorded path:** `from_unit_panel`
+
+**Status:** supported
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity-from_switchback_panel"></span>
+
+#### Fixed-horizon decisions with an explicit multiplicity policy — Switchback panel
+
+**Recorded path:** `from_switchback_panel`
+
+**Condition:** explicit plan q or Bonferroni view correction
+
+**Status:** refused
+
+**Codes:** `source.frame.switchback.plan`
+
+**Reason:** A switchback can report multiple metrics but does not adjust a decision family.
+
+**Operation:** `declare a fixed-horizon switchback plan`
+
+**Stage:** construction
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity-from_definitions"></span>
+
+#### Fixed-horizon decisions with an explicit multiplicity policy — Definitions
+
+**Recorded path:** `from_definitions`
+
+**Status:** supported
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity-from_unit_day_artifact"></span>
+
+#### Fixed-horizon decisions with an explicit multiplicity policy — Unit-day artifact
+
+**Recorded path:** `from_unit_day_artifact`
+
+**Status:** supported
+
+<span id="capability-ingresses-fixed-horizon-decision-multiplicity-from_moments"></span>
+
+#### Fixed-horizon decisions with an explicit multiplicity policy — Portable moments
+
+**Recorded path:** `from_moments`
+
+**Status:** supported
+
+
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon"></span>
 
-### Ratio denominator-precision advisory, fixed horizon
+### Ratio denominator precision, fixed horizon
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_summary"></span>
 
-#### Ratio denominator-precision advisory, fixed horizon — Unit summary
+#### Ratio denominator precision, fixed horizon — Unit summary
 
 **Recorded path:** `from_unit_summary`
 
@@ -639,7 +793,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_panel"></span>
 
-#### Ratio denominator-precision advisory, fixed horizon — Unit panel
+#### Ratio denominator precision, fixed horizon — Unit panel
 
 **Recorded path:** `from_unit_panel`
 
@@ -653,23 +807,25 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_switchback_panel"></span>
 
-#### Ratio denominator-precision advisory, fixed horizon — Switchback panel
+#### Ratio denominator precision, fixed horizon — Switchback panel
 
 **Recorded path:** `from_switchback_panel`
 
-**Status:** refused
+**Condition:** the denominator is nonzero but its marginal t interval includes zero
 
-**Classification:** SOURCE
+**Status:** unavailable
 
-**Codes:** `source.frame.switchback.metric`
+**Codes:** `evidence.p_value.unavailable`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** The absolute rate difference keeps its point but has no sampling interval or decision.
 
-**Stage:** declaration
+**Operation:** `sampling inference for a retained-window ratio difference`
+
+**Stage:** read
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_definitions"></span>
 
-#### Ratio denominator-precision advisory, fixed horizon — Definitions
+#### Ratio denominator precision, fixed horizon — Definitions
 
 **Recorded path:** `from_definitions`
 
@@ -683,7 +839,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_unit_day_artifact"></span>
 
-#### Ratio denominator-precision advisory, fixed horizon — Unit-day artifact
+#### Ratio denominator precision, fixed horizon — Unit-day artifact
 
 **Recorded path:** `from_unit_day_artifact`
 
@@ -697,7 +853,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 <span id="capability-ingresses-ratio-denominator-advisory-fixed-horizon-from_moments"></span>
 
-#### Ratio denominator-precision advisory, fixed horizon — Portable moments
+#### Ratio denominator precision, fixed horizon — Portable moments
 
 **Recorded path:** `from_moments`
 
@@ -1122,7 +1278,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Classification:** SOURCE
 
-**Reason:** switchback metrics must be type='mean' or type='conversion'; quantile is refused before any frame is read (confirmed live: source.frame.switchback.metric).
+**Reason:** a switchback panel cannot estimate a quantile contrast.
 
 <span id="capability-ingresses-relative-prior-quantile-from_definitions"></span>
 
@@ -1555,9 +1711,9 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Classification:** SOURCE
 
-**Codes:** `source.frame.switchback.metric`
+**Codes:** `source.frame.switchback.plan`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** switchback contrasts support fixed inference only
 
 **Stage:** declaration
 
@@ -1745,15 +1901,17 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Recorded path:** `from_switchback_panel`
 
-**Status:** refused
+**Condition:** ratio adjustment is checked before the sequential plan
 
-**Classification:** SOURCE
+**Status:** refused
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** Only a mean accepts the scalar forecast adjustment.
 
-**Stage:** declaration
+**Operation:** `declare a CUPED ratio with sequential monitoring`
+
+**Stage:** construction
 
 <span id="capability-ingresses-ratio-cuped-sequential-from_definitions"></span>
 
@@ -1943,7 +2101,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** a switchback frame has no retention or quantile contrast
 
 **Stage:** declaration
 
@@ -2123,7 +2281,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** a switchback frame has no retention or quantile contrast
 
 **Stage:** declaration
 
@@ -2299,7 +2457,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** a switchback frame has no retention or quantile contrast
 
 **Stage:** declaration
 
@@ -2485,7 +2643,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback source only constructs its supported mean/conversion metrics
+**Reason:** the switchback source has no retention contrast
 
 **Operation:** `sequential retention with threshold_days=int`
 
@@ -5769,7 +5927,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics must be a mean or a conversion
+**Reason:** a switchback frame has no retention or quantile contrast
 
 **Stage:** declaration
 
@@ -5876,7 +6034,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Classification:** SOURCE
 
-**Reason:** switchback accepts only mean/conversion metrics and refuses a quantile catalog (source.frame.switchback.metric); it also has no registered sequential construction. This dataset has no switchback schedule.
+**Reason:** switchback panels have neither a quantile contrast nor sequential inference. This dataset has no switchback schedule.
 
 <span id="capability-ingresses-quantile-checkpoint-retention-from_definitions"></span>
 
@@ -6545,7 +6703,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 
 **Codes:** `source.frame.switchback.metric`
 
-**Reason:** switchback metrics are mean or conversion only
+**Reason:** a switchback panel does not identify a quantile contrast
 
 **Operation:** `planning_baseline(quantile)`
 

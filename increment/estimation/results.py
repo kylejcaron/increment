@@ -2743,14 +2743,49 @@ def contrast_evidence_available(result: ContrastResult) -> bool:
     )
 
 
-def contrast_stat_sig(result: ContrastResult) -> bool:
-    """Return the contrast's table/readout decision verdict."""
+def _contrast_residual_p_value(result: ContrastResult) -> float | None:
+    """Read a stored residual tail only for the reference that produced it."""
+    if result.method == "switchback_unit_variance_envelope" or (
+        result.residual_side is not None
+        and (
+            result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t")
+            or (
+                result.randomization_law == "fixed_count"
+                and result.method in ("switchback_block_t", "switchback_unit_t_approximation")
+            )
+        )
+    ):
+        return result.residual_p_value
+    return None
+
+
+def contrast_p_value(result: ContrastResult) -> float | None:
+    """Sampling tail against the contrast's declared additive null."""
     if not contrast_evidence_available(result):
-        return False
+        return None
+    if (p := _contrast_residual_p_value(result)) is not None:
+        return p
+    assert result.estimate is not None and result.standard_error is not None
+    point, se, null = result.estimate.value, result.standard_error, result.null_abs
+    if not math.isfinite(point - null):
+        # Opposite-signed levels may overflow before division even when t is finite.
+        point, null, se = point / se, null / se, 1.0
+    return _additive_tail_p_value(point, se, null, result.alternative, result.dof)
+
+
+def contrast_stat_sig(result: ContrastResult) -> bool | None:
+    """Return the contrast's table/readout decision verdict."""
+    if not result.sampling_available:
+        return None
+    if result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t"):
+        p = contrast_p_value(result)
+        return None if p is None else p < result.alpha
+    if not contrast_evidence_available(result):
+        return None
     estimate = result.estimate
-    if result.method == "switchback_unit_variance_envelope":
-        assert result.residual_p_value is not None
-        return result.residual_p_value < result.alpha
+    assert estimate is not None
+    if (p := _contrast_residual_p_value(result)) is not None:
+        return p < result.alpha
     if result.alternative == "greater":
         return estimate.lb is not None and estimate.lb > result.null_abs
     if result.alternative == "less":
@@ -2766,19 +2801,20 @@ def contrast_rejection_side(result: ContrastResult) -> RejectionSide | None:
     """The side of its null the contrast's rejection lies on; ``None`` exactly when
     :func:`contrast_stat_sig` is False.
 
-    The envelope's point is the retained-window total, whose effect is the point
-    over the positive slope, so its side is the sign of the exact residual
-    ``point - null_abs * slope`` its p-value tests, recorded when the evidence was
-    computed; the stored point and slope are roundings that can flip that sign.
+    Rounded points and bounds can reach the null even when a centered test rejects.
+    Use the sign recorded with its tail.
     """
     if not contrast_stat_sig(result):
         return None
     estimate = result.estimate
+    assert estimate is not None
     if result.alternative != "two-sided":
         return result.alternative
-    if result.method == "switchback_unit_variance_envelope":
+    if _contrast_residual_p_value(result) is not None:
         assert result.residual_side is not None
         return result.residual_side
+    if result.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t"):
+        return "greater" if estimate.value > result.null_abs else "less"
     if estimate.lb is not None and estimate.lb > result.null_abs:
         return "greater"
     return "less"

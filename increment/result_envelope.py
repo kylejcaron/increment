@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
@@ -68,7 +68,24 @@ def _safe_projection_fields(row: LiftEstimate) -> dict[str, Any]:
     return {name: row_fields[name] for name in _PROJECTION_FIELDS if name in row_fields}
 
 
+_TYPED_REPORT_MODELS = {
+    "breakout": "BreakoutEstimate",
+    "daily_metric": "DailyMetricValue",
+    "asof_metric": "DailyMetricValue",
+    "daily_lift": "DailyLiftEstimate",
+    "asof_lift": "DailyLiftEstimate",
+    "switchback_variance": "ContrastResult",
+    "switchback_unit_t_approximation": "ContrastResult",
+    "switchback_block_t": "ContrastResult",
+    "switchback_unit_variance_envelope": "ContrastResult",
+    "switchback_ratio_delta_t": "ContrastResult",
+    "switchback_cuped_jackknife_t": "ContrastResult",
+}
+
+
 def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
+    if identity.key.kind == "contrast" and getattr(row, "sampling_available", None) is False:
+        return project_effect(row)
     if hasattr(row, "lift"):
         effect = project_effect(row)
         reason = next(
@@ -160,23 +177,13 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
 def _restore_typed_report_row(row_kind: str, row_payload: Mapping[str, Any]) -> Any:
     from importlib import import_module
 
+    model_name = _TYPED_REPORT_MODELS[row_kind]
     module_name = (
         "increment.breakout.estimates"
-        if row_kind in {"breakout", "daily_metric", "asof_metric", "daily_lift", "asof_lift"}
+        if model_name != "ContrastResult"
         else "increment.estimation.contrast_results"
     )
     module = import_module(module_name)
-    model_name = {
-        "breakout": "BreakoutEstimate",
-        "daily_metric": "DailyMetricValue",
-        "asof_metric": "DailyMetricValue",
-        "daily_lift": "DailyLiftEstimate",
-        "asof_lift": "DailyLiftEstimate",
-        "switchback_variance": "ContrastResult",
-        "switchback_unit_t_approximation": "ContrastResult",
-        "switchback_block_t": "ContrastResult",
-        "switchback_unit_variance_envelope": "ContrastResult",
-    }[row_kind]
     return getattr(module, model_name).model_validate_json(_json(_plain(row_payload["data"])))
 
 
@@ -310,6 +317,13 @@ class ResultCell:
     row_kind: str = "lift_estimate"
     row_payload: Mapping[str, JsonValue] | None = None
     posterior_queries: tuple[_PosteriorQueryProjection, ...] = ()
+    # Keep historical serialized projections for manifest checks, not for current reporting.
+    _saved_projection: tuple[Component, EffectEstimate | None] | None = field(
+        default=None, repr=False, compare=False
+    )
+    _derived_projection: tuple[Component, EffectEstimate | None] | None = field(
+        default=None, repr=False, compare=False
+    )
     supports: Mapping[Literal["sampling", "posterior", "sequential"], frozenset[Operation]] = field(
         init=False
     )
@@ -327,17 +341,9 @@ class ResultCell:
         )
         allowed_row_kinds = {
             "lift_estimate",
-            "breakout",
-            "daily_lift",
-            "daily_metric",
-            "asof_lift",
-            "asof_metric",
+            *_TYPED_REPORT_MODELS,
             "cate",
-            "switchback_variance",
             "cate_validation",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
             "sensitivity",
             "targeting",
             "targeting_selection",
@@ -855,17 +861,7 @@ class ResultCell:
         )
         if state is not None:
             return _restore_row(state.fields)
-        if self.row_payload is not None and self.row_kind in {
-            "breakout",
-            "daily_metric",
-            "asof_metric",
-            "daily_lift",
-            "asof_lift",
-            "switchback_variance",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
-        }:
+        if self.row_payload is not None and self.row_kind in _TYPED_REPORT_MODELS:
             row = _restore_typed_report_row(self.row_kind, self.row_payload)
             status = self.components["sampling"][0]
             if status.code != _UNRECORDED_SAMPLING:
@@ -945,7 +941,14 @@ class ResultCell:
             **dict(projection),
         )
 
+    def _serialized_projection(self) -> tuple[Component, EffectEstimate | None]:
+        current = (self.components["sampling"], self.summary)
+        if self._saved_projection is not None and self._derived_projection == current:
+            return self._saved_projection
+        return current
+
     def to_payload(self) -> dict[str, JsonValue]:
+        sampling, summary = self._serialized_projection()
         sampling_state = self.components["sampling"][1]
         if sampling_state is None:
             row_payload = None
@@ -953,6 +956,8 @@ class ResultCell:
             row_payload = _plain(sampling_state.fields)
         comps: dict[str, JsonValue] = {}
         for name, (status, state) in self.components.items():
+            if name == "sampling":
+                status, state = sampling
             component: dict[str, JsonValue] = {
                 "status": {
                     "state": status.state,
@@ -1004,19 +1009,7 @@ class ResultCell:
                     self.provenance.source_declaration_identity_unavailable_reason
                 ),
             },
-            "summary": None
-            if self.summary is None
-            else {
-                "point": self.summary.point,
-                "lower": self.summary.lower,
-                "upper": self.summary.upper,
-                "alpha": self.summary.alpha,
-                "value_scale": self.summary.value_scale,
-                "reason": self.summary.reason,
-                "geometry": self.summary.geometry,
-                "intervals": self.summary.intervals,
-                "qualification": self.summary.qualification,
-            },
+            "summary": None if summary is None else asdict(summary),
         }
 
     @classmethod
@@ -1130,17 +1123,7 @@ class ResultCell:
             summary_data["intervals"] = tuple(
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
-        typed_report_rows = {
-            "breakout",
-            "daily_metric",
-            "asof_metric",
-            "daily_lift",
-            "asof_lift",
-            "switchback_variance",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
-        }
+        saved_projection = derived_projection = None
         if row is not None:
             sampling_state = components["sampling"][0].state
             sequential_state = components["sequential"][0].state
@@ -1149,9 +1132,30 @@ class ResultCell:
                 if sampling_state in {"available", "advisory"} or sequential_state == "available"
                 else None
             )
-        elif row_payload is not None and row_kind in typed_report_rows:
+        elif row_payload is not None and row_kind in _TYPED_REPORT_MODELS:
             typed_row = _restore_typed_report_row(row_kind, row_payload)
             summary = _report_summary(typed_row, identity)
+            if (
+                identity.key.kind == "contrast"
+                and not typed_row.sampling_available
+                and typed_row.failure_code is None
+            ):
+                saved_projection = (
+                    components["sampling"],
+                    None if summary_data is None else EffectEstimate(**summary_data),
+                )
+                code = typed_row.sampling_reason_code
+                context = typed_row.sampling_reason_context
+                components["sampling"] = (
+                    ComponentStatus(
+                        "unavailable",
+                        code=code,
+                        reason=_failure_text(code, context, typed_row.metric),
+                        context=context,
+                    ),
+                    None,
+                )
+                derived_projection = (components["sampling"], summary)
         else:
             summary = None if summary_data is None else EffectEstimate(**summary_data)
         return cls(
@@ -1167,6 +1171,8 @@ class ResultCell:
             projection_fields=saved.get("projection_fields") or {},
             row_kind=row_kind,
             row_payload=row_payload,
+            _saved_projection=saved_projection,
+            _derived_projection=derived_projection,
             posterior_queries=tuple(
                 _PosteriorQueryProjection.model_validate(query)
                 for query in saved.get("posterior_queries", ())
@@ -1175,9 +1181,18 @@ class ResultCell:
 
     @staticmethod
     def to_arrow(cells: Sequence[ResultCell]) -> pa.Table:
+        return ResultCell._to_arrow(cells, preserve_saved=False)
+
+    @staticmethod
+    def _to_arrow(cells: Sequence[ResultCell], *, preserve_saved: bool) -> pa.Table:
         rows = []
         for cell in cells:
             payload = cell.to_payload()
+            sampling, summary = (
+                cell._serialized_projection()
+                if preserve_saved
+                else (cell.components["sampling"], cell.summary)
+            )
             entry: dict[str, Any] = {
                 "schema_version": _SCHEMA_VERSION,
                 "row_kind": payload["row_kind"],
@@ -1186,7 +1201,7 @@ class ResultCell:
                 "family": None if cell.family is None else _json(cell.family),
                 "source_snapshot_id": cell.source_snapshot_id,
                 "provenance": _json(payload["provenance"]),
-                "summary": None if cell.summary is None else _json(payload["summary"]),
+                "summary": None if summary is None else _json(asdict(summary)),
                 "point": None if cell.summary is None else cell.summary.point,
                 "lower": None if cell.summary is None else cell.summary.lower,
                 "upper": None if cell.summary is None else cell.summary.upper,
@@ -1214,6 +1229,8 @@ class ResultCell:
                 ]
             for name in ("sampling", "posterior", "sequential"):
                 status, state = cell.components[name]
+                if name == "sampling":
+                    status, state = sampling
                 entry[name] = {
                     "status": status.state,
                     "code": status.code,
@@ -1935,6 +1952,21 @@ class AnalysisEnvelope:
     cells: tuple[ResultCell, ...]
     metadata: ReadoutMetadata | None
 
+    def __post_init__(self) -> None:
+        if self.metadata is not None:
+            unavailable = tuple(
+                (cell.source_snapshot_id, cell.identity.key)
+                for cell in self.cells
+                if cell.source_snapshot_id is not None
+                and cell.components["sampling"][0].state == "unavailable"
+            )
+            if unavailable:
+                object.__setattr__(
+                    self,
+                    "metadata",
+                    self.metadata.model_copy()._qualify_sampling_scope(unavailable),
+                )
+
     def to_payload(self, *, include_capture_metadata: bool = False) -> dict[str, JsonValue]:
         metadata = None if self.metadata is None else self.metadata.model_dump(mode="json")
         if metadata is not None and not include_capture_metadata:
@@ -1966,7 +1998,12 @@ class AnalysisEnvelope:
         )
 
     def to_arrow(self, *, include_capture_metadata: bool = True) -> pa.Table:
-        table = ResultCell.to_arrow(self.cells)
+        return self._to_arrow(include_capture_metadata=include_capture_metadata)
+
+    def _to_arrow(
+        self, *, include_capture_metadata: bool = True, preserve_saved: bool = False
+    ) -> pa.Table:
+        table = ResultCell._to_arrow(self.cells, preserve_saved=preserve_saved)
         metadata = dict(table.schema.metadata or {})
         payload_metadata = self.to_payload(include_capture_metadata=include_capture_metadata)[
             "metadata"

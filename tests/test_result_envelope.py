@@ -2810,6 +2810,7 @@ def test_switchback_payload_summary_keeps_display_alpha_not_procedure_alpha():
     )
     (result,) = estimate_contrast(stats, procedure).results
     (cell,) = ContrastResults([result]).as_cells()
+    assert result.estimate is not None
     assert result.estimate.alpha == 0.05
     assert cell.summary is not None and cell.summary.alpha == result.estimate.alpha
     payload = copy.deepcopy(cell.to_payload())

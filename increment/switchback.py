@@ -16,8 +16,14 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import narwhals as nw
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
+from increment._frame_switchback_metrics import (
+    forecast_column,
+    reduce_joint_metrics,
+    validate_metric_columns,
+)
+from increment._frame_switchback_observations import reconcile_switchback_observations
 from increment._study import (
     SWITCHBACK_IDENTIFICATION,
     SwitchbackStudyEnvelope,
@@ -25,35 +31,43 @@ from increment._study import (
     refuse_allocation_defect,
 )
 from increment._unit_cycle import (
-    _refuse as _unit_refuse,
-)
-from increment._unit_cycle import (
+    _fixed_count_moments,
     unit_cycle_admission_outcome,
     unit_cycle_envelope_cutoff,
+)
+from increment._unit_cycle import (
+    _refuse as _unit_refuse,
 )
 from increment.decision import ContrastContext, compile_contrast_procedures
 from increment.errors import (
     CapabilityError,
-    CodedModel,
     InvalidRequestError,
     RefusalSpec,
     refuse,
 )
 from increment.estimation.contrast import (
+    ContrastEvidenceStats,
     ContrastPartition,
     ContrastStats,
+    SwitchbackMetricStats,
+    UnavailableContrastStats,
     _exact_sum,
     reduce_contrast_partitions,
 )
 from increment.estimation.contrast_results import (
     IndependenceGrain,
     RandomizationLaw,
+    _FixedCountMetadata,
     _validate_assignment_metadata,
     _validate_order_counts,
     _validate_replication_counts,
     _validate_retained_window,
 )
-from increment.semantics.assignment import SwitchbackAssignment
+from increment.power.switchback_profiles import (
+    SwitchbackConversionBaseline,
+    SwitchbackTrajectoryBaseline,
+)
+from increment.semantics.assignment import FixedCountOrder, SwitchbackAssignment
 from increment.semantics.design import Randomized
 from increment.semantics.unit_cycle import (
     UnitCycleReference,
@@ -65,6 +79,10 @@ from increment.semantics.unit_cycle import (
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
+    from increment._frame_switchback_observations import (
+        MissingSwitchbackResponse,
+        SwitchbackObservationSchedule,
+    )
     from increment._frame_validation import SwitchbackSchedule
     from increment._metric_specs import MetricsArg, MetricSpec
     from increment._source_types import EvidenceCapabilities
@@ -163,7 +181,7 @@ def _reject_units(*, message: str, **context: object) -> NoReturn:
     _reject(_SWITCHBACK_UNITS, message=message, **context)
 
 
-class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
+class SwitchbackAssignmentDiagnostic(_FixedCountMetadata):
     """Construction-time schedule and assignment integrity evidence.
 
     ``ct_cycles``/``tc_cycles`` count the realized independent CT/TC order
@@ -177,14 +195,14 @@ class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
     schedule_complete: bool
     n_units: int = Field(ge=1)
     n_cycles: int = Field(ge=1)
-    ct_cycles: int = Field(ge=0, strict=True)
-    tc_cycles: int = Field(ge=0, strict=True)
+    ct_cycles: int | None = Field(ge=0, strict=True)
+    tc_cycles: int | None = Field(ge=0, strict=True)
     n_blocks: int | None = Field(default=None, ge=1, strict=True)
     washout_steps: int = Field(ge=0)
     observation_steps: int = Field(ge=1)
@@ -201,8 +219,13 @@ class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
     @model_validator(mode="after")
     def _consistent_design(self) -> SwitchbackAssignmentDiagnostic:
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        self._validate_exposure(self.randomization_law, self.probability_ct)
         _validate_replication_counts(
-            self.randomization_law, self.n_units, self.n_cycles, self.n_blocks
+            self.randomization_law,
+            self.independence_grain,
+            self.n_units,
+            self.n_cycles,
+            self.n_blocks,
         )
         _validate_order_counts(
             self.randomization_law, self.n_cycles, self.n_blocks, self.ct_cycles, self.tc_cycles
@@ -218,11 +241,11 @@ class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
         return self.model_dump()
 
     @property
-    def ct_count(self) -> int:
+    def ct_count(self) -> int | None:
         return self.ct_cycles
 
     @property
-    def tc_count(self) -> int:
+    def tc_count(self) -> int | None:
         return self.tc_cycles
 
 
@@ -304,6 +327,7 @@ class FrameSwitchbackSource:
                 name: reference.model_dump(mode="json")
                 for name, reference in self._context.contrast_references.items()
             },
+            **self._metric_inputs,
         }
 
     def __init__(
@@ -311,8 +335,12 @@ class FrameSwitchbackSource:
         *,
         context: ContrastContext,
         diagnostics: SwitchbackAssignmentDiagnostic,
-        stats: Mapping[str, ContrastStats],
+        stats: Mapping[str, ContrastEvidenceStats],
+        metric_inputs: Mapping[str, object],
+        missing: Mapping[str, MissingSwitchbackResponse],
         planning: Mapping[str, _PlanningMoments | None],
+        profiles: Mapping[str, np.ndarray],
+        treated: np.ndarray | None,
         roster: Sequence[str],
         assignment_evidence: Any,
         order_cycles: Sequence[tuple[str, str, str]],
@@ -320,7 +348,11 @@ class FrameSwitchbackSource:
         self._context = context
         self._diagnostics = diagnostics
         self._stats = dict(stats)
+        self._metric_inputs = dict(metric_inputs)
+        self._missing = dict(missing)
         self._planning = dict(planning)
+        self._profiles = dict(profiles)
+        self._treated = treated
         self._roster = tuple(roster)
         self._assignment_evidence = assignment_evidence
         self._order_cycles = tuple(order_cycles)
@@ -402,7 +434,7 @@ class FrameSwitchbackSource:
     def metrics(self) -> tuple[Metric, ...]:
         return self._context.metrics
 
-    def contrast_stats(self, metric: Metric) -> ContrastStats:
+    def contrast_stats(self, metric: Metric) -> ContrastEvidenceStats:
         """Return contrast statistics reduced over independent units or shared blocks."""
         try:
             return self._stats[metric.name]
@@ -420,27 +452,35 @@ class FrameSwitchbackSource:
 
     def planning_baseline(
         self, metric: Metric, *, delta_ref: float | None = None
-    ) -> SwitchbackBaseline:
-        """Estimate a pilot-fitted additive-shift planning baseline.
-
-        When ``delta_ref`` is omitted, the observed pilot mean is used as the
-        reference effect.  This is a model-conditioned planning approximation:
-        the centered pilot covariance is retained at the independent unit/block
-        grain, while the fitted reference is not treated as a population
-        certificate.
-        """
+    ) -> SwitchbackBaseline | SwitchbackTrajectoryBaseline | SwitchbackConversionBaseline:
+        """Fit the planning model corresponding to the observed metric and schedule."""
         from increment.power.switchback import SwitchbackBaseline
 
         stats = self.contrast_stats(metric)
-        moments = self._planning[metric.name]
-        shared = stats.randomization_law == "shared_schedule"
-        if moments is None:
+        if isinstance(stats, UnavailableContrastStats):
+            if stats.failure_code == "source.frame.switchback.response_unobserved":
+                self._missing[metric.name].refuse_planning()
+            _reject_metric(
+                message=(
+                    f"Metric {metric.name!r} is missing a forecast in {stats.forecast_column!r} "
+                    f"at {stats.failure_context['first_missing_key']!r}."
+                ),
+                **stats.failure_context,
+            )
+        if isinstance(stats, SwitchbackMetricStats):
+            _reject_metric(
+                message="Sizing this metric needs a model for its joint measurements; use a design-matched simulation.",
+                metric=metric.name,
+                reason="planning_requires_outcome_model",
+            )
+        shared = stats.independence_grain == "shared_block"
+        moments = self._planning.get(metric.name)
+        if metric.name not in self._profiles and moments is None:
             _reject_units(
                 message="switchback pilot planning requires at least two independent replicates",
                 n_replicates=stats.n_blocks if shared else stats.n_units,
                 reason="planning_requires_replicates",
             )
-        assert moments is not None
         fitted_reference = (
             float(math.fsum((stats.reference_delta, stats.mean_residual)))
             if delta_ref is None
@@ -452,6 +492,24 @@ class FrameSwitchbackSource:
                 metric=metric.name,
                 reason="nonfinite_reference_effect",
             )
+        if metric.name in self._profiles:
+            model = (
+                SwitchbackConversionBaseline
+                if stats.aggregation == "any"
+                else SwitchbackTrajectoryBaseline
+            )
+            assert self._treated is not None
+            return model.from_pilot(
+                assignment=self.context.study.assignment,
+                metric=stats.metric,
+                control_group=stats.control_group,
+                treatment_group=stats.treatment_group,
+                roster=self._roster,
+                observed=self._profiles[metric.name],
+                treated=self._treated,
+                delta_ref=fitted_reference,
+            )
+        assert moments is not None
         return SwitchbackBaseline(
             assignment=self.context.study.assignment,
             metric=stats.metric,
@@ -629,14 +687,16 @@ class _RetainedBlocks:
 
     units: tuple[object, ...]
     cycles: Sequence[int]
+    periods_per_cycle: int
     rows: int
     values: dict[str, np.ndarray | list[Any]]
+    raw_columns: dict[str, np.ndarray | list[Any]]
     numeric: frozenset[str]
 
     def key(self, block: int) -> tuple[object, int, int]:
         """The unit, cycle and period of one block, for refusal context."""
-        index, rest = divmod(block, len(self.cycles) * 2)
-        offset, period = divmod(rest, 2)
+        index, rest = divmod(block, len(self.cycles) * self.periods_per_cycle)
+        offset, period = divmod(rest, self.periods_per_cycle)
         return self.units[index], int(self.cycles[offset]), period
 
 
@@ -652,6 +712,7 @@ def _retained_blocks(
     observation_steps: int,
     carryover_order: int,
     cycles: Sequence[int],
+    periods_per_cycle: int = 2,
 ) -> _RetainedBlocks:
     """Group retained observation steps by unit-cycle-period.
 
@@ -665,37 +726,34 @@ def _retained_blocks(
     order, so the reductions built on top of these blocks are unchanged.
     """
     keys = [unit, cycle, period]
-    columns: list[str] = []
-    for column in (*keys, step, *(spec.y_column for spec in specs)):
-        if column not in columns:
-            columns.append(column)
+    measures = dict.fromkeys(
+        col for spec in specs for col in (spec.y_column, spec.denominator) if col is not None
+    )
     schema = frame.schema
-    selected = frame.select(*columns)
+    selected = frame.select(*dict.fromkeys((*keys, step, *measures)))
     retain_from_step = washout_steps + carryover_order
     if retain_from_step:
         selected = selected.filter(nw.col(step) >= retain_from_step)
     ordered = selected.with_row_index("__row_order__").sort(*keys, "__row_order__")
     rows = observation_steps - carryover_order
-    per_unit = len(cycles) * 2 * rows
+    per_unit = len(cycles) * periods_per_cycle * rows
     # Blocks are uniform: _validate_switchback_domains fixed the step domain and
     # _validate_switchback_schedule required every unit-cycle-period cell once.
     units = tuple(ordered[unit].gather_every(per_unit).to_list())
     extracted: dict[str, np.ndarray | list[Any]] = {}
-    values: dict[str, np.ndarray | list[Any]] = {}
-    for spec in specs:
-        column = spec.y_column
-        if column not in extracted:
-            dtype = schema[column]
-            series = ordered[column]
-            extracted[column] = (
-                series.to_numpy() if dtype.is_float() or dtype.is_integer() else series.to_list()
-            )
-        values[spec.name] = extracted[column]
+    for column in measures:
+        dtype = schema[column]
+        series = ordered[column]
+        extracted[column] = (
+            series.to_numpy() if dtype.is_float() or dtype.is_integer() else series.to_list()
+        )
     return _RetainedBlocks(
         units=units,
         cycles=cycles,
+        periods_per_cycle=periods_per_cycle,
         rows=rows,
-        values=values,
+        values={spec.name: extracted[spec.y_column] for spec in specs},
+        raw_columns=extracted,
         numeric=frozenset(spec.name for spec in specs if schema[spec.y_column].is_numeric()),
     )
 
@@ -830,7 +888,9 @@ def _unit_order(units: Sequence[object], reject_units: Callable[..., NoReturn]) 
     return order
 
 
-def _switchback_groups(identification: Randomized) -> tuple[str, str]:
+def _switchback_groups(
+    identification: Randomized, assignment: SwitchbackAssignment
+) -> tuple[str, str]:
     allocation = identification.allocation
     control = str(identification.control_group)
     treatment_arms = [arm for arm in allocation if arm != control] if allocation is not None else []
@@ -845,10 +905,14 @@ def _switchback_groups(identification: Randomized) -> tuple[str, str]:
             reason="invalid_allocation",
         )
     treatment = str(treatment_arms[0])
-    defect = allocation_defect(allocation[control], allocation[treatment])
+    defect = allocation_defect(allocation[control], allocation[treatment], assignment)
     if defect is not None:
         refuse_allocation_defect(
-            defect, allocation=allocation, control_group=control, treatment_group=treatment
+            defect,
+            allocation=allocation,
+            control_group=control,
+            treatment_group=treatment,
+            assignment=assignment,
         )
     return control, treatment
 
@@ -860,22 +924,28 @@ def _validated_unit_cycle_references(
     control: str,
     treatment: str,
 ) -> Mapping[str, UnitCycleReference]:
-    copied = _copy_references(references)
-    if not copied and assignment.sequence.scheme == "independent_bernoulli_order":
-        # Ordinary callers receive a qualified unit-t approximation from the
-        # declared design; complete envelopes remain research inputs.
-        copied = {spec.name: UnitCycleTApproximation() for spec in specs}
+    copied = dict(_copy_references(references))
     declared_metrics = {spec.name: spec for spec in specs}
     for name, reference in copied.items():
         if name not in declared_metrics:
             _unit_refuse("unit_cycle.reference_mismatch", reason="undeclared_metric", metric=name)
-        if assignment.sequence.scheme != "independent_bernoulli_order":
+        if (
+            declared_metrics[name].type == "ratio"
+            or declared_metrics[name].decision_method is not None
+        ):
+            _unit_refuse(
+                "unit_cycle.reference_mismatch",
+                metric=name,
+                reason="unadjusted_reference_on_joint_metric",
+            )
+        if assignment.sequence.independence_unit != "unit_cycle":
             _unit_refuse(
                 "unit_cycle.reference_mismatch", reason="unit_reference_on_shared_schedule"
             )
         if isinstance(reference, UnitCycleVarianceEnvelope):
             if (
-                reference.assignment != assignment
+                assignment.sequence.scheme != "independent_bernoulli_order"
+                or reference.assignment != assignment
                 or reference.control_group != control
                 or reference.treatment_group != treatment
             ):
@@ -884,6 +954,10 @@ def _validated_unit_cycle_references(
                 _unit_refuse(
                     "unit_cycle.reference_mismatch", reason="additive_conversion_unsupported"
                 )
+    if assignment.sequence.independence_unit == "unit_cycle":
+        for spec in specs:
+            if spec.name not in copied and spec.type != "ratio" and spec.decision_method is None:
+                copied[spec.name] = UnitCycleTApproximation()
     return copied
 
 
@@ -894,17 +968,14 @@ def _aligned_orders(schedule: SwitchbackSchedule, units: Sequence[object]) -> np
 
 
 def _build_stats(  # noqa: PLR0913
-    frame: nw.DataFrame[Any],
+    blocks: _RetainedBlocks,
+    reduced: Mapping[str, list[float | bool]],
     *,
-    unit: str,
-    cycle: str,
-    period: str,
-    step: str,
     specs: Sequence[MetricSpec],
     control: str,
     treatment: str,
     probability_ct: float,
-    randomization_law: RandomizationLaw,
+    randomization_law: Literal["independent_bernoulli_order", "shared_schedule"],
     independence_grain: IndependenceGrain,
     carryover_order: int,
     observation_steps: int,
@@ -914,19 +985,6 @@ def _build_stats(  # noqa: PLR0913
     reject_numeric: Callable[..., NoReturn],
     reject_units: Callable[..., NoReturn],
 ) -> tuple[dict[str, ContrastStats], dict[str, _PlanningMoments | None]]:
-    blocks = _retained_blocks(
-        frame,
-        unit=unit,
-        cycle=cycle,
-        period=period,
-        step=step,
-        specs=specs,
-        washout_steps=washout_steps,
-        observation_steps=observation_steps,
-        carryover_order=carryover_order,
-        cycles=cycles,
-    )
-    reduced = _reduce_blocks(blocks, specs, reject_numeric)
     n_units, n_cycles = len(blocks.units), len(cycles)
     ct = _aligned_orders(schedule, blocks.units)
     order = _unit_order(blocks.units, reject_units)
@@ -1074,17 +1132,14 @@ def _validate_shared_block_orders(
 
 # Shared blocks reduce their complete roster before independent-block inference.
 def _build_shared_stats(  # noqa: PLR0913
-    frame: nw.DataFrame[Any],
+    blocks: _RetainedBlocks,
+    reduced: Mapping[str, list[float | bool]],
     *,
-    unit: str,
-    cycle: str,
-    period: str,
-    step: str,
     specs: Sequence[MetricSpec],
     control: str,
     treatment: str,
     probability_ct: float,
-    randomization_law: RandomizationLaw,
+    randomization_law: Literal["independent_bernoulli_order", "shared_schedule"],
     independence_grain: IndependenceGrain,
     carryover_order: int,
     observation_steps: int,
@@ -1103,19 +1158,6 @@ def _build_shared_stats(  # noqa: PLR0913
     Signed period levels are accumulated together before roster/IPW scaling;
     exact accumulation handles otherwise avoidable intermediate overflow.
     """
-    blocks = _retained_blocks(
-        frame,
-        unit=unit,
-        cycle=cycle,
-        period=period,
-        step=step,
-        specs=specs,
-        washout_steps=washout_steps,
-        observation_steps=observation_steps,
-        carryover_order=carryover_order,
-        cycles=cycles,
-    )
-    reduced = _reduce_blocks(blocks, specs, reject_numeric)
     n_units, n_cycles = len(blocks.units), len(cycles)
     roster = sorted(range(n_units), key=lambda index: str(blocks.units[index]))
     block_ct = block_control_first.tolist()
@@ -1217,13 +1259,9 @@ def _build_shared_stats(  # noqa: PLR0913
 def _reduce_switchback_assignment_schedule(
     *,
     experiment: str,
-    schedule: Any,
+    schedule: SwitchbackSchedule,
     cycles: Sequence[int],
-    shared: bool,
-    block_orders: np.ndarray | None,
-    probability_ct: float,
-    randomization_law: str,
-    independence_grain: str,
+    assignment: SwitchbackAssignment,
     control_arm: str,
     treatment_arm: str,
 ) -> tuple[Any, tuple[tuple[str, str, str], ...]]:
@@ -1231,29 +1269,26 @@ def _reduce_switchback_assignment_schedule(
 
     import pyarrow as pa
 
-    from increment._assignment_refusals import refuse_assignment_invalid
     from increment._evidence_types import AssignmentEvidence
     from increment._frame_ledger import FrameLedger
 
-    periods = tuple(f"{cycle}:period={period}" for cycle in cycles for period in (0, 1))
+    sequence = assignment.sequence
+    shared = sequence.independence_unit == "shared_block"
+    periods = tuple(
+        f"{cycle}:period={period}"
+        for cycle in cycles
+        for period in range(assignment.periods_per_cycle)
+    )
+    unit_indices = {str(unit): i for i, unit in enumerate(schedule.units)}
     rows = []
     for unit_index, unit in enumerate(schedule.units):
         for cycle_index, cycle in enumerate(cycles):
-            if shared:
-                if block_orders is None:
-                    refuse_assignment_invalid("missing_shared_block_orders")
-                control_first = bool(block_orders[cycle_index])
-            else:
-                control_first = bool(schedule.control_first[unit_index, cycle_index])
-            first_arm, second_arm = (
-                (control_arm, treatment_arm) if control_first else (treatment_arm, control_arm)
-            )
-            for period_index, arm in enumerate((first_arm, second_arm)):
+            for period_index, treated in enumerate(schedule.treated[unit_index, cycle_index]):
                 rows.append(
                     {
                         "unit": str(unit),
                         "experiment": experiment,
-                        "arm": arm,
+                        "arm": treatment_arm if treated else control_arm,
                         "version": 1,
                         "period": f"{cycle}:period={period_index}",
                     }
@@ -1283,7 +1318,12 @@ def _reduce_switchback_assignment_schedule(
         block = f"block:{cycle_id}" if shared else f"unit-cycle:{unit}:{cycle_id}"
         if shared and cycle_id in shared_cycles:
             continue
-        order_cycles.append((cycle_id, block, "ct" if arm == control_arm else "tc"))
+        if isinstance(sequence, FixedCountOrder):
+            indicators = schedule.treated[unit_indices[unit], int(cycle_id)]
+            order = "".join("t" if treated else "c" for treated in indicators)
+        else:
+            order = "ct" if arm == control_arm else "tc"
+        order_cycles.append((cycle_id, block, order))
         if shared:
             shared_cycles.add(cycle_id)
     evidence = AssignmentEvidence(
@@ -1296,286 +1336,27 @@ def _reduce_switchback_assignment_schedule(
                 (version, period, arm, count) for (version, period, arm), count in counts.items()
             )
         ),
-        independence_grain=independence_grain,
-        probabilities=(("ct", probability_ct), ("tc", 1.0 - probability_ct)),
-        randomization_law=randomization_law,
+        independence_grain=sequence.independence_unit,
+        probabilities=(
+            tuple(zip((control_arm, treatment_arm), assignment.exposure, strict=True))
+            if isinstance(sequence, FixedCountOrder)
+            else (("ct", sequence.probability_ct), ("tc", 1.0 - sequence.probability_ct))
+        ),
+        randomization_law=sequence.scheme,
         order_draws=tuple((block, order) for _, block, order in order_cycles),
     )
     return evidence, tuple(order_cycles)
 
 
-def from_switchback_panel(  # noqa: PLR0915
-    frame: IntoDataFrame,
+def _admit_paired_schedule(
+    schedule: SwitchbackSchedule,
+    cycles: Sequence[int],
+    control: str,
+    treatment: str,
     *,
-    unit: str,
-    cycle: str,
-    period: str,
-    step: str,
-    group: str,
-    metrics: MetricsArg,
-    identification: Randomized,
-    assignment: SwitchbackAssignment,
-    experiment_id: str = "frame",
-    plan: AnalysisPlan | None = None,
-    contrast_references: Mapping[str, UnitCycleReference] | None = None,
-) -> FrameSwitchbackSource:
-    """Build a validated eager switchback source from a complete schedule.
-
-    ``unit`` names the roster member, which can be a market or geo with metrics
-    pre-aggregated to geo x cycle x period x step. ``n_units`` then counts geos.
-    Under independent unit-cycle draws, the sample size is that count. Under a shared schedule they follow the independent block count.
-
-    Each unit draws its order independently under the declared
-    ``independent_bernoulli_order`` mechanism, which makes the unit the
-    independent replicate.  Ordinary inference selects a qualified
-    unit-level t approximation from the design; a prospective variance
-    envelope remains an optional research/reference declaration.  A declared
-    ``shared_schedule`` sequence instead draws one order per two-period
-    block, shared by a fixed, complete unit roster; there the block is the
-    independent replicate, and inference uses a block-level Student-t
-    reference over ``n_blocks`` instead.
-    Both laws estimate the mean-unit retained-window additive effect. Each period
-    retains ``observation_steps - carryover_order`` steps starting at
-    ``washout_steps + carryover_order``; no residual carryover after those discarded
-    steps is an assumption. Declared and retained lengths survive into result JSON.
-    """
-    from increment._frame_validation import (
-        _validate_columns,
-        _validate_switchback_domains,
-        _validate_switchback_labels,
-        _validate_switchback_metric_values,
-        _validate_switchback_schedule,
-        eager_frame,
-        require_eager_frame,
-    )
-    from increment._metric_specs import _metrics_need_schema, coerce_metrics, synthesise_metric
-
-    require_eager_frame(frame, constructor="from_switchback_panel")
-
-    if not isinstance(identification, Randomized):
-        _reject_identification(
-            message=(
-                "from_switchback_panel requires Randomized identification; "
-                "restricted, observational, and encouragement designs are unsupported"
-            ),
-            identification_type=type(identification).__name__,
-            expected="Randomized",
-            reason="unsupported_identification",
-        )
-    if not isinstance(assignment, SwitchbackAssignment):
-        _reject_assignment(
-            message=(
-                "from_switchback_panel requires a SwitchbackAssignment; "
-                "ParallelAssignment is a mixed parallel assignment"
-            ),
-            assignment_type=type(assignment).__name__,
-            expected="SwitchbackAssignment",
-            reason="unsupported_assignment",
-        )
-    if assignment.periods_per_cycle != 2:
-        # The discriminated ``AssignmentSequence`` union already guarantees
-        # ``scheme`` is one of the two known mechanisms; this guards only
-        # the (schema-fixed) period count for defense in depth.
-        _reject_assignment(
-            message="switchback assignment must declare exactly two periods per cycle",
-            assignment_type=type(assignment).__name__,
-            periods_per_cycle=assignment.periods_per_cycle,
-            reason="unsupported_assignment_mechanism",
-        )
-    control, treatment = _switchback_groups(identification)
-    schema = eager_frame(frame).schema if _metrics_need_schema(metrics) else None
-    specs = coerce_metrics(metrics, schema=schema)
-    unsupported = [spec.name for spec in specs if spec.type not in ("mean", "conversion")]
-    if unsupported:
-        _reject_metric(
-            message=(
-                "switchback metrics must be type='mean' or type='conversion'; "
-                f"unsupported metrics: {unsupported!r}"
-            ),
-            metrics=unsupported,
-            reason="unsupported_metric_type",
-        )
-    if plan is not None and any(
-        getattr(entry, "covariates", ()) or getattr(entry, "wants_cuped_multicovariate", False)
-        for entry in (*plan.primaries, *(plan.secondaries or ()), *plan.guardrails)
-        if not isinstance(entry, str)
-    ):
-        _reject_metric(
-            message=(
-                "switchback plans cannot use cuped_multicovariate or per-metric covariates; "
-                "use from_unit_summary, from_unit_panel, definitions, or a covariate "
-                "artifact for independent-unit randomized inference"
-            ),
-            field="covariates",
-            reason="cuped_linear_construction_unsupported",
-        )
-    for spec in specs:
-        if spec.winsorization is not None:
-            _reject_metric(
-                message=(
-                    f"switchback metric {spec.name!r} declares winsorization, "
-                    "which switchback aggregation does not apply"
-                ),
-                metric=spec.name,
-                field="winsorization",
-                reason="ignored_metric_option",
-            )
-        if spec.missing != "error":
-            _reject_metric(
-                message=(
-                    f"switchback metric {spec.name!r} declares missing={spec.missing!r}, "
-                    "which switchback aggregation does not apply"
-                ),
-                metric=spec.name,
-                field="missing",
-                policy=spec.missing,
-                reason="ignored_metric_option",
-            )
-        if any(
-            method.variance_reduction == "cuped_multicovariate"
-            for method in (
-                (() if spec.decision_method is None else (spec.decision_method,))
-                + spec.sensitivity_methods
-            )
-        ):
-            _reject_metric(
-                message=(
-                    f"switchback metric {spec.name!r} cannot use cuped_multicovariate; "
-                    "use from_unit_summary, from_unit_panel, definitions, or a covariate "
-                    "artifact for independent-unit randomized inference"
-                ),
-                metric=spec.name,
-                field="covariates",
-                reason="cuped_linear_construction_unsupported",
-            )
-        if spec.decision_method is not None or spec.sensitivity_methods:
-            offending_field = (
-                "decision_method" if spec.decision_method is not None else "sensitivity_methods"
-            )
-            _reject_metric(
-                message=(
-                    f"switchback metric {spec.name!r} declares {offending_field}, "
-                    "which switchback procedures do not apply"
-                ),
-                metric=spec.name,
-                field=offending_field,
-                reason="ignored_metric_option",
-            )
-        if spec.prior is not None:
-            _reject_metric(
-                message=(
-                    f"switchback metric {spec.name!r} declares prior, which "
-                    "switchback procedures do not apply"
-                ),
-                metric=spec.name,
-                field="prior",
-                reason="ignored_metric_option",
-            )
-    if any(
-        method.covariates
-        for spec in specs
-        for method in (
-            (() if spec.decision_method is None else (spec.decision_method,))
-            + spec.sensitivity_methods
-        )
-    ):
-        _reject_metric(
-            message="switchback metrics do not support method-owned CUPED covariates",
-            field="covariates",
-            reason="unsupported_metric_option",
-        )
-    if any(spec.window_days is not None for spec in specs):
-        _reject_metric(
-            message="switchback metrics do not support window_days",
-            field="window_days",
-            reason="unsupported_metric_option",
-        )
-
-    synthesised = [synthesise_metric(spec) for spec in specs]
-    study = SwitchbackStudyEnvelope(identification=identification, assignment=assignment)
-    references = _validated_unit_cycle_references(
-        contrast_references, specs, assignment, control, treatment
-    )
-    procedures = compile_contrast_procedures(
-        plan, synthesised, path="frame/contrast", contrast_references=references
-    )
-    context = ContrastContext(
-        study_id=experiment_id,
-        study=study,
-        metrics=tuple(synthesised),
-        procedures=procedures,
-        contrast_references=references,
-    )
-
-    window = assignment.window
-    total_steps = window.washout_steps + window.observation_steps
-
-    nwf = eager_frame(frame)
-    roles = [
-        ("unit", unit),
-        ("cycle", cycle),
-        ("period", period),
-        ("step", step),
-        ("group", group),
-    ]
-    _validate_columns(nwf, roles=roles, metrics=specs, reject=_reject_columns)
-    _validate_switchback_labels(
-        nwf,
-        unit=unit,
-        group=group,
-        reject_unit=_reject_domain,
-        reject_group=_reject_columns,
-    )
-    cycles, _, _ = _validate_switchback_domains(
-        nwf,
-        unit=unit,
-        cycle=cycle,
-        period=period,
-        step=step,
-        total_steps=total_steps,
-        reject_missingness=_reject_missingness,
-        reject_domain=_reject_domain,
-    )
-    for reference in references.values():
-        if isinstance(reference, UnitCycleVarianceEnvelope) and reference.cycles_per_unit != len(
-            cycles
-        ):
-            _unit_refuse("unit_cycle.reference_mismatch", reason="cycles_per_unit")
-
-    _validate_switchback_metric_values(
-        nwf,
-        specs,
-        reject_missingness=_reject_missingness,
-        reject_numeric=_reject_numeric,
-    )
-    units = set(nwf[unit].unique().to_list())
-    is_shared = assignment.sequence.scheme == "shared_schedule"
-    has_envelopes = all(
-        isinstance(references.get(spec.name), UnitCycleVarianceEnvelope) for spec in specs
-    )
-    if len(units) < 2 and not is_shared and not has_envelopes:
-        _reject_units(
-            message=(
-                f"switchback contrast requires at least two independent units; found {len(units)}"
-            ),
-            column=unit,
-            unit_count=len(units),
-            reason="insufficient_independent_units",
-        )
-    schedule = _validate_switchback_schedule(
-        nwf,
-        unit=unit,
-        cycle=cycle,
-        period=period,
-        step=step,
-        group=group,
-        control=control,
-        treatment=treatment,
-        cycles=cycles,
-        total_steps=total_steps,
-        reject_missingness=_reject_missingness,
-        reject_schedule=_reject_schedule,
-    )
+    is_shared: bool,
+    p_ct: float,
+) -> tuple[int, int, np.ndarray | None]:
     ct_cycles, tc_cycles = schedule.ct_cycles, schedule.tc_cycles
 
     n_blocks: int | None = None
@@ -1596,7 +1377,6 @@ def from_switchback_panel(  # noqa: PLR0915
         tc_cycles = len(cycles) - ct_cycles
         n_blocks = len(cycles)
 
-    p_ct = assignment.sequence.probability_ct
     drawn = ct_cycles + tc_cycles
     if is_shared:
         from scipy.stats import binomtest
@@ -1649,6 +1429,462 @@ def from_switchback_panel(  # noqa: PLR0915
                 else "shared_schedule_missing_cycle_order"
             ),
         )
+    return ct_cycles, tc_cycles, block_orders
+
+
+def _admit_fixed_count(treated: np.ndarray, *, shared: bool) -> None:
+    if shared:
+        agreement = (treated == treated[:1]).all(axis=(0, 2))
+        if not agreement.all():
+            _reject_schedule(
+                message="Every roster member must follow the same treatment order within each shared block.",
+                cycle=int(np.argmin(agreement)),
+                reason="shared_block_order_mismatch",
+            )
+        draws = treated[0]
+    else:
+        draws = treated.reshape(-1, treated.shape[-1])
+    unsupported = np.flatnonzero(draws.all(axis=0) | ~draws.any(axis=0))
+    if unsupported.size:
+        _reject_schedule(
+            message="Both arms must occur at every position across independent schedule draws.",
+            positions=tuple(unsupported.tolist()),
+            order_draws=len(draws),
+            reason="missing_position_support",
+        )
+
+
+def _exact_period_totals(values: np.ndarray | list[Any], rows: int) -> np.ndarray:
+    """Keep neighboring period totals distinct before arm subtraction and pilot fitting."""
+    if isinstance(values, np.ndarray) and values.dtype.kind in "fiu":
+        if rows == 1:
+            return values
+        count = values.size // rows
+        groups = np.repeat(np.arange(count), rows)
+        signs = np.broadcast_to(np.int64(1), groups.shape)
+        return np.asarray(_exact_group_sums(values, signs, groups, count), dtype=object)
+    return np.asarray(
+        [
+            _exact_signed_total(((1, values[start : start + rows]),))
+            for start in range(0, len(values), rows)
+        ],
+        dtype=object,
+    )
+
+
+def _pilot_profiles(
+    blocks: _RetainedBlocks,
+    reduced: Mapping[str, list[float | bool]],
+    schedule: SwitchbackSchedule,
+    specs: Sequence[MetricSpec],
+    *,
+    fixed_count: bool,
+) -> tuple[dict[str, np.ndarray], np.ndarray | None]:
+    selected = [spec for spec in specs if fixed_count or spec.type == "conversion"]
+    if not selected:
+        return {}, None
+    # Frame engines may sort labels differently; both arrays follow the Python-sorted roster.
+    order = _unit_order(blocks.units, _reject_units)
+    draw_order = _unit_order(schedule.units, _reject_units)
+    shape = schedule.treated.shape
+
+    def align(array: np.ndarray, indices: list[int], *, borrowed: bool = False) -> np.ndarray:
+        if all(i == j for i, j in enumerate(indices)):
+            # A read-only view of a pandas column still follows writes to its parent.
+            aligned = array.copy() if borrowed else array
+        else:
+            aligned = array[indices]
+        aligned.setflags(write=False)
+        return aligned
+
+    observed = {}
+    for spec in selected:
+        totals = (
+            np.asarray(reduced[spec.name])
+            if spec.type == "conversion"
+            else _exact_period_totals(blocks.values[spec.name], blocks.rows)
+        )
+        observed[spec.name] = align(
+            totals.reshape(shape), order, borrowed=totals is blocks.values[spec.name]
+        )
+    return observed, align(schedule.treated, draw_order)
+
+
+def _fixed_count_stats(
+    assignment: SwitchbackAssignment,
+    specs: Sequence[MetricSpec],
+    profiles: Mapping[str, np.ndarray],
+    treated: np.ndarray,
+    control: str,
+    treatment: str,
+) -> dict[str, ContrastStats]:
+    sequence = assignment.sequence
+    assert isinstance(sequence, FixedCountOrder)
+    units, cycles, k = treated.shape
+    m = sequence.treated_periods
+    shared = sequence.independence_unit == "shared_block"
+    n = cycles if shared else units
+    per_replicate = units if shared else cycles
+    replicate = np.arange(n)[None, :, None] if shared else np.arange(n)[:, None, None]
+    groups = (2 * replicate + treated).ravel()
+    signs = np.broadcast_to(np.int64(1), groups.shape)
+    window = assignment.window
+    stats = {}
+    for spec in specs:
+        values = profiles[spec.name].ravel()
+        # Each replicate is the equally weighted average of treated means minus
+        # control means. Sum before scaling to preserve cancellation at large offsets.
+        if values.dtype.kind == "O":
+            # Period totals can exceed the exact integer range of a double.
+            sums = [Fraction(0)] * (2 * n)
+            for group, value in zip(groups, values, strict=True):
+                sums[group] += value
+        else:
+            sums = _exact_group_sums(values, signs, groups, 2 * n)
+        try:
+            numerators = ((k - m) * sums[2 * i + 1] - m * sums[2 * i] for i in range(n))
+            total, m2 = _fixed_count_moments(numerators, n, per_replicate * m * (k - m))
+            point = float(total / n)
+        except (OverflowError, ValueError):
+            _reject_numeric(
+                message=f"metric {spec.name!r}: centered contrast cannot be represented",
+                metric=spec.name,
+                reason="centered_contrast_reduction_overflow",
+            )
+        stats[spec.name] = ContrastStats(
+            metric=spec.name,
+            aggregation="any" if spec.type == "conversion" else "sum",
+            randomization_law="fixed_count",
+            independence_grain=sequence.independence_unit,
+            periods_per_cycle=k,
+            treated_periods=m,
+            treatment_probability=m / k,
+            probability_ct=None,
+            washout_steps=window.washout_steps,
+            observation_steps=window.observation_steps,
+            carryover_order=window.carryover_order,
+            retained_steps=window.observation_steps - window.carryover_order,
+            control_group=control,
+            treatment_group=treatment,
+            n_units=units,
+            n_cycles=units * cycles,
+            n_blocks=cycles if shared else None,
+            mean_slope=1.0,
+            reference_delta=point,
+            mean_residual=0.0,
+            exact_delta_total=total.as_integer_ratio(),
+            m2_delta=m2,
+        )
+    return stats
+
+
+def _validate_metric_declarations(
+    specs: Sequence[MetricSpec],
+    plan: AnalysisPlan | None,
+    schedule: SwitchbackObservationSchedule | None,
+    pre_assignment_forecasts: IntoDataFrame | None,
+) -> dict[str, str]:
+    unsupported = [spec.name for spec in specs if spec.type not in ("mean", "conversion", "ratio")]
+    if unsupported:
+        _reject_metric(
+            message=(
+                "switchback metrics must be a mean, a conversion or a ratio; "
+                f"unsupported metrics: {unsupported!r}"
+            ),
+            metrics=unsupported,
+            reason="unsupported_metric_type",
+        )
+    if schedule is not None:
+        schedule.validate_metrics(specs)
+    if plan is not None and any(
+        getattr(entry, "covariates", ()) or getattr(entry, "wants_cuped_multicovariate", False)
+        for entry in (*plan.primaries, *(plan.secondaries or ()), *plan.guardrails)
+        if not isinstance(entry, str)
+    ):
+        _reject_metric(
+            message=(
+                "switchback plans cannot use cuped_multicovariate or per-metric covariates; "
+                "use from_unit_summary, from_unit_panel, definitions, or a covariate "
+                "artifact for independent-unit randomized inference"
+            ),
+            field="covariates",
+            reason="cuped_linear_construction_unsupported",
+        )
+    forecasts: dict[str, str] = {}
+    for spec in specs:
+        if spec.winsorization is not None:
+            _reject_metric(
+                message=(
+                    f"switchback metric {spec.name!r} declares winsorization, "
+                    "which switchback aggregation does not apply"
+                ),
+                metric=spec.name,
+                field="winsorization",
+                reason="ignored_metric_option",
+            )
+        if spec.missing != "error" and not (schedule is not None and spec.missing == "zero"):
+            _reject_metric(
+                message=(
+                    f"switchback metric {spec.name!r} declares missing={spec.missing!r}, "
+                    "which switchback aggregation does not apply"
+                ),
+                metric=spec.name,
+                field="missing",
+                policy=spec.missing,
+                reason="ignored_metric_option",
+            )
+        if any(
+            method.variance_reduction == "cuped_multicovariate"
+            for method in (
+                (() if spec.decision_method is None else (spec.decision_method,))
+                + spec.sensitivity_methods
+            )
+        ):
+            _reject_metric(
+                message=(
+                    f"switchback metric {spec.name!r} cannot use cuped_multicovariate; "
+                    "use from_unit_summary, from_unit_panel, definitions, or a covariate "
+                    "artifact for independent-unit randomized inference"
+                ),
+                metric=spec.name,
+                field="covariates",
+                reason="cuped_linear_construction_unsupported",
+            )
+        column = forecast_column(spec, _reject_metric)
+        if column is not None:
+            forecasts[spec.name] = column
+        unsupported_method = spec.decision_method is not None and column is None
+        if unsupported_method or spec.sensitivity_methods:
+            offending_field = "decision_method" if unsupported_method else "sensitivity_methods"
+            _reject_metric(
+                message=(
+                    f"switchback metric {spec.name!r} declares {offending_field}, "
+                    "which switchback procedures do not apply"
+                ),
+                metric=spec.name,
+                field=offending_field,
+                reason="ignored_metric_option",
+            )
+        if spec.prior is not None:
+            _reject_metric(
+                message=(
+                    f"switchback metric {spec.name!r} declares prior, which "
+                    "switchback procedures do not apply"
+                ),
+                metric=spec.name,
+                field="prior",
+                reason="ignored_metric_option",
+            )
+    if pre_assignment_forecasts is not None and not forecasts:
+        _reject_metric(
+            message="A forecast frame requires a mean with Method.cuped(covariates='column').",
+            field="pre_assignment_forecasts",
+            reason="unused_forecasts",
+        )
+    if any(spec.window_days is not None for spec in specs):
+        _reject_metric(
+            message="switchback metrics do not support window_days",
+            field="window_days",
+            reason="unsupported_metric_option",
+        )
+    return forecasts
+
+
+def from_switchback_panel(  # noqa: PLR0913, PLR0915
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    cycle: str,
+    period: str,
+    step: str,
+    group: str,
+    metrics: MetricsArg,
+    identification: Randomized,
+    assignment: SwitchbackAssignment,
+    experiment_id: str = "frame",
+    plan: AnalysisPlan | None = None,
+    schedule: SwitchbackObservationSchedule | None = None,
+    pre_assignment_forecasts: IntoDataFrame | None = None,
+    contrast_references: Mapping[str, UnitCycleReference] | None = None,
+) -> FrameSwitchbackSource:
+    """Build a validated eager switchback source from a complete schedule.
+
+    ``unit`` names a roster member, such as a market or geo. Independent
+    unit-cycle schedules average cycles within each unit; shared schedules
+    average the roster within each independently randomized block. The paired
+    laws draw an order for two periods. The fixed-count law draws a uniform
+    subset of treated positions in each cycle.
+
+    Each period retains ``observation_steps - carryover_order`` steps starting
+    at ``washout_steps + carryover_order``. Identification assumes no residual
+    carryover after the discarded steps. Ratios use treated and control ratios
+    of retained totals. For a CUPED mean, ``pre_assignment_forecasts`` supplies
+    one forecast of that total per unit, cycle and period. Its ``forecast_at``
+    timestamps must all strictly precede the earliest ``assigned_at``.
+    """
+    from increment._frame_validation import (
+        _validate_switchback_domains,
+        _validate_switchback_labels,
+        _validate_switchback_metric_values,
+        _validate_switchback_schedule,
+        eager_frame,
+        require_eager_frame,
+    )
+    from increment._metric_specs import _metrics_need_schema, coerce_metrics, synthesise_metric
+
+    require_eager_frame(frame, constructor="from_switchback_panel")
+
+    if not isinstance(identification, Randomized):
+        _reject_identification(
+            message=(
+                "from_switchback_panel requires Randomized identification; "
+                "restricted, observational, and encouragement designs are unsupported"
+            ),
+            identification_type=type(identification).__name__,
+            expected="Randomized",
+            reason="unsupported_identification",
+        )
+    if not isinstance(assignment, SwitchbackAssignment):
+        _reject_assignment(
+            message=(
+                "from_switchback_panel requires a SwitchbackAssignment; "
+                "ParallelAssignment is a mixed parallel assignment"
+            ),
+            assignment_type=type(assignment).__name__,
+            expected="SwitchbackAssignment",
+            reason="unsupported_assignment",
+        )
+    if assignment.periods_per_cycle != 2 and not isinstance(assignment.sequence, FixedCountOrder):
+        _reject_assignment(
+            message="switchback assignment must declare exactly two periods per cycle",
+            assignment_type=type(assignment).__name__,
+            periods_per_cycle=assignment.periods_per_cycle,
+            reason="unsupported_assignment_mechanism",
+        )
+    control, treatment = _switchback_groups(identification, assignment)
+    schema = eager_frame(frame).schema if _metrics_need_schema(metrics) else None
+    specs = coerce_metrics(metrics, schema=schema)
+
+    forecasts = _validate_metric_declarations(specs, plan, schedule, pre_assignment_forecasts)
+    synthesised = [synthesise_metric(spec) for spec in specs]
+    study = SwitchbackStudyEnvelope(
+        identification=identification,
+        assignment=assignment,
+        observation_design=schedule.declaration() if schedule is not None else None,
+    )
+    references = _validated_unit_cycle_references(
+        contrast_references, specs, assignment, control, treatment
+    )
+    procedures = compile_contrast_procedures(
+        plan,
+        synthesised,
+        path="frame/contrast",
+        contrast_references=references,
+        forecast_columns=forecasts,
+    )
+    context = ContrastContext(
+        study_id=experiment_id,
+        study=study,
+        metrics=tuple(synthesised),
+        procedures=procedures,
+        contrast_references=references,
+    )
+
+    window = assignment.window
+    total_steps = window.washout_steps + window.observation_steps
+    step_domain = range(
+        0 if schedule is None else window.washout_steps + window.carryover_order, total_steps
+    )
+
+    nwf, missing = reconcile_switchback_observations(
+        eager_frame(frame),
+        schedule=schedule,
+        assignment=assignment,
+        specs=specs,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        group=group,
+        reject_columns=_reject_columns,
+        reject_domain=_reject_domain,
+        reject_schedule=_reject_schedule,
+    )
+    _validate_switchback_labels(
+        nwf,
+        unit=unit,
+        group=group,
+        reject_unit=_reject_domain,
+        reject_group=_reject_columns,
+    )
+    cycles, _, _ = _validate_switchback_domains(
+        nwf,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        step_domain=step_domain,
+        periods_per_cycle=assignment.periods_per_cycle,
+        reject_missingness=_reject_missingness,
+        reject_domain=_reject_domain,
+    )
+    for reference in references.values():
+        if isinstance(reference, UnitCycleVarianceEnvelope) and reference.cycles_per_unit != len(
+            cycles
+        ):
+            _unit_refuse("unit_cycle.reference_mismatch", reason="cycles_per_unit")
+
+    available = [spec for spec in specs if spec.name not in missing]
+    ordinary = [spec for spec in available if spec.type != "ratio" and spec.name not in forecasts]
+    joint = [spec for spec in available if spec.type == "ratio" or spec.name in forecasts]
+    _validate_switchback_metric_values(
+        nwf,
+        ordinary,
+        reject_missingness=_reject_missingness,
+        reject_numeric=_reject_numeric,
+    )
+    validate_metric_columns(
+        nwf, joint, reject_numeric=_reject_numeric, reject_missingness=_reject_missingness
+    )
+    units = set(nwf[unit].unique().to_list())
+    sequence = assignment.sequence
+    is_shared = sequence.independence_unit == "shared_block"
+    has_envelopes = all(
+        isinstance(references.get(spec.name), UnitCycleVarianceEnvelope) for spec in ordinary
+    )
+    if len(units) < 2 and not is_shared and not has_envelopes:
+        _reject_units(
+            message=(
+                f"switchback contrast requires at least two independent units; found {len(units)}"
+            ),
+            column=unit,
+            unit_count=len(units),
+            reason="insufficient_independent_units",
+        )
+    realized = _validate_switchback_schedule(
+        nwf,
+        keys=(unit, cycle, period, step),
+        group=group,
+        control=control,
+        treatment=treatment,
+        cycles=cycles,
+        step_domain=step_domain,
+        periods_per_cycle=assignment.periods_per_cycle,
+        treated_periods=sequence.treated_periods if isinstance(sequence, FixedCountOrder) else 1,
+        reject_missingness=_reject_missingness,
+        reject_schedule=_reject_schedule,
+    )
+
+    n_blocks = len(cycles) if is_shared else None
+    ct_cycles: int | None = None
+    tc_cycles: int | None = None
+    block_orders = None
+    if isinstance(sequence, FixedCountOrder):
+        _admit_fixed_count(realized.treated, shared=is_shared)
+    else:
+        ct_cycles, tc_cycles, block_orders = _admit_paired_schedule(
+            realized, cycles, control, treatment, is_shared=is_shared, p_ct=sequence.probability_ct
+        )
 
     for name, reference in references.items():
         if isinstance(reference, UnitCycleVarianceEnvelope):
@@ -1657,20 +1893,49 @@ def from_switchback_panel(  # noqa: PLR0915
                 reference, n=len(units), alpha=procedure.alpha, alternative=procedure.alternative
             )
 
-    if is_shared:
+    blocks = _retained_blocks(
+        nwf,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        specs=available,
+        cycles=cycles,
+        washout_steps=window.washout_steps,
+        observation_steps=window.observation_steps,
+        carryover_order=window.carryover_order,
+        periods_per_cycle=assignment.periods_per_cycle,
+    )
+    reduced = _reduce_blocks(
+        blocks,
+        [spec for spec in ordinary if spec.type == "conversion"]
+        if isinstance(sequence, FixedCountOrder)
+        else ordinary,
+        _reject_numeric,
+    )
+    profiles, treated = _pilot_profiles(
+        blocks, reduced, realized, ordinary, fixed_count=isinstance(sequence, FixedCountOrder)
+    )
+    if not ordinary:
+        scalar_stats: dict[str, ContrastStats] = {}
+        planning: dict[str, _PlanningMoments | None] = {}
+    elif sequence.scheme == "fixed_count":
+        assert treated is not None
+        scalar_stats = _fixed_count_stats(
+            assignment, ordinary, profiles, treated, control, treatment
+        )
+        planning = {}
+    elif sequence.scheme == "shared_schedule":
         assert block_orders is not None
-        stats, planning = _build_shared_stats(
-            nwf,
-            unit=unit,
-            cycle=cycle,
-            period=period,
-            step=step,
-            specs=specs,
+        scalar_stats, planning = _build_shared_stats(
+            blocks,
+            reduced,
+            specs=ordinary,
             control=control,
             treatment=treatment,
-            probability_ct=assignment.sequence.probability_ct,
-            randomization_law=assignment.sequence.scheme,
-            independence_grain=assignment.sequence.independence_unit,
+            probability_ct=sequence.probability_ct,
+            randomization_law=sequence.scheme,
+            independence_grain=sequence.independence_unit,
             carryover_order=window.carryover_order,
             observation_steps=window.observation_steps,
             washout_steps=window.washout_steps,
@@ -1679,29 +1944,34 @@ def from_switchback_panel(  # noqa: PLR0915
             reject_numeric=_reject_numeric,
         )
     else:
-        stats, planning = _build_stats(
-            nwf,
-            unit=unit,
-            cycle=cycle,
-            period=period,
-            step=step,
-            specs=specs,
+        scalar_stats, planning = _build_stats(
+            blocks,
+            reduced,
+            specs=ordinary,
             control=control,
             treatment=treatment,
-            probability_ct=assignment.sequence.probability_ct,
-            randomization_law=assignment.sequence.scheme,
-            independence_grain=assignment.sequence.independence_unit,
+            probability_ct=sequence.probability_ct,
+            randomization_law=sequence.scheme,
+            independence_grain=sequence.independence_unit,
             carryover_order=window.carryover_order,
             observation_steps=window.observation_steps,
             washout_steps=window.washout_steps,
             cycles=cycles,
-            schedule=schedule,
+            schedule=realized,
             reject_numeric=_reject_numeric,
             reject_units=_reject_units,
         )
 
+    scheduled_periods = len(units) * len(cycles) * assignment.periods_per_cycle
     diagnostics = SwitchbackAssignmentDiagnostic(
-        probability_ct=p_ct,
+        probability_ct=None if isinstance(sequence, FixedCountOrder) else sequence.probability_ct,
+        periods_per_cycle=assignment.periods_per_cycle
+        if isinstance(sequence, FixedCountOrder)
+        else None,
+        treated_periods=sequence.treated_periods if isinstance(sequence, FixedCountOrder) else None,
+        treatment_probability=assignment.exposure[1]
+        if isinstance(sequence, FixedCountOrder)
+        else None,
         randomization_law=assignment.sequence.scheme,
         independence_grain=assignment.sequence.independence_unit,
         schedule_complete=True,
@@ -1713,23 +1983,99 @@ def from_switchback_panel(  # noqa: PLR0915
         washout_steps=window.washout_steps,
         observation_steps=window.observation_steps,
         retained_steps=window.observation_steps - window.carryover_order,
-        washout_rows=int(nwf.filter(nw.col(step) < window.washout_steps).shape[0]),
-        observation_rows=int(nwf.filter(nw.col(step) >= window.washout_steps).shape[0]),
-        retained_rows=int(
-            nwf.filter(nw.col(step) >= window.washout_steps + window.carryover_order).shape[0]
-        ),
+        washout_rows=scheduled_periods * window.washout_steps,
+        observation_rows=scheduled_periods * window.observation_steps,
+        retained_rows=scheduled_periods * (window.observation_steps - window.carryover_order),
         carryover_order=window.carryover_order,
         integrity_failures=(),
     )
+    stats: dict[str, ContrastEvidenceStats] = dict(scalar_stats)
+    if joint or missing:
+        metadata = diagnostics.model_dump(
+            exclude={
+                "schedule_complete",
+                "washout_rows",
+                "observation_rows",
+                "retained_rows",
+                "integrity_failures",
+            }
+        )
+        metadata.update(control_group=control, treatment_group=treatment)
+        if joint or forecasts:
+            joint_columns = dict.fromkeys(
+                col
+                for spec in joint
+                for col in (spec.y_column, spec.denominator)
+                if col is not None
+            )
+            aligned = realized.treated
+            if blocks.units != realized.units:
+                positions = {label: i for i, label in enumerate(realized.units)}
+                aligned = aligned[[positions[label] for label in blocks.units]]
+            stats.update(
+                reduce_joint_metrics(
+                    joint,
+                    assignment=assignment,
+                    totals={
+                        col: _exact_period_totals(blocks.raw_columns[col], blocks.rows)
+                        for col in joint_columns
+                    },
+                    treated=aligned,
+                    forecast_columns=forecasts,
+                    forecast_frame=pre_assignment_forecasts,
+                    keys=(unit, cycle, period),
+                    units=blocks.units,
+                    cycles=cycles,
+                    metadata=metadata,
+                    reject=_reject_metric,
+                )
+            )
+        for spec in specs:
+            failure = missing.get(spec.name)
+            if failure is not None:
+                stats[spec.name] = UnavailableContrastStats(
+                    metric=spec.name,
+                    forecast_column=forecasts.get(spec.name),
+                    aggregation="ratio"
+                    if spec.type == "ratio"
+                    else "any"
+                    if spec.type == "conversion"
+                    else "sum",
+                    failure_code=failure.code,
+                    failure_context=failure.context(),
+                    **metadata,
+                )
+    inputs: dict[str, object] = {}
+    outcome_aliases = tuple(
+        sorted(
+            (spec.name, spec.y_column)
+            for spec in specs
+            if spec.type != "ratio" and spec.y_column != spec.name
+        )
+    )
+    if outcome_aliases:
+        inputs["outcome_columns"] = outcome_aliases
+    if forecasts:
+        inputs["forecast_columns"] = tuple(sorted(forecasts.items()))
+    ratio_columns = {
+        spec.name: (spec.numerator, spec.denominator) for spec in specs if spec.type == "ratio"
+    }
+    if ratio_columns:
+        inputs["ratio_columns"] = tuple(sorted(ratio_columns.items()))
+    if schedule is not None:
+        from hashlib import sha256
+
+        # The declared roster, horizon, arm identities and period count bind the axes;
+        # hash the actual assignments in that order, independently of either frame's ordering.
+        digest = sha256()
+        for index in _unit_order(realized.units, _reject_units):
+            digest.update(np.ascontiguousarray(realized.treated[index]))
+        inputs["logged_assignment_digest"] = digest.hexdigest()
     assignment_evidence, order_cycles = _reduce_switchback_assignment_schedule(
         experiment=context.study_id,
-        schedule=schedule,
+        schedule=realized,
         cycles=cycles,
-        shared=is_shared,
-        block_orders=block_orders,
-        probability_ct=p_ct,
-        randomization_law=assignment.sequence.scheme,
-        independence_grain=assignment.sequence.independence_unit,
+        assignment=assignment,
         control_arm=control,
         treatment_arm=treatment,
     )
@@ -1737,7 +2083,11 @@ def from_switchback_panel(  # noqa: PLR0915
         context=context,
         diagnostics=diagnostics,
         stats=stats,
+        metric_inputs=inputs,
+        missing=missing,
         planning=planning,
+        profiles=profiles,
+        treated=treated,
         roster=sorted(str(value) for value in units),
         assignment_evidence=assignment_evidence,
         order_cycles=order_cycles,

@@ -6,7 +6,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import from_switchback_frame
+from increment import from_switchback_frame, run
 from increment.errors import InvalidRequestError
 from increment.estimation.contrast_results import ContrastResult, ContrastResults
 from increment.estimators import (
@@ -56,6 +56,7 @@ def test_public_switchback_surface_smoke():
         ),
     )
     result = contrast_rows(view_readout(experiment, resolver))[0]
+    assert result.estimate is not None
     assert math.isfinite(result.estimate.value)
     assert assignment_diagnostic(experiment, resolver).n_units == 2
 
@@ -97,11 +98,21 @@ def test_zero_variance_contrast_is_not_stat_sig():
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
-    result = contrast_rows(view_readout(experiment, resolver))[0]
+    saved = run(experiment, resolver)
+    result = contrast_rows(saved.readout())[0]
+    assert result.estimate is not None
     assert result.standard_error == 0.0
     assert result.estimate.lb is None and result.estimate.ub is None
     row = contrast_results_to_readout([result])[0]
-    assert row["stat_sig"] is False
+    assert row["stat_sig"] is None
+    assert result.sampling_available is False and result.decision_scope_complete is False
+    (cell,) = saved.cells
+    status, _ = cell.components["sampling"]
+    assert (status.state, status.code, status.context) == (
+        "unavailable",
+        "evidence.p_value.unavailable",
+        {"metric": "value", "reason": "zero_standard_error"},
+    )
 
 
 def _shared_panel_rows(roster, block_order, outcome_fn, *, washout=1, observation=1):
@@ -158,6 +169,7 @@ def test_shared_schedule_public_surface_smoke():
         ),
     )
     result = contrast_rows(view_readout(experiment, resolver))[0]
+    assert result.estimate is not None
     assert math.isfinite(result.estimate.value)
     assert result.estimate.value == pytest.approx(6.0)
     assert result.method == "switchback_block_t"
@@ -217,15 +229,18 @@ def test_shared_schedule_zero_variance_contrast_is_not_stat_sig():
     result = results[0]
     assert result.standard_error == 0.0
     estimate = result.estimate
+    assert estimate is not None
     assert estimate.value == pytest.approx(5.0)
     assert (estimate.lb, estimate.ub, estimate.level, estimate.alpha) == (None, None, None, None)
     frame = results.to_frame(backend="polars")
     assert isinstance(frame, pl.DataFrame)
     assert frame.schema["lb"] == frame.schema["ub"] == pl.Float64
     assert frame["lb"].to_list() == frame["ub"].to_list() == [None]
+    flags = frame.select("sampling_available", "decision_scope_complete", "available_cell_count")
+    assert flags.row(0) == (False, False, 0)
     row = contrast_results_to_readout([result])[0]
     assert (row["lower"], row["higher"], row["level"]) == (None, None, None)
-    assert row["stat_sig"] is False
+    assert row["stat_sig"] is None
     assert row["n_blocks"] == 2
 
 
@@ -375,6 +390,7 @@ def test_public_retained_window_metadata_and_effect_round_trip(shared, carryover
     result = contrast_rows(results)[0]
     retained = 3 - carryover_order
     expected_se = retained * (math.sqrt(10 / 12) if shared else math.sqrt(8 / 6))
+    assert result.estimate is not None
     assert result.estimate.value == pytest.approx(6 * retained)
     assert result.standard_error == pytest.approx(expected_se)
     assert result.dof == (3 if shared else 2)

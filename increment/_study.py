@@ -48,9 +48,10 @@ SWITCHBACK_IDENTIFICATION = RefusalSpec(
 AllocationDefect = Literal["not_finite_nonnegative", "not_normalized", "unequal_allocation"]
 
 
-def allocation_defect(control_weight: object, treatment_weight: object) -> AllocationDefect | None:
-    """The one switchback allocation contract: finite nonnegative weights that sum
-    to one (within ``1e-12``) and are exactly 0.5/0.5. ``None`` when satisfied."""
+def allocation_defect(
+    control_weight: object, treatment_weight: object, assignment: SwitchbackAssignment
+) -> AllocationDefect | None:
+    """Check that the declared allocation agrees with the schedule's exposure."""
     if (
         not isinstance(control_weight, Real)
         or not isinstance(treatment_weight, Real)
@@ -64,7 +65,17 @@ def allocation_defect(control_weight: object, treatment_weight: object) -> Alloc
     treatment = float(treatment_weight)
     if not math.isclose(control + treatment, 1.0, rel_tol=0.0, abs_tol=1e-12):
         return "not_normalized"
-    if control != 0.5 or treatment != 0.5:
+    expected_control, expected_treatment = assignment.exposure
+    if assignment.sequence.scheme == "fixed_count":
+        # Accept either m/K or its floating-point complement for each arm.
+        if not (
+            control > 0
+            and treatment > 0
+            and control in (expected_control, 1 - expected_treatment)
+            and treatment in (expected_treatment, 1 - expected_control)
+        ):
+            return "unequal_allocation"
+    elif control != expected_control or treatment != expected_treatment:
         return "unequal_allocation"
     return None
 
@@ -75,6 +86,7 @@ def refuse_allocation_defect(
     allocation: object,
     control_group: str,
     treatment_group: str,
+    assignment: SwitchbackAssignment,
 ) -> NoReturn:
     """Raise ``source.frame.switchback.identification`` for *defect*."""
     if defect == "not_finite_nonnegative":
@@ -90,6 +102,22 @@ def refuse_allocation_defect(
             message="switchback allocation weights must sum to one",
             allocation=allocation,
             reason="invalid_allocation",
+        )
+    if assignment.sequence.scheme == "fixed_count":
+        expected_control_weight, expected_treatment_weight = assignment.exposure
+        refuse(
+            SWITCHBACK_IDENTIFICATION,
+            message=(
+                f"switchback allocation requires control weight {expected_control_weight!r} "
+                f"for {control_group!r} and treatment weight {expected_treatment_weight!r} "
+                f"for {treatment_group!r}; use these weights without rounding"
+            ),
+            allocation=allocation,
+            control_group=control_group,
+            treatment_group=treatment_group,
+            expected_control_weight=expected_control_weight,
+            expected_treatment_weight=expected_treatment_weight,
+            reason="unequal_allocation",
         )
     refuse(
         SWITCHBACK_IDENTIFICATION,
@@ -109,12 +137,25 @@ class ParallelStudyEnvelope(CodedModel, BaseModel):
     assignment: ParallelAssignment = ParallelAssignment()
 
 
+class SwitchbackObservationDesign(CodedModel, BaseModel):
+    """Expected roster, observation horizon, and complete event feeds."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    units: tuple[str, ...]
+    cycles: int = Field(ge=1, strict=True)
+    complete_event_metrics: tuple[str, ...]
+
+
 class SwitchbackStudyEnvelope(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["switchback"] = "switchback"
     identification: Randomized
     assignment: SwitchbackAssignment
+    observation_design: SwitchbackObservationDesign | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _exactly_one_treatment_arm(self) -> SwitchbackStudyEnvelope:
@@ -129,13 +170,14 @@ class SwitchbackStudyEnvelope(CodedModel, BaseModel):
         if len(treatment_arms) != 1:
             _raise("facade.study.switchback_study.identification_exactly_one")
         treatment = treatment_arms[0]
-        defect = allocation_defect(allocation[control], allocation[treatment])
+        defect = allocation_defect(allocation[control], allocation[treatment], self.assignment)
         if defect is not None:
             refuse_allocation_defect(
                 defect,
                 allocation=allocation,
                 control_group=str(control),
                 treatment_group=str(treatment),
+                assignment=self.assignment,
             )
         return self
 

@@ -8,8 +8,10 @@ from increment._evidence_dispatch import ContrastReadoutRequest
 from increment.artifacts import publish_unit_day_artifact
 from increment.decision import ContrastDecisionProcedure
 from increment.errors import CapabilityError, InvalidRequestError
+from increment.estimation.engine import Method
 from increment.estimators import sitewide
 from increment.evidence import BreakoutIdentity
+from increment.frame import MetricSpec
 from increment.query import summary_sql
 from increment.semantics.assignment import (
     IndependentBernoulliOrder,
@@ -427,6 +429,7 @@ def test_conversion_readout_uses_retained_window_estimand(shared, carryover_orde
     )
     results = view_readout(experiment, resolver)
     result = contrast_rows(results)[0]
+    assert result.estimate is not None
     assert result.estimate.value == pytest.approx(0.5)
     assert result.aggregation == "any"
     assert ContrastResult.model_validate_json(result.model_dump_json()) == result
@@ -478,7 +481,7 @@ def test_switchback_preferred_direction_reaches_result_and_readout():
 
 
 @pytest.mark.parametrize(
-    ("plan", "reason"),
+    ("plan", "adjusted_ratio", "reason"),
     [
         (
             AnalysisPlan(
@@ -487,10 +490,12 @@ def test_switchback_preferred_direction_reaches_result_and_readout():
                     decision_method=MethodSpec(name="cuped", variance_reduction="cuped"),
                 )
             ),
+            False,
             "unsupported_plan_override",
         ),
         (
             AnalysisPlan(primary=ExperimentMetric(metric="value", margin=0.1)),
+            False,
             "relative_margin",
         ),
         (
@@ -498,15 +503,38 @@ def test_switchback_preferred_direction_reaches_result_and_readout():
                 primary="value",
                 inference=registered_spec(),
             ),
+            False,
             "unsupported_inference",
         ),
         (
             AnalysisPlan(secondaries=["value"]),
+            False,
             "family_inference",
+        ),
+        (
+            AnalysisPlan(primary="value", inference=registered_spec()),
+            True,
+            "cuped_requires_mean",
         ),
     ],
 )
-def test_switchback_plan_refusals_are_coded_before_frame_access(monkeypatch, plan, reason):
+def test_switchback_plan_refusals_are_coded_before_frame_access(
+    monkeypatch, plan, adjusted_ratio, reason
+):
+    from tests.capability_consumers_scalar import SWITCHBACK_PLAN, assert_code
+
+    metric = (
+        MetricSpec(
+            name="value",
+            type="ratio",
+            numerator="sales",
+            denominator="sessions",
+            decision_method=Method.cuped(covariates="forecast"),
+        )
+        if adjusted_ratio
+        else MetricSpec(name="value")
+    )
+
     def fail(*_args, **_kwargs):
         raise AssertionError("frame access occurred before plan validation")
 
@@ -519,23 +547,28 @@ def test_switchback_plan_refusals_are_coded_before_frame_access(monkeypatch, pla
             period="period",
             step="step",
             group="group",
-            metrics={"value": "mean"},
+            metrics=[metric],
             identification=Randomized(
                 control_group="control", allocation={"control": 0.5, "treatment": 0.5}
             ),
             assignment=_assignment(),
-            contrast_references={"value": UnitCycleTApproximation()},
+            contrast_references=None if adjusted_ratio else {"value": UnitCycleTApproximation()},
             plan=plan,
         )
-    assert exc.value.code == "source.frame.switchback.plan"
+    if adjusted_ratio:
+        assert_code(exc.value.code, SWITCHBACK_PLAN, "sequential-ratio-cuped")
+        assert exc.value.context["field"] == "decision_method"
+    else:
+        assert exc.value.code == "source.frame.switchback.plan"
     assert exc.value.context["reason"] == reason
 
 
 @pytest.mark.parametrize(
-    ("plan", "context"),
+    ("plan", "metric", "context"),
     [
         (
             AnalysisPlan(q=0.2, primary="value"),
+            MetricSpec(name="value"),
             {
                 "message": "switchback contrasts do not support an explicitly supplied plan q",
                 "reason": "multiplicity_q",
@@ -546,6 +579,7 @@ def test_switchback_plan_refusals_are_coded_before_frame_access(monkeypatch, pla
                 primary="value",
                 view_multiplicity=MultiplicitySpec(correction="bonferroni"),
             ),
+            MetricSpec(name="value", type="ratio", numerator="sales", denominator="sessions"),
             {
                 "message": "switchback contrasts do not support view multiplicity",
                 "reason": "view_multiplicity",
@@ -553,7 +587,11 @@ def test_switchback_plan_refusals_are_coded_before_frame_access(monkeypatch, pla
         ),
     ],
 )
-def test_switchback_plan_multiplicity_refusals_precede_frame_access(monkeypatch, plan, context):
+def test_switchback_plan_multiplicity_refusals_precede_frame_access(
+    monkeypatch, plan, metric, context
+):
+    from tests.capability_consumers_scalar import SWITCHBACK_PLAN, assert_code
+
     def fail(*_args, **_kwargs):
         raise AssertionError("frame access occurred before multiplicity validation")
 
@@ -566,15 +604,17 @@ def test_switchback_plan_multiplicity_refusals_precede_frame_access(monkeypatch,
             period="period",
             step="step",
             group="group",
-            metrics={"value": "mean"},
+            metrics=[metric],
             identification=Randomized(
                 control_group="control", allocation={"control": 0.5, "treatment": 0.5}
             ),
             assignment=_assignment(),
-            contrast_references={"value": UnitCycleTApproximation()},
+            contrast_references=(
+                {"value": UnitCycleTApproximation()} if metric.type == "mean" else None
+            ),
             plan=plan,
         )
-    assert exc.value.code == "source.frame.switchback.plan"
+    assert_code(exc.value.code, SWITCHBACK_PLAN, "explicit-correction")
     assert exc.value.context == context
 
 

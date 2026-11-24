@@ -147,8 +147,12 @@ from increment.semantics.unit_cycle import UnitCycleReference, _copy_references
 if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
-    from increment.estimation.contrast import ContrastStats
+    from increment.estimation.contrast import ContrastEvidenceStats
     from increment.power.switchback import SwitchbackBaseline
+    from increment.power.switchback_profiles import (
+        SwitchbackConversionBaseline,
+        SwitchbackTrajectoryBaseline,
+    )
     from increment.query.session import WarehouseSession
 
 
@@ -535,9 +539,11 @@ class ContrastContext(CodedModel, BaseModel):
 class ContrastSource(Protocol):
     context: ContrastContext
 
-    def contrast_stats(self, metric: Metric) -> ContrastStats: ...
+    def contrast_stats(self, metric: Metric) -> ContrastEvidenceStats: ...
 
-    def planning_baseline(self, metric: Metric) -> SwitchbackBaseline: ...
+    def planning_baseline(
+        self, metric: Metric
+    ) -> SwitchbackBaseline | SwitchbackTrajectoryBaseline | SwitchbackConversionBaseline: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,6 +617,7 @@ def compile_contrast_procedures(
     *,
     path: Literal["frame", "frame/contrast"] = "frame/contrast",
     contrast_references: Mapping[str, UnitCycleReference] | None = None,
+    forecast_columns: Mapping[str, str] | None = None,
 ) -> Mapping[str, ContrastDecisionProcedure]:
     """Compile one fixed, family-free decision rule per metric."""
     references = _copy_references(contrast_references)
@@ -716,6 +723,7 @@ def compile_contrast_procedures(
             alpha=test.alpha,
             preferred_direction=metric.declared_preferred_direction,
             reference=references.get(name),
+            forecast_column=forecast_columns.get(name) if forecast_columns else None,
         )
     return MappingProxyType(dict(procedures))
 

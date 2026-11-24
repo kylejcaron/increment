@@ -94,11 +94,11 @@ sets only target power (default 0.80) and treatment allocation (default 0.5).
 - `increment.workflows.planning_baseline(experiment, reader, metric)`: read a
   prior/pilot experiment or pre-treatment data with its declared design.
 
-Without such data, `planning_baseline` has nothing to read; use an assumed
-value instead. It returns `QuantileBaseline` for quantiles and
-`SwitchbackBaseline` for switchbacks. For ordinary pilot metrics it raises
-variance as `from_summary` does; that is a model-based allowance, not a
-heavy-tail guarantee.
+Without pilot data, use an explicit assumption. `planning_baseline` returns
+a `QuantileBaseline` for quantiles; for switchbacks the [schedule and
+metric select the model](#switchback-contrasts). For ordinary pilot
+metrics it raises variance as `from_summary` does. That is a model-based
+allowance, not a heavy-tail guarantee.
 
 A triggered pilot must retain its trigger and assignment data. A clustered
 pilot also needs cluster identities and outcomes for every eligible control
@@ -340,20 +340,81 @@ passing it back as `relative_lift`; see the [complete example](../reference/plan
 
 ## Switchback contrasts
 
-Use the pilot-fitted `SwitchbackBaseline` and a `ContrastDecisionProcedure`
-with the `switchback_*` solvers. Their `n` counts independent **units** for
-independent orders or **blocks** for shared schedules, never cycles times
-roster size. Effects and MDEs are absolute, not relative.
+Count independent **units** if each unit draws its own orders, or **blocks**
+if a whole roster follows one schedule. A larger roster does not buy more
+shared blocks. Before collecting a pilot,
+[check the schedule before launch](switchback.md#check-the-schedule-before-launch).
+Choose a pilot for the metric you will actually test:
 
-Power includes the probability that the schedule admits a result. The
-noncentral-t approximation conditions on pilot moments: it does not integrate
-pilot uncertainty, certify population moments or establish no residual
-carryover. Conversion aggregation `"any"` refuses with
-`power.switchback.bounded_model_required`.
+- **Unadjusted mean, paired order:** `planning_baseline` fits a
+  `SwitchbackBaseline` for the moment-t solvers. Power approximates the
+  decision from pilot moments; it does not replay each rollout.
+- **Unadjusted mean, uniform fixed count:** use `switchback_profile_plan`
+  with the fitted `SwitchbackTrajectoryBaseline`. The
+  [80% exposure example](switchback.md#analyze-an-80-treatment-schedule)
+  reads a pilot, resamples whole blocks and reports the first resolved
+  size and effect on the chosen grid.
+- **Conversion, paired or fixed count:** use the same grid planner with a
+  `SwitchbackConversionBaseline`. The input risk is the probability of
+  **any event in one retained window**, not a per-step probability. Use the
+  pilot's weighted control risk or state the untreated risk yourself.
+  Do not use an unbounded additive-total model to size a binary outcome.
 
-Start with the [switchback workflow](switchback.md); consult
-[baseline, result and inversion contracts](../reference/planning-methods.md#switchback-contrasts)
-for moment-t planning versus certified envelopes and complete joint models.
+For example, suppose a depot records an on-time delivery in 60% of control windows.
+Test a **10 percentage point** improvement: treatment risk 70%, not 66%.
+Two depots share each two-period block; CT is more likely than TC but
+each depot still receives treatment in half its periods.
+
+```python
+from increment.estimators import SharedScheduleOrder, SwitchbackAssignment, SwitchbackWindow
+from increment.power import (
+    ContrastDecisionProcedure,
+    SwitchbackConversionBaseline,
+    switchback_profile_plan,
+)
+
+delivery = SwitchbackConversionBaseline(
+    assignment=SwitchbackAssignment(
+        sequence=SharedScheduleOrder(probability_ct=0.8),
+        window=SwitchbackWindow(washout_steps=1, observation_steps=3),
+    ),
+    metric="on_time",
+    control_group="control",
+    treatment_group="treatment",
+    roster=("east", "west"),
+    cycles_per_unit=1,
+    untreated_risk=0.60,
+)
+decision = ContrastDecisionProcedure(
+    metric="on_time",
+    role="primary",
+    alternative="greater",
+    null_abs=0.0,
+    alpha=0.05,
+)
+delivery_plan = switchback_profile_plan(
+    delivery,
+    decision,
+    sizes=(32, 96, 192),
+    effects=(0.10,),
+    target_power=0.8,
+    repetitions=512,
+    seed=37,
+)
+crossing = delivery_plan.grid_size(0.10)
+print(crossing.status, crossing.value)
+```
+
+This models independent window indicators given arm, including across
+depots. A storm that closes both depots breaks that assumption. Both arm
+risks must stay in `[0, 1]`. A ratio, CUPED-adjusted mean or prospective
+variance envelope cannot substitute for the outcome model.
+
+Plan sizes and effects before simulating. A crossing must clear the target
+on its simultaneous lower power bound after all earlier candidates fall
+short on their upper bounds. The answer is limited to that grid and model;
+it does not certify the test's false-positive rate. See the
+[model and result fields](../reference/planning-methods.md#switchback-contrasts).
 
 <span id="conversion-and-retention-planning-follows-the-runtimes-route"></span>
 

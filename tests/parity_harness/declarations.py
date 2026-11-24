@@ -386,7 +386,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_switchback_panel",
-                    "SOURCE: switchback metrics must be type='mean' or type='conversion'; quantile is refused before any frame is read (confirmed live: source.frame.switchback.metric).",
+                    "SOURCE: a switchback panel cannot estimate a quantile contrast.",
                 ),
             ),
             refusals=(("from_moments", "source.frame.quantile_no_moments"),),
@@ -436,7 +436,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_switchback_panel",
-                    "SOURCE: switchback metrics must be type='mean' or type='conversion'; quantile is refused before any frame is read (confirmed live: source.frame.switchback.metric).",
+                    "SOURCE: a switchback panel cannot estimate a quantile contrast.",
                 ),
             ),
             refusals=(("from_moments", "source.frame.quantile_no_moments"),),
@@ -1362,7 +1362,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_switchback_panel",
-                    "SOURCE: switchback metrics must be type='mean' or type='conversion'; quantile is refused before any frame is read (confirmed live: source.frame.switchback.metric).",
+                    "SOURCE: a switchback panel cannot estimate a quantile contrast.",
                 ),
             ),
             refusals=(("from_moments", "source.frame.quantile_no_moments"),),
@@ -1378,7 +1378,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             waive=(
                 (
                     "from_switchback_panel",
-                    "SOURCE: switchback accepts only mean/conversion metrics and refuses a quantile catalog (source.frame.switchback.metric); it also has no registered sequential construction. This dataset has no switchback schedule.",
+                    "SOURCE: switchback panels have neither a quantile contrast nor sequential inference. This dataset has no switchback schedule.",
                 ),
             ),
         ),

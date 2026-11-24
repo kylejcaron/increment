@@ -163,6 +163,37 @@ values.
 
 ### Current changes
 
+- [`from_switchback_frame`](guides/switchback.md) accepts unequal exposure
+  when the scheduler uniformly draws a fixed number of treated positions
+  per cycle. Declare `FixedCountOrder` and the matching arm allocation.
+  `increment.power.switchback_profile_plan` sizes an unadjusted mean for
+  this schedule, or a conversion under a bounded window-risk model for
+  paired or fixed-count schedules. Existing paired mean plans keep their
+  moment-t interpretation. Pilot power does not certify coverage: see the
+  [fixed-count calendar](reference/switchback-inference.md#unadjusted-means-and-conversions)
+  and [paired measurements](reference/switchback-inference.md#coverage-with-few-units-or-blocks).
+- `increment.power.switchback_schedule_refusal_probability` checks the chance a drawn schedule is refused before outcomes are read.
+
+- Switchback readouts can compare ratios of retained totals and adjust a
+  mean with a separate, pre-assignment forecast. An undefined rate keeps
+  its metric and reason without suppressing other results. To distinguish
+  missing responses from missing assignments, pass `SwitchbackObservationSchedule`
+  with the full assignment log, roster and cycle count. Without a separate
+  log, the dense input requirements are unchanged.
+  A missing forecast value affects only the metrics that use it. A scalar
+  point with no test retains its reason in live and saved reports; its
+  significance is unknown, not false. Fixed-count estimates and pilot tests
+  retain small between-block differences even at large integer offsets.
+  Ratio and forecast-adjusted guardrails test the unrounded effect against
+  the declared threshold. The fixed-count readout flags approximate tests.
+  Saved experiments now bind the named outcome column, not its contents.
+  Rebuild older switchback experiments that used a different column name
+  from the metric: their saved identities cannot tell those columns apart.
+  Older saved reports also derive unavailable tests from their recorded
+  uncertainty, without changing their saved contents or identity.
+  Separate observation logs allocate only retained steps, while still
+  checking supplied observations in the discarded window.
+
 - DuckDB accumulates daily ratio statistics more accurately. A sparse day
   with valid data can now report an interval instead of refusing because
   of rounding. Invalid statistics and days without a usable denominator
@@ -1261,11 +1292,15 @@ different approximations and limits.
     v1 and v2 plans. See the [planning guide](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
     for route assumptions and a statsmodels comparison.
 
-    Switchback users can fit a baseline with `source.planning_baseline(metric)`
-    and pass it to the three `switchback_*` solvers. No manually supplied
-    reference effect, covariance, or population certificate is needed. The
-    result remains a model-conditioned moment-t approximation; see
-    [switchback planning](guides/power-analysis.md#switchback-contrasts).
+    `increment.workflows.planning_baseline(experiment, reader, metric)`
+    fits a paired mean's moment-t baseline, a fixed-count mean's untreated
+    trajectories or a conversion's bounded retained-window risk. Use
+    `increment.power.switchback_profile_plan` for the latter two;
+    [switchback planning](guides/power-analysis.md#switchback-contrasts)
+    explains the model and what counts as an independent replicate.
+
+    `increment.power.switchback_schedule_refusal_probability` checks schedule-only
+    refusal risk before a pilot exists; see the [prelaunch check](guides/switchback.md#check-the-schedule-before-launch).
 
     Complete-law simulation declarations and oracle solvers are in
     `increment.semantics.unit_cycle` and `increment.power.unit_cycle`, outside
@@ -1314,6 +1349,10 @@ different approximations and limits.
 ::: increment.estimators.switchback_achieved_power
 
 ::: increment.estimators.switchback_minimum_detectable_effect
+
+::: increment.power.switchback_profile_plan
+
+::: increment.power.switchback_schedule_refusal_probability
 
 ::: increment.estimators.unit_cycle_power_lower_bound
 

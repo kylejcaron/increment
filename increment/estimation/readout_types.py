@@ -13,7 +13,7 @@ from datetime import date, datetime
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
-from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_serializer, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from increment._canonical import _jcs_float, canonical_digest_bytes, canonical_json_bytes
@@ -512,6 +512,10 @@ class ReadoutScope(_ReadoutModel):
     populations: tuple[Population, ...]
     families: tuple[FamilyScope, ...] = ()
     by_source: Mapping[str, SourceReadoutScope]
+    # Sampling records qualify completion without changing the stored scope flags.
+    _unavailable_cells: frozenset[tuple[str, CellKey]] = PrivateAttr(
+        default_factory=lambda: frozenset[tuple[str, CellKey]]()
+    )
 
     @model_validator(mode="after")
     def _scope_membership(self):
@@ -587,7 +591,16 @@ class ReadoutScope(_ReadoutModel):
             for source in self.by_source.values()
             if population in source.decision_complete_by_population
         ]
-        return bool(values) and all(values)
+        return (
+            bool(values)
+            and all(values)
+            and not any(
+                (source_id, cell) in self._unavailable_cells
+                for source_id, source in self.by_source.items()
+                for cell in source.decision_cells
+                if cell.analysis_population == population
+            )
+        )
 
 
 class ReadoutCapture(_ReadoutModel):
@@ -631,6 +644,25 @@ class ReadoutMetadata(_ReadoutModel):
         default_factory=dict, exclude_if=lambda value: not value
     )
     captures: tuple[ReadoutCapture, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+    def _qualify_sampling_scope(self, unavailable_cells: Iterable[tuple[str, CellKey]] = ()):
+        scope = self.scope.model_copy()
+        assert scope.__pydantic_private__ is not None
+        scope.__pydantic_private__["_unavailable_cells"] = frozenset(unavailable_cells) | frozenset(
+            (record.source_snapshot_id, record.cell)
+            for record in self.cells
+            if record.failure is not None
+            or (record.sampling is not None and not record.sampling.available)
+        )
+        object.__setattr__(self, "scope", scope)
+        return self
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False):
+        """Copy metadata, refreshing sampling qualifications when records or scope change."""
+        copied = super().model_copy(update=update, deep=deep)
+        if update is not None and ("scope" in update or "cells" in update):
+            copied._qualify_sampling_scope()
+        return copied
 
     @field_validator("effective_modes", mode="before")
     @classmethod
@@ -755,7 +787,7 @@ class ReadoutMetadata(_ReadoutModel):
             )
         if tuple(sorted(self.cells, key=_record_order)) != self.cells:
             refuse_readout("readout.serialization.noncanonical_order", section="metadata cells")
-        return self
+        return self._qualify_sampling_scope()
 
     @property
     def failures(self):

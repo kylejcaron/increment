@@ -44,12 +44,12 @@ Verdicts are per leg: 5,376 legs carry 32,256 ingress verdicts.
 | from_unit_day_artifact | 700 | 0 | 472 | 3,976 | 228 | 0 |
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
 | from_unit_panel | 508 | 920 | 1,912 | 1,632 | 404 | 0 |
-| from_switchback_panel | 4 | 1,736 | 1,428 | 1,920 | 288 | 0 |
+| from_switchback_panel | 8 | 1,684 | 1,476 | 1,920 | 288 | 0 |
 | from_moments | 124 | 1,618 | 1,612 | 1,728 | 294 | 0 |
 
 ## Cells where one ingress runs and another does not
 
-Cells with a mixed run/refusal verdict across ingresses: 550.
+Cells with a mixed run/refusal verdict across ingresses: 546.
 
 ## Unfinished cells and trackers
 
@@ -132,7 +132,9 @@ The mixed-catalog checkpoint scenario compares the modeled conversion's rows and
 - A panel conversion column carries one 0/1 per unit for `run`/`asof`/`breakout` (a total reads it once) and a per-day indicator for `daily`; one frame cannot serve both, so the frame is built per view.
 - Edge units are exposed at 03:00Z (22:00 the previous day under `UTC-05:00`); retention and window cells carry events whose band or window day differs by boundary, so a route bucketing in UTC fails them.
 - `observational` is declared IPTW with one numeric pre-exposure covariate; `sequential` uses `asymptotic_mean` (mean, ratio) or `always_valid` (conversion, retention) with a 50/50 allocation and no explicit registration; `ni_margin` is a relative margin on a guardrail; `cluster` is 40 clusters per arm of one or two units.
-- The switchback sub-case uses one fixed schedule (8 units, 2 cycles, 2 periods, washout 1) and a shared frame carrying every metric column.
+- The switchback sub-case uses its own two-cycle schedule (8 units at base scale, 2 periods per cycle, 1 washout step). Whole-window unadjusted ratios compare arm rates, not parallel-arm relative lifts or averages of unit rates. Mean CUPED uses a separate forecast table with complete unit/cycle/period keys and timestamps before assignment, not a column in the responses. The two estimates have independent numeric oracles in `test_parity_matrix.py`. Ratio and conversion CUPED, day-axis views and breakouts do not follow from either success.
+- The matrix uses dense switchback panels: `zero` and `skip` are not a license to fill or drop missing responses. With a separately declared complete assignment log, `tests/test_switchback_observations.py` exercises metric-local missing responses and declared complete event feeds. `tests/test_switchback_metric_inputs.py` exercises the refusal of mean CUPED without a frozen forecast. Metric-local unavailable points or intervals are not constructor refusals.
+- Explicit multiplicity is construction-limited, not implied by the ability to read multiple metrics in one run: `tests/test_readouts_switchback.py::test_switchback_plan_multiplicity_refusals_precede_frame_access` exercises a plan-level `q` and a Bonferroni view correction. The `cluster` keyword remains not expressible, and sequential inference, winsorization and relative guardrail margins are still refused.
 - A `from_moments` cube is exported by a producer and replayed. A retention or windowed mean, conversion or ratio metric reads dates, so the dataframe panel produces it; the panel refuses a pre-period covariate there, so a CUPED retention (unwindowed), windowed mean, windowed conversion or windowed ratio cube under `error`/`zero` is exported from `from_definitions` instead and the cell records what `from_moments` does with that cube. An unwindowed CUPED mean, conversion or ratio cube is exported from `from_unit_summary` as before. A quantile cube is never exported: see "Portable quantile cells" above. Windowed retention stops at declaration (`definition.retention.metric_window_days`) on every ingress before any cube exists. Under `skip` the warehouse route cannot declare the policy, so no producer exists and the panel's refusal stands.
 
 ## Unresolved remainder

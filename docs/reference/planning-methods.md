@@ -765,13 +765,89 @@ negative `null_lift` it plans a larger one.
 
 ## Switchback contrasts
 
-Switchback planning uses a `ContrastDecisionProcedure` and a frozen
-`SwitchbackBaseline`, usually `planning_baseline(experiment, reader, metric)`
-on a pilot built by `from_switchback_frame(...)`, or
-`source.planning_baseline(source.metrics[0])` on a source built by
-`increment.frame.from_switchback_panel(...)`; both return the same baseline.
-These approximate functions are exported from both `increment` and
-`increment.power`:
+`increment.workflows.planning_baseline(experiment, reader, metric)` selects
+the model for a switchback pilot. Use absolute effects on the scale of one
+retained window. `n` counts units for independent unit-cycle draws or
+blocks for a schedule shared across a fixed roster.
+
+### Profile grid for fixed-count means and bounded conversions
+
+`increment.power.switchback_profile_plan(baseline, procedure, *, sizes,
+effects, target_power=0.8, repetitions=4096, seed=0, mc_error=0.05)` returns
+a `SwitchbackProfilePlan`. Two baseline types are accepted:
+
+- **`SwitchbackTrajectoryBaseline`:** for an unadjusted fixed-count mean.
+  Subtract the fitted reference effect from the treated pilot totals to
+  reconstruct each untreated profile. Each simulated study samples entire
+  unit trajectories (all cycles) or entire blocks (all roster members)
+  with replacement, redraws the uniform subsets and adds the specified
+  effect to treated totals. This assumes a constant additive shift and a
+  pilot representative of the replicates to come; it does not sample
+  positions, cycles within a unit or stores within a shared block independently.
+- **`SwitchbackConversionBaseline`:** for an unadjusted conversion under
+  a paired or fixed-count schedule. Estimate `untreated_risk` from the
+  retained control indicators, weighting each window by the inverse of its
+  position's control probability and normalizing by the sum of those
+  weights. Alternatively, declare `untreated_risk` directly. Draw one
+  independent Bernoulli indicator per unit and retained window, given arm.
+  The risks are `p0` and `p0 + delta`; both must lie in `[0, 1]`. The model
+  does not reproduce serial dependence, position-varying risk or common
+  shocks across roster members. It does not simulate the individual steps.
+
+The pilot records its metric, arm labels, assignment, window, roster and
+cycle count. To supply already reduced pilot data, both baseline classes
+offer `from_pilot(assignment=..., metric=..., control_group=...,
+treatment_group=..., roster=..., observed=..., treated=..., delta_ref=...)`;
+the arrays have axes **unit × cycle × position**, with rows in roster
+order. `observed` contains retained totals or retained-window indicators,
+not raw steps; `treated` marks the realized assignment. A pilot missing a
+required measurement for the selected metric refuses. Neither ratio nor
+forecast-adjusted mean has a matching sizing model here.
+
+Use `increment.power.ContrastDecisionProcedure` for the *prospective*
+metric, role, additive null (`null_abs`), alternative, preferred direction
+and allocated `alpha`. For unadjusted unit inference set
+`reference=UnitCycleTApproximation()` (`increment.estimators`); for shared
+block inference use `reference=None`. A variance envelope is not the same
+test. Changing the order law, window, roster or effect model requires a
+matching baseline, not a renamed one.
+
+Use distinct integer sizes of at least two replicates, and distinct
+finite signed effects. The grid is limited to 4,096 size/effect pairs and
+262,144 retained windows per simulated experiment: `n × K × cycles_per_unit`
+for independent units, `n × K × roster size` for shared-block conversion
+baselines, and `n × K` for shared-block trajectory baselines, which average
+the roster within each block.
+
+For each `(n, delta)`, `points` records `attempts`, `admission_failures`,
+`zero_se`, other `decision_failures`, `rejected`, `power`, `power_lower` and
+`power_upper`. Every simulated study counts. For example, five shared
+blocks with one control position out of five have position support only
+if the five control positions are all distinct: `5! / 5**5 = 120 / 3125`.
+Even a test that rejects on **every admitted schedule** cannot attain
+80% power per attempt there.
+
+The power estimate is `rejected / attempts`. Its binomial
+(Clopper–Pearson) bounds use a Bonferroni split of `mc_error` across both
+tails and the entire grid. They quantify simulation error in the model's
+rejection probability, not pilot uncertainty. `grid_mde(n)` searches
+favorable effects outward from the null; `grid_size(delta)` searches
+increasing sizes at the chosen effect. Both return `status` and `value`:
+
+- `attained`: first candidate whose lower bound reaches the target, with
+  every earlier upper bound below it. `value` is the signed effect or size.
+- `not_attained`: every tested candidate's upper bound is below target.
+- `undecided`: simulation error leaves the first crossing unresolved, even
+  if a later candidate clearly meets the target. `value` is null here and
+  for `not_attained`.
+
+There is no interpolation, monotonicity assumption, or minimum outside
+the declared grid. See the [worked example](../guides/switchback.md#analyze-an-80-treatment-schedule).
+
+### Paired unadjusted mean: moment-t solvers
+
+For this metric and law the pilot returns a `SwitchbackBaseline`. The three
+approximate solvers are in `increment.power`:
 
 ```text
 switchback_achieved_power(n, delta, baseline, procedure)
@@ -784,10 +860,10 @@ independent **blocks** for shared schedules, with `df = n - 1` and
 `2 <= n <= 2**53`. Neither cycles nor roster size multiply `n`; the summary
 already averages within the independent replicate, and one cycle per unit is
 valid. `delta` and the MDE are **absolute** effects; there is no relative or
-standardized MDE. `power` already multiplies by `admission_probability`, the
-exact probability a shared-schedule design at that block count realizes both
-cycle orders (`1.0` for an independent-order baseline), so every solver
-reports or targets *available* power.
+standardized MDE. For a shared schedule the moment approximation multiplies
+power by the probability of realizing both orders (`admission_probability`).
+The independent-order model sets this factor to `1.0`. Unlike a profile
+simulation, this calculation does not replay every order split or failed fit.
 
 !!! warning "A pilot fit is an approximation, not a certificate"
     The noncentral-t reference is a planning approximation, not an exact
@@ -796,8 +872,8 @@ reports or targets *available* power.
     not integrate uncertainty from estimating the pilot; a pilot sample
     variance is not a prospective variance envelope, and the fit neither
     establishes population moments nor validates no residual carryover.
-    Conversion aggregation (`"any"`) is refused with
-    `power.switchback.bounded_model_required`.
+    The scalar solvers still refuse conversion aggregation (`"any"`) with
+    `power.switchback.bounded_model_required`; use the bounded grid model above.
 
 For a two-sided MDE query, `procedure.preferred_direction="decrease"`
 searches below the null, including decrease-only `effect_bounds`;

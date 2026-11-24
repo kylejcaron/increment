@@ -9,10 +9,9 @@ from typing import TYPE_CHECKING, Literal, SupportsIndex, overload
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from increment._canonical import canonical_json_bytes
-from increment._immutable import _FrozenMapping
 from increment._literals import (
     Alternative,
     Backend,
@@ -22,9 +21,11 @@ from increment._literals import (
     default_frame_backend,
 )
 from increment._unit_cycle import unit_cycle_envelope_cutoff
-from increment.declarations import thaw
+from increment.declarations import freeze, thaw
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.readout_types import (
+    CellKey,
+    SamplingInference,
     _restore_collection,
     concat_collection,
     dump_collection,
@@ -32,7 +33,12 @@ from increment.estimation.readout_types import (
     refuse_readout,
     validate_collection,
 )
-from increment.estimation.results import Estimate, RejectionSide
+from increment.estimation.results import (
+    Estimate,
+    RejectionSide,
+    contrast_p_value,
+    contrast_stat_sig,
+)
 from increment.semantics.unit_cycle import (
     ProspectiveAssumptionProvenance,
     UnitCycleReference,
@@ -45,14 +51,78 @@ if TYPE_CHECKING:
 
 
 # Independent units and shared blocks have different replication grains.
-RandomizationLaw = Literal["independent_bernoulli_order", "shared_schedule"]
+RandomizationLaw = Literal["independent_bernoulli_order", "shared_schedule", "fixed_count"]
 IndependenceGrain = Literal["unit_cycle", "shared_block"]
+
+ContrastAggregation = Literal["sum", "any", "ratio"]
+ContrastMethod = Literal[
+    "switchback_unit_t_approximation",
+    "switchback_block_t",
+    "switchback_unit_variance_envelope",
+    "switchback_ratio_delta_t",
+    "switchback_cuped_jackknife_t",
+]
+ContrastReference = Literal[
+    "unit_t_approximation",
+    "block_t",
+    "residual_chebyshev",
+    "residual_cantelli",
+    "switchback_ratio_delta_t",
+    "switchback_cuped_jackknife_t",
+]
+ContrastEstimand = Literal[
+    "retained_window_total_difference",
+    "mean_unit_retained_window_difference",
+    "retained_window_conversion_difference",
+    "retained_window_ratio_difference",
+]
+
+
+def _contrast_identity(
+    aggregation: ContrastAggregation,
+    forecast_column: str | None,
+    grain: IndependenceGrain,
+    reference: UnitCycleReference | None,
+    alternative: Alternative,
+) -> tuple[ContrastMethod, ContrastReference, ContrastEstimand]:
+    if aggregation == "ratio":
+        return (
+            "switchback_ratio_delta_t",
+            "switchback_ratio_delta_t",
+            "retained_window_ratio_difference",
+        )
+    if forecast_column is not None:
+        return (
+            "switchback_cuped_jackknife_t",
+            "switchback_cuped_jackknife_t",
+            "retained_window_total_difference",
+        )
+    if isinstance(reference, UnitCycleVarianceEnvelope):
+        return (
+            "switchback_unit_variance_envelope",
+            "residual_chebyshev" if alternative == "two-sided" else "residual_cantelli",
+            "mean_unit_retained_window_difference",
+        )
+    estimand: ContrastEstimand = (
+        "retained_window_conversion_difference"
+        if aggregation == "any"
+        else "retained_window_total_difference"
+    )
+    if grain == "shared_block":
+        return "switchback_block_t", "block_t", estimand
+    return "switchback_unit_t_approximation", "unit_t_approximation", estimand
+
 
 _REFUSALS = {
     "estimation.contrast.assignment_metadata": RefusalSpec(
         "estimation.contrast.assignment_metadata",
         InvalidRequestError,
         template="{randomization_law} requires {expected_grain}, got {independence_grain}",
+    ),
+    "estimation.contrast.exposure": RefusalSpec(
+        "estimation.contrast.exposure",
+        InvalidRequestError,
+        template="The stored exposure does not match the declared switchback law.",
     ),
     "estimation.contrast.replication_counts": RefusalSpec(
         "estimation.contrast.replication_counts",
@@ -86,6 +156,42 @@ _REFUSALS = {
 }
 
 
+def _valid_missing_key(
+    context: Mapping[str, object], metric: str, reason: str, key_length: int
+) -> bool:
+    count = context.get("missing_count")
+    key = context.get("first_missing_key")
+    return (
+        context.get("metric") == metric
+        and context.get("reason") == reason
+        and type(count) is int
+        and count > 0
+        and isinstance(key, (tuple, list))
+        and len(key) == key_length
+        and isinstance(key[0], str)
+        and all(type(index) is int for index in key[1:])
+    )
+
+
+def _valid_missing_response(
+    context: Mapping[str, object], metric: str, control: str, treatment: str
+) -> bool:
+    return _valid_missing_key(context, metric, "unobserved_response", 4) and context.get("arm") in (
+        control,
+        treatment,
+    )
+
+
+def _valid_missing_forecast(
+    context: Mapping[str, object], metric: str, forecast_column: str | None
+) -> bool:
+    return (
+        forecast_column is not None
+        and context.get("column") == forecast_column
+        and _valid_missing_key(context, metric, "missing_forecast", 3)
+    )
+
+
 def _validate_retained_window(
     observation_steps: int, retained_steps: int, carryover_order: int
 ) -> None:
@@ -99,6 +205,8 @@ def _validate_retained_window(
 
 
 def _validate_assignment_metadata(law: RandomizationLaw, grain: IndependenceGrain) -> None:
+    if law == "fixed_count":
+        return
     expected = "unit_cycle" if law == "independent_bernoulli_order" else "shared_block"
     if grain != expected:
         refuse(
@@ -110,9 +218,13 @@ def _validate_assignment_metadata(law: RandomizationLaw, grain: IndependenceGrai
 
 
 def _validate_replication_counts(
-    law: RandomizationLaw, n_units: int, n_cycles: int, n_blocks: int | None
+    law: RandomizationLaw,
+    grain: IndependenceGrain,
+    n_units: int,
+    n_cycles: int,
+    n_blocks: int | None,
 ) -> int:
-    if law == "independent_bernoulli_order":
+    if grain == "unit_cycle":
         if n_blocks is None and n_cycles >= n_units:
             return n_units
     elif n_blocks is not None and n_cycles == n_units * n_blocks:
@@ -133,10 +245,15 @@ def _validate_order_counts(
     ct_cycles: int | None,
     tc_cycles: int | None,
 ) -> None:
-    if law == "independent_bernoulli_order" and ct_cycles is None and tc_cycles is None:
+    if law != "shared_schedule" and ct_cycles is None and tc_cycles is None:
         return
     draws = n_cycles if law == "independent_bernoulli_order" else n_blocks
-    if ct_cycles is None or tc_cycles is None or ct_cycles + tc_cycles != draws:
+    if (
+        law == "fixed_count"
+        or ct_cycles is None
+        or tc_cycles is None
+        or ct_cycles + tc_cycles != draws
+    ):
         refuse(
             _REFUSALS["estimation.contrast.order_counts"],
             randomization_law=law,
@@ -147,7 +264,38 @@ def _validate_order_counts(
         )
 
 
-class ContrastResult(CodedModel, BaseModel):
+class _FixedCountMetadata(CodedModel, BaseModel):
+    """Law-specific metadata is absent from historical paired payloads."""
+
+    periods_per_cycle: int | None = Field(default=None, strict=True, exclude_if=lambda x: x is None)
+    treated_periods: int | None = Field(default=None, strict=True, exclude_if=lambda x: x is None)
+    treatment_probability: float | None = Field(default=None, exclude_if=lambda x: x is None)
+
+    def _validate_exposure(self, law: RandomizationLaw, probability_ct: float | None) -> None:
+        k, m, p = self.periods_per_cycle, self.treated_periods, self.treatment_probability
+        if law == "fixed_count":
+            if (
+                k is not None
+                and m is not None
+                and k >= 3
+                and 0 < m < k
+                and p == m / k
+                and probability_ct is None
+            ):
+                return
+        elif k is None and m is None and p is None and probability_ct is not None:
+            return
+        refuse(
+            _REFUSALS["estimation.contrast.exposure"],
+            randomization_law=law,
+            periods_per_cycle=k,
+            treated_periods=m,
+            treatment_probability=p,
+            probability_ct=probability_ct,
+        )
+
+
+class ContrastResult(_FixedCountMetadata):
     """One additive contrast with realized unit-cycle or shared-block order counts."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
@@ -155,20 +303,12 @@ class ContrastResult(CodedModel, BaseModel):
     metric: str = Field(min_length=1)
     control_group: str = Field(min_length=1)
     treatment_group: str = Field(min_length=1)
-    method: Literal[
-        "switchback_unit_t_approximation",
-        "switchback_block_t",
-        "switchback_unit_variance_envelope",
-    ] = "switchback_unit_t_approximation"
+    method: ContrastMethod = "switchback_unit_t_approximation"
     method_role: Literal["decision"] = "decision"
     role: Role = "unassigned"
-    estimand: Literal[
-        "retained_window_total_difference",
-        "mean_unit_retained_window_difference",
-        "retained_window_conversion_difference",
-    ]
-    aggregation: Literal["sum", "any"]
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    estimand: ContrastEstimand
+    aggregation: ContrastAggregation
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
     # Positive carryover orders discard additional post-washout steps.
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
@@ -178,7 +318,7 @@ class ContrastResult(CodedModel, BaseModel):
     identifying_assumption: Literal["no_residual_carryover_after_discarded_steps"] = (
         "no_residual_carryover_after_discarded_steps"
     )
-    estimate: Estimate
+    estimate: Estimate | None
     standard_error: float | None = Field(
         default=None,
         ge=0.0,
@@ -195,12 +335,7 @@ class ContrastResult(CodedModel, BaseModel):
     dof: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     assignment: Literal["switchback"] = "switchback"
     inference: Literal["fixed"] = "fixed"
-    reference: Literal[
-        "unit_t_approximation",
-        "block_t",
-        "residual_chebyshev",
-        "residual_cantelli",
-    ] = "unit_t_approximation"
+    reference: ContrastReference = "unit_t_approximation"
     dof_unavailable_reason: Literal["not_applicable"] | None = None
     standard_error_unavailable_reason: Literal["insufficient_replicates"] | None = None
     mean_slope: float | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -213,8 +348,8 @@ class ContrastResult(CodedModel, BaseModel):
     refusal_probability_upper: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     residual_cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     residual_p_value: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
-    #: Sign of the exact residual the envelope p-value tests; "split" when it is zero.
-    #: Left out of t-reference dumps, whose wire form predates it.
+    #: Sign of the tested residual before point rounding; "split" when it is zero.
+    #: Omitted for historical paired t references.
     residual_side: RejectionSide | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -229,35 +364,217 @@ class ContrastResult(CodedModel, BaseModel):
     decision_scope_complete: bool | None = None
     decision_scope_reason_code: str | None = None
     decision_scope_reason_context: Mapping[str, object] | None = None
+    forecast_column: str | None = Field(default=None, min_length=1, exclude_if=lambda v: v is None)
+    failure_code: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    failure_context: Mapping[str, object] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
     @model_validator(mode="after")
     def _freeze_scope_context(self):
-        if self.decision_scope_reason_context is not None:
-
-            def freeze(value):
-                if isinstance(value, Mapping):
-                    frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
-                    canonical_json_bytes(dict(frozen))
-                    return frozen
-                if isinstance(value, (tuple, list)):
-                    return tuple(freeze(item) for item in value)
-                return value
-
-            object.__setattr__(
-                self, "decision_scope_reason_context", freeze(self.decision_scope_reason_context)
-            )
+        for name in ("decision_scope_reason_context", "failure_context"):
+            context = getattr(self, name)
+            if context is not None:
+                canonical_json_bytes(thaw(context))
+                object.__setattr__(self, name, freeze(context))
         return self
+
+    @field_serializer("failure_context", "decision_scope_reason_context", when_used="json")
+    def _dump_reason_context(self, value):
+        return thaw(value)
+
+    @property
+    def sampling_available(self) -> bool:
+        return self.sampling_reason_code is None
+
+    @property
+    def sampling_reason_code(self) -> str | None:
+        if self.failure_code is not None:
+            return self.failure_code
+        if self.method != "switchback_unit_variance_envelope" and self.standard_error == 0:
+            return "evidence.p_value.unavailable"
+        return None
+
+    @property
+    def sampling_reason_context(self) -> Mapping[str, object] | None:
+        if self.failure_context is not None:
+            return self.failure_context
+        if self.sampling_reason_code is not None:
+            return freeze({"metric": self.metric, "reason": "zero_standard_error"})
+        return None
+
+    @property
+    def reference_qualification(self) -> str | None:
+        if (
+            self.sampling_available
+            and self.standard_error
+            and self.reference
+            in (
+                "block_t",
+                "unit_t_approximation",
+                "switchback_ratio_delta_t",
+                "switchback_cuped_jackknife_t",
+            )
+        ):
+            return (
+                "This switchback test uses a t approximation. Depending on the schedule and "
+                "outcomes, false positives can be more frequent than the chosen test level."
+            )
+        return None
+
+    def _valid_t_residual(self) -> bool:
+        p, side = self.residual_p_value, self.residual_side
+        if p is None or side is None:
+            return p is None and side is None  # Historical t references omitted both.
+        if self.standard_error is None or self.standard_error == 0:
+            return False
+        if side == "split":
+            return p == (1.0 if self.alternative == "two-sided" else 0.5)
+        return self.alternative == "two-sided" or side == self.alternative or p >= 0.5
+
+    def _check_metric_result(self, replicates: int) -> bool:
+        """Validate fitted references and unavailable tests without inventing uncertainty."""
+        estimate = self.estimate
+        reason = None if self.failure_context is None else self.failure_context.get("reason")
+        adjusted = self.forecast_column is not None
+        ratio = self.aggregation == "ratio"
+        if (
+            (self.method, self.reference, self.estimand)
+            != _contrast_identity(
+                self.aggregation,
+                self.forecast_column,
+                self.independence_grain,
+                self.reference_spec,
+                self.alternative,
+            )
+            or (adjusted and self.aggregation != "sum")
+            or (
+                (self.reference_spec is not None)
+                != (not (ratio or adjusted) and self.independence_grain == "unit_cycle")
+            )
+            or any(
+                value is not None
+                for value in (
+                    self.effective_alpha,
+                    self.refusal_probability_upper,
+                    self.residual_cutoff,
+                    self.provenance,
+                    self.response_meaning,
+                    self.dof_unavailable_reason,
+                    self.standard_error_unavailable_reason,
+                )
+            )
+            or (
+                estimate is not None
+                and (estimate.log_mean is not None or estimate.log_se is not None)
+            )
+        ):
+            return False
+        if self.failure_code is None:
+            return (
+                (ratio or adjusted)
+                and self._valid_t_residual()
+                and self.failure_context is None
+                and estimate is not None
+                and self.standard_error is not None
+                and self.standard_error > 0
+                and self.dof == replicates - (2 if adjusted else 1)
+                and estimate.alpha == self.alpha
+                and estimate.open_side
+                == (
+                    "upper"
+                    if self.alternative == "greater"
+                    else "lower"
+                    if self.alternative == "less"
+                    else None
+                )
+            )
+        if self.residual_p_value is not None or self.residual_side is not None:
+            return False
+        if reason == "zero_standard_error":
+            return (
+                not (ratio or adjusted)
+                and self.method in ("switchback_unit_t_approximation", "switchback_block_t")
+                and self.failure_code == "evidence.p_value.unavailable"
+                and self.failure_context == {"metric": self.metric, "reason": reason}
+                and estimate is not None
+                and estimate.lb is None
+                and estimate.ub is None
+                and self.standard_error == 0
+                and self.dof == replicates - 1
+            )
+        if (
+            self.failure_context is None
+            or self.failure_context.get("metric") != self.metric
+            or self.standard_error is not None
+            or self.dof is not None
+            or (estimate is not None and (estimate.lb is not None or estimate.ub is not None))
+        ):
+            return False
+        if reason == "unobserved_response":
+            return (
+                self.failure_code == "source.frame.switchback.response_unobserved"
+                and estimate is None
+                and _valid_missing_response(
+                    self.failure_context, self.metric, self.control_group, self.treatment_group
+                )
+            )
+        if reason == "missing_forecast":
+            return (
+                self.failure_code == "source.frame.switchback.metric"
+                and estimate is None
+                and _valid_missing_forecast(self.failure_context, self.metric, self.forecast_column)
+            )
+        if self.failure_code != "evidence.p_value.unavailable" or not (adjusted or ratio):
+            return False
+        if reason in ("zero_denominator", "weak_denominator"):
+            return (
+                ratio
+                and self.failure_context.get("arm") in (self.control_group, self.treatment_group)
+                and (estimate is None) == (reason == "zero_denominator")
+            )
+        if reason == "rank_deficient":
+            return adjusted and estimate is None
+        if reason == "high_leverage":
+            return adjusted and estimate is not None
+        if reason == "zero_spread":
+            return estimate is not None
+        return reason in ("numeric_range", "insufficient_replicates")
 
     @model_validator(mode="after")
     def _consistent_design(self) -> ContrastResult:
         _validate_retained_window(self.observation_steps, self.retained_steps, self.carryover_order)
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        self._validate_exposure(self.randomization_law, self.probability_ct)
         replicates = _validate_replication_counts(
-            self.randomization_law, self.n_units, self.n_cycles, self.n_blocks
+            self.randomization_law,
+            self.independence_grain,
+            self.n_units,
+            self.n_cycles,
+            self.n_blocks,
         )
         _validate_order_counts(
             self.randomization_law, self.n_cycles, self.n_blocks, self.ct_cycles, self.tc_cycles
         )
+        if (
+            self.aggregation == "ratio"
+            or self.forecast_column is not None
+            or self.method in ("switchback_ratio_delta_t", "switchback_cuped_jackknife_t")
+            or self.failure_code is not None
+            or self.failure_context is not None
+            or self.estimate is None
+            or self.estimand == "retained_window_ratio_difference"
+        ):
+            if not self._check_metric_result(replicates):
+                refuse(
+                    _REFUSALS["estimation.contrast.reference_metadata"],
+                    randomization_law=self.randomization_law,
+                    method=self.method,
+                    reference=self.reference,
+                    dof=self.dof,
+                    independent_replicates=replicates,
+                )
+            return self
         if self.method == "switchback_unit_variance_envelope":
             if self.residual_side is None:
                 # The side cannot be rebuilt from the stored point and slope, which are rounded.
@@ -299,6 +616,7 @@ class ContrastResult(CodedModel, BaseModel):
                 and self.aggregation == envelope.aggregation
                 and self.estimand == envelope.estimand
                 and self.n_cycles == self.n_units * envelope.cycles_per_unit
+                and envelope.assignment.sequence.scheme == "independent_bernoulli_order"
                 and self.probability_ct == envelope.assignment.sequence.probability_ct
                 and self.washout_steps == envelope.assignment.window.washout_steps
                 and self.observation_steps == envelope.assignment.window.observation_steps
@@ -351,7 +669,7 @@ class ContrastResult(CodedModel, BaseModel):
             return self
         expected = (
             ("switchback_unit_t_approximation", "unit_t_approximation")
-            if self.randomization_law == "independent_bernoulli_order"
+            if self.independence_grain == "unit_cycle"
             else ("switchback_block_t", "block_t")
         )
         if (
@@ -360,6 +678,8 @@ class ContrastResult(CodedModel, BaseModel):
             or self.dof != replicates - 1
             or self.standard_error is None
             or self.dof_unavailable_reason is not None
+            or not self._valid_t_residual()
+            or (self.residual_p_value is not None and self.randomization_law != "fixed_count")
             or any(
                 value is not None
                 for value in (
@@ -367,17 +687,15 @@ class ContrastResult(CodedModel, BaseModel):
                     self.effective_alpha,
                     self.refusal_probability_upper,
                     self.residual_cutoff,
-                    self.residual_p_value,
-                    self.residual_side,
                     self.provenance,
                     self.response_meaning,
                 )
             )
             or (
-                self.randomization_law == "independent_bernoulli_order"
+                self.independence_grain == "unit_cycle"
                 and not isinstance(self.reference_spec, UnitCycleTApproximation)
             )
-            or (self.randomization_law == "shared_schedule" and self.reference_spec is not None)
+            or (self.independence_grain == "shared_block" and self.reference_spec is not None)
         ):
             refuse(
                 _REFUSALS["estimation.contrast.reference_metadata"],
@@ -392,7 +710,9 @@ class ContrastResult(CodedModel, BaseModel):
     def __repr__(self) -> str:
         """Show the additive contrast identity and its interval, not its full evidence model."""
         estimate = self.estimate
-        if estimate.open_side == "lower" and estimate.ub is not None:
+        if estimate is None:
+            interval = "unavailable"
+        elif estimate.open_side == "lower" and estimate.ub is not None:
             interval = f"(-inf, {estimate.ub!r})"
         elif estimate.open_side == "upper" and estimate.lb is not None:
             interval = f"({estimate.lb!r}, +inf)"
@@ -403,12 +723,13 @@ class ContrastResult(CodedModel, BaseModel):
             f"treatment={self.treatment_group!r}, method={self.method!r}, "
             f"role={self.role!r}, estimand={self.estimand!r}, "
             f"population={self.analysis_population!r}, inference={self.inference!r}, "
-            f"scale='absolute', estimate={estimate.value!r}, interval={interval}, "
+            f"scale='absolute', estimate={None if estimate is None else estimate.value!r}, interval={interval}, "
             f"alternative={self.alternative!r}, null_abs={self.null_abs!r}, "
             f"randomization_law={self.randomization_law!r}, "
             f"independence_grain={self.independence_grain!r}, "
             f"carryover_order={self.carryover_order}, retained_steps={self.retained_steps}, "
-            f"reference={self.reference!r}, decision_scope={self.decision_scope_complete!r})"
+            f"reference={self.reference!r}, "
+            f"decision_scope={self.decision_scope_complete if self.sampling_available else False!r})"
         )
 
     __str__ = __repr__
@@ -503,6 +824,14 @@ class ContrastResults(list[ContrastResult]):
         self.sequential_snapshot = sequential_snapshot
         self._default_backend = default_backend
         validate_collection(self, metadata)
+        if metadata is not None:
+            unavailable = tuple(
+                (row.source_snapshot_id, CellKey.from_row(row))
+                for row in self
+                if row.source_snapshot_id is not None and not row.sampling_available
+            )
+            if unavailable:
+                self._metadata = metadata.model_copy()._qualify_sampling_scope(unavailable)
 
     @property
     def metadata(self) -> ReadoutMetadata | None:
@@ -556,6 +885,42 @@ class ContrastResults(list[ContrastResult]):
     def model_dump_json(self):
         return dump_collection(self)
 
+    def _effective_metadata(self, other=None):
+        metadata = self.metadata
+        if metadata is None:
+            return None
+        sampling = {}
+        # Own records and retained rows take precedence over knowledge from a peer.
+        for collection in (self,) if other is None else (other, self):
+            if collection.metadata is not None:
+                sampling.update(
+                    ((record.source_snapshot_id, record.cell), record.sampling)
+                    for record in collection.metadata.cells
+                    if record.sampling is not None
+                )
+            sampling.update(
+                (
+                    (row.source_snapshot_id, CellKey.from_row(row)),
+                    SamplingInference(
+                        available=row.sampling_available,
+                        reason_code=row.sampling_reason_code,
+                        reason_context=row.sampling_reason_context,
+                    ),
+                )
+                for row in collection
+            )
+        records = tuple(
+            record.model_copy(
+                update={"sampling": sampling[(record.source_snapshot_id, record.cell)]}
+            )
+            if record.sampling is None and (record.source_snapshot_id, record.cell) in sampling
+            else record
+            for record in metadata.cells
+        )
+        if records != metadata.cells:
+            metadata = metadata.model_copy(update={"cells": records})
+        return metadata
+
     @overload
     def __getitem__(self, key: SupportsIndex) -> ContrastResult: ...
 
@@ -567,7 +932,7 @@ class ContrastResults(list[ContrastResult]):
             rows = super().__getitem__(key)
             return type(self)(
                 rows,
-                metadata=partial_metadata(self.metadata, rows, "slice"),
+                metadata=partial_metadata(self._effective_metadata(), rows, "slice"),
                 source=self.source,
                 sequential_snapshot=self.sequential_snapshot,
                 default_backend=self._default_backend,
@@ -578,14 +943,29 @@ class ContrastResults(list[ContrastResult]):
         rows = [row for row in self if predicate(row)]
         return type(self)(
             rows,
-            metadata=partial_metadata(self.metadata, rows, "filter"),
+            metadata=partial_metadata(self._effective_metadata(), rows, "filter"),
             source=self.source,
             sequential_snapshot=self.sequential_snapshot,
             default_backend=self._default_backend,
         )
 
     def concat(self, other):
-        return concat_collection(self, other)
+        if type(other) is not type(self):
+            return concat_collection(self, other)
+
+        def normalized(collection, peer):
+            metadata = collection._effective_metadata(peer)
+            if metadata is collection.metadata:
+                return collection
+            return type(collection)(
+                collection,
+                metadata=metadata,
+                source=collection.source,
+                sequential_snapshot=collection.sequential_snapshot,
+                default_backend=collection._default_backend,
+            )
+
+        return concat_collection(normalized(self, other), normalized(other, self))
 
     def __repr__(self) -> str:
         from importlib import import_module
@@ -646,19 +1026,31 @@ class ContrastResults(list[ContrastResult]):
     def __imul__(self, value):
         self._mutation("imul")
 
-    def to_frame(self, *, backend: Backend | None = None) -> IntoDataFrame:
-        """Return rows as a native frame; pandas is preferred when available."""
-        backend = default_frame_backend(backend or self._default_backend)
+    def _frame_data(self) -> dict[str, list[object]]:
         columns = list(CONTRAST_FRAME_COLUMNS)
+        fixed_count = any(row.randomization_law == "fixed_count" for row in self)
+        if fixed_count:
+            columns.extend(_FixedCountMetadata.model_fields)
+            columns.append("stat_sig")
+        if any(row.forecast_column is not None for row in self):
+            columns.append("forecast_column")
+        if fixed_count or any(row.aggregation == "ratio" or row.forecast_column for row in self):
+            columns.append("p_value")
         data: dict[str, list[object]] = {name: [] for name in columns}
         for result in self:
+            if "stat_sig" in data:
+                data["stat_sig"].append(contrast_stat_sig(result))
+            if "p_value" in data:
+                data["p_value"].append(contrast_p_value(result))
             for name in ContrastResult.model_fields:
+                if name not in data:
+                    continue
                 if name == "estimate":
                     estimate = result.estimate
-                    data["estimate"].append(estimate.value)
-                    data["lb"].append(estimate.lb)
-                    data["ub"].append(estimate.ub)
-                    data["open_side"].append(estimate.open_side)
+                    data["estimate"].append(None if estimate is None else estimate.value)
+                    data["lb"].append(None if estimate is None else estimate.lb)
+                    data["ub"].append(None if estimate is None else estimate.ub)
+                    data["open_side"].append(None if estimate is None else estimate.open_side)
                 elif name in {"reference_spec", "provenance"}:
                     value = getattr(result, name)
                     data[name].append(
@@ -675,20 +1067,31 @@ class ContrastResults(list[ContrastResult]):
                         if value is None
                         else json.dumps(thaw(value), sort_keys=True, separators=(",", ":"))
                     )
+                elif name == "decision_scope_complete" and not result.sampling_available:
+                    data[name].append(False)
                 else:
                     data[name].append(getattr(result, name))
+        return data
+
+    def to_frame(self, *, backend: Backend | None = None) -> IntoDataFrame:
+        """Return rows as a native frame; pandas is preferred when available."""
+        backend = default_frame_backend(backend or self._default_backend)
+        data = self._frame_data()
+        columns = list(data)
 
         schema = {
             name: nw.Boolean()
-            if name == "decision_scope_complete"
+            if name in ("decision_scope_complete", "stat_sig")
             else nw.Float64()
             if name
             in {
                 "estimate",
+                "p_value",
                 "lb",
                 "ub",
                 "standard_error",
                 "probability_ct",
+                "treatment_probability",
                 "null_abs",
                 "alpha",
                 "dof",
@@ -704,6 +1107,8 @@ class ContrastResults(list[ContrastResult]):
                 "n_units",
                 "n_cycles",
                 "n_blocks",
+                "periods_per_cycle",
+                "treated_periods",
                 "ct_cycles",
                 "tc_cycles",
                 "carryover_order",
@@ -718,13 +1123,17 @@ class ContrastResults(list[ContrastResult]):
         }
         nullable_ints = {
             name: data[name]
-            for name in (
+            for name in columns
+            if name
+            in {
                 "n_blocks",
                 "ct_cycles",
                 "tc_cycles",
                 "minimum_cycles_per_unit",
                 "maximum_cycles_per_unit",
-            )
+                "periods_per_cycle",
+                "treated_periods",
+            }
         }
         if backend == "pandas":
             for name in nullable_ints:
@@ -789,6 +1198,8 @@ class ContrastResults(list[ContrastResult]):
             evidence_columns = {name: [] for name in empty_evidence}
         else:
             evidence_columns = {}
+        if self.metadata is None:
+            evidence_columns["decision_scope_complete"] = data["decision_scope_complete"]
         for name, values in evidence_columns.items():
             data[name] = values
             columns.append(name)
@@ -808,6 +1219,8 @@ class ContrastResults(list[ContrastResult]):
             for name, values in nullable_ints.items():
                 frame.insert(columns.index(name), name, pd.array(values, dtype="Int64"))
             frame["preferred_direction"] = pd.array(data["preferred_direction"], dtype="string")
+            if "stat_sig" in data:
+                frame["stat_sig"] = pd.array(data["stat_sig"], dtype="boolean")
         frame = (
             nw.from_native(frame, eager_only=True)
             .with_columns(

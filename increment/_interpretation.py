@@ -377,7 +377,15 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                         integrity_status="unknown" if integrity is None else integrity.status.value,
                         integrity_code=None if integrity is None else integrity.code,
                         integrity_context=None if integrity is None else integrity.context,
-                        decision_complete=source.decision_complete_by_population.get(population),
+                        decision_complete=(
+                            False
+                            if any(
+                                not item.available
+                                and (item.visible or item.failure_code is not None)
+                                for item in required
+                            )
+                            else source.decision_complete_by_population.get(population)
+                        ),
                         roster_complete=None if roster is None else roster.complete,
                         roster_source=None if roster is None else roster.source,
                         source_cells=all_cells,
@@ -1743,6 +1751,18 @@ def project_effect(row) -> EffectEstimate:
 
     if contrast:
         estimate = row.estimate
+        failure = getattr(row, "sampling_reason_context", None) or getattr(
+            row, "failure_context", None
+        )
+        if failure:
+            return EffectEstimate(
+                None if estimate is None else estimate.value,
+                None,
+                None,
+                None,
+                "absolute",
+                str(failure["reason"]),
+            )
         return EffectEstimate(estimate.value, estimate.lb, estimate.ub, estimate.alpha, "absolute")
 
     if requested == "absolute":

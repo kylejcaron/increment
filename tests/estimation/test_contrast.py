@@ -73,6 +73,7 @@ def _procedure(**overrides):
 
 def test_estimate_uses_shifted_mean_and_unit_t_reference():
     result = estimate_contrast(_stats(), _procedure()).results[0]
+    assert result.estimate is not None
 
     expected_se = math.sqrt(6.0 / (4 * 3))
     critical = _t.ppf(0.975, 3)
@@ -95,6 +96,7 @@ def test_one_sided_alpha_doubles_display_level_and_any_maps_estimand():
         _stats(aggregation="any", probability_ct=0.8),
         _procedure(alternative="greater", alpha=0.025, role="guardrail"),
     ).results[0]
+    assert result.estimate is not None
 
     assert result.estimate.level == pytest.approx(0.95)
     assert result.estimand == "retained_window_conversion_difference"
@@ -111,6 +113,7 @@ def test_large_reference_is_recovered_without_unshifted_cancellation():
         m2_delta=0.0,
     )
     result = estimate_contrast(stats, _procedure()).results[0]
+    assert result.estimate is not None
 
     assert result.estimate.value == math.fsum((stats.reference_delta, stats.mean_residual))
     assert math.isfinite(result.estimate.value)
@@ -235,6 +238,7 @@ def test_partition_reduction_produces_estimable_unit_t_stats():
         ]
     )
     result = estimate_contrast(stats, _procedure()).results[0]
+    assert result.estimate is not None
 
     assert stats.n_units == 3
     assert stats.n_cycles == 6
@@ -319,6 +323,8 @@ class TestTinyAlphaContrastEndToEnd:
     def test_a_tiny_alpha_contrast_reports_its_interval(self):
         result = estimate_contrast(_stats(), _procedure(alpha=1e-20)).results[0]
         estimate = result.estimate
+        assert estimate is not None
+
         lb, ub = estimate.lb, estimate.ub
         assert lb is not None
         assert ub is not None
@@ -330,5 +336,7 @@ class TestTinyAlphaContrastEndToEnd:
         assert estimate.alpha == pytest.approx(1e-20)
 
     def test_an_ordinary_alpha_is_unchanged(self):
-        estimate = estimate_contrast(_stats(), _procedure(alpha=0.05)).results[0].estimate
+        result = estimate_contrast(_stats(), _procedure(alpha=0.05)).results[0]
+        estimate = result.estimate
+        assert estimate is not None
         assert estimate.level == pytest.approx(0.95)

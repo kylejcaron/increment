@@ -156,6 +156,8 @@ def rejection_at_zero(alternative, numerator):
 def test_observed_slope_interval_does_not_hull_the_ht_point():
     computation = estimate_contrast(stats(), procedure(envelope()))
     result = computation.results[0]
+    assert result.estimate is not None
+
     assert result.estimate.value == 1.25
     assert result.estimate.lb is not None and result.estimate.ub is not None
     assert result.estimate.lb > result.estimate.value
@@ -178,6 +180,8 @@ def test_cantelli_direction_and_open_side(alternative, open_side):
         stats(reference_delta=sign * 1.25), procedure(envelope(), alternative=alternative)
     )
     result = computation.results[0]
+    assert result.estimate is not None
+
     cutoff = math.sqrt((0.01 / 4) * (1 - 0.05) / 0.05)
     assert result.estimate.open_side == open_side
     assert getattr(result.estimate, "ub" if alternative == "greater" else "lb") is None
@@ -185,7 +189,8 @@ def test_cantelli_direction_and_open_side(alternative, open_side):
     assert endpoint == pytest.approx(sign * (1.25 - cutoff) / 0.625)
     assert result.residual_p_value == pytest.approx((0.01 / 4) / (0.01 / 4 + 1.25**2))
     assert result.reference == "residual_cantelli"
-    assert contrast_results_to_readout([result])[0]["stat_sig"] is True
+    (row,) = contrast_results_to_readout([result])
+    assert row["stat_sig"] is True and "reference_qualification" not in row
 
 
 @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
@@ -203,6 +208,8 @@ def test_envelope_rejection_side_is_the_sign_of_the_slope_scaled_residual():
     # Retained-window effect 2 against null 1.5: residual = 1.25 - 1.5 * 0.625 = 0.3125 and
     # p = (0.01 / 4) / 0.3125**2 = 0.0256 < 0.05. The HT point 1.25 alone sits below the null.
     result = estimate_contrast(stats(), procedure(envelope(), null_abs=1.5)).results[0]
+    assert result.estimate is not None
+
     assert result.residual_p_value == pytest.approx((0.01 / 4) / 0.3125**2)
     assert result.estimate.value < result.null_abs
 
@@ -214,6 +221,8 @@ def test_envelope_rejection_side_survives_point_and_slope_rounding():
     from increment.estimation.contrast import contrast_rejection_side, contrast_stat_sig
 
     result = rounded_rejection_at_margin()
+    assert result.estimate is not None
+
     assert (result.estimate.value, result.mean_slope) == (2.0, 2 / 3)
     assert contrast_stat_sig(result) is True
     assert contrast_rejection_side(result) == "less"
@@ -233,6 +242,8 @@ def test_envelope_readout_interprets_the_rejection_its_p_value_decides(
     alternative, numerator, side, direction
 ):
     result = rejection_at_zero(alternative, numerator)
+    assert result.estimate is not None
+
     lower, upper = result.estimate.lb, result.estimate.ub
     assert (lower is None or lower < 0) and (upper is None or upper > 0)
     row = contrast_results_to_readout([result])[0]
@@ -295,6 +306,8 @@ def test_zero_envelope_identifies_singleton_with_nonzero_sample_variance():
     result = estimate_contrast(
         stats(m2_delta=3), procedure(envelope(variance=0), null_abs=2)
     ).results[0]
+    assert result.estimate is not None
+
     assert result.estimate.value == 1.25
     assert result.estimate.lb == result.estimate.ub == 2
     assert result.standard_error == 0.5
@@ -317,6 +330,8 @@ def test_smallest_alpha_preserves_finite_envelope_evidence_and_wire(alternative,
         procedure(envelope(p=0.5, variance=variance), alpha=alpha, alternative=alternative),
     )
     result = computation.results[0]
+    assert result.estimate is not None
+
     evidence = next(iter(computation.evidence.values()))
     assert isinstance(evidence, PValueEvidence)
     assert evidence.p_value == (0.0 if variance == 0 else alpha)
@@ -334,6 +349,8 @@ def test_nonrepresentable_singleton_gets_smallest_outward_float_enclosure():
         stats(reference_delta=1, probability_ct=0.75, ct_cycles=1, tc_cycles=3, mean_slope=5 / 3),
         procedure(envelope(p=0.75, variance=0)),
     ).results[0]
+    assert result.estimate is not None
+
     assert result.estimate.lb is not None and result.estimate.ub is not None
     exact = Fraction(3, 5)
     assert Fraction(result.estimate.lb) <= exact <= Fraction(result.estimate.ub)
@@ -430,6 +447,8 @@ def test_single_unit_envelope_has_inference_but_no_sample_se():
     result = estimate_contrast(
         stats(n_units=1, n_cycles=1, ct_cycles=1), procedure(envelope())
     ).results[0]
+    assert result.estimate is not None
+
     assert result.standard_error is None
     assert result.standard_error_unavailable_reason == "insufficient_replicates"
     assert result.estimate.lb is not None
@@ -459,6 +478,8 @@ def test_neighboring_float_zero_envelope_keeps_evidence_independent_of_display()
     result = estimate_contrast(
         values, procedure(envelope(p=0.75, variance=0), null_abs=1.0)
     ).results[0]
+    assert result.estimate is not None
+
     assert result.estimate.value == float(exact_point)
     assert result.residual_p_value == 0.0
     assert result.estimate.lb == 1.0
@@ -512,6 +533,8 @@ def test_one_sided_inference_does_not_compute_the_unbounded_endpoint():
         stats(reference_delta=1.7e308, mean_slope=1, probability_ct=0.5),
         procedure(envelope(p=0.5, variance=1e308), alpha=1e-307, alternative="greater"),
     ).results[0]
+    assert result.estimate is not None
+
     assert result.estimate.lb is not None and math.isfinite(result.estimate.lb)
     assert result.estimate.ub is None
 

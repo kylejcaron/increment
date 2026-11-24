@@ -411,13 +411,18 @@ def test_compiled_runtime_plans_round_trip_all_procedure_variants() -> None:
         assert compiled_plan_from_dto(compiled_plan_to_dto(plan)) == plan
 
 
-def test_prospective_contrast_reference_survives_compiled_wire():
+@pytest.mark.parametrize("adjusted", [False, True])
+def test_switchback_reference_or_forecast_survives_compiled_wire(adjusted):
     from tests.estimation.test_unit_cycle_envelope import envelope
 
     plan = _contrast_plan()
-    reference = envelope(metric=_METRIC_A)
+    options = (
+        {"reference": None, "forecast_column": "last_month"}
+        if adjusted
+        else {"reference": envelope(metric=_METRIC_A)}
+    )
     procedure = cast(ContrastDecisionProcedure, plan.procedures[_METRIC_A]).model_copy(
-        update={"reference": reference}
+        update=options
     )
     declared = plan.model_copy(update={"procedures": {_METRIC_A: procedure}})
     restored = compiled_plan_from_json(compiled_plan_to_json(declared))
