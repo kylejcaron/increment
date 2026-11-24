@@ -296,6 +296,7 @@
   "increment.power.switchback_minimum_detectable_effect": {},
   "increment.power.switchback_profile_plan": {},
   "increment.power.switchback_required_blocks_or_units": {},
+  "increment.power.switchback_schedule_refusal_probability": {},
   "increment.power.unit_cycle_power_lower_bound": {},
   "increment.query.build_panel_for_metric": {},
   "increment.query.panel_sql": {},

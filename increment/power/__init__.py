@@ -68,6 +68,7 @@ from increment.power.switchback_profiles import (
     SwitchbackTrajectoryBaseline,
     switchback_profile_plan,
 )
+from increment.power.switchback_schedule import switchback_schedule_refusal_probability
 from increment.power.unit_cycle import (
     UnitCyclePowerLowerBoundResult,
     unit_cycle_power_lower_bound,
@@ -80,6 +81,7 @@ __all__ = [
     "SwitchbackTrajectoryBaseline",
     "ContrastDecisionProcedure",
     "switchback_profile_plan",
+    "switchback_schedule_refusal_probability",
     "SwitchbackPowerResult",
     "switchback_achieved_power",
     "switchback_minimum_detectable_effect",

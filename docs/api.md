@@ -172,6 +172,7 @@ values.
   moment-t interpretation. Pilot power does not certify coverage: see the
   [fixed-count calendar](reference/switchback-inference.md#unadjusted-means-and-conversions)
   and [paired measurements](reference/switchback-inference.md#coverage-with-few-units-or-blocks).
+- `increment.power.switchback_schedule_refusal_probability` checks the chance a drawn schedule is refused before outcomes are read.
 
 - Switchback readouts can compare ratios of retained totals and adjust a
   mean with a separate, pre-assignment forecast. An undefined rate keeps
@@ -1298,6 +1299,9 @@ different approximations and limits.
     [switchback planning](guides/power-analysis.md#switchback-contrasts)
     explains the model and what counts as an independent replicate.
 
+    `increment.power.switchback_schedule_refusal_probability` checks schedule-only
+    refusal risk before a pilot exists; see the [prelaunch check](guides/switchback.md#check-the-schedule-before-launch).
+
     Complete-law simulation declarations and oracle solvers are in
     `increment.semantics.unit_cycle` and `increment.power.unit_cycle`, outside
     the package-root and ordinary power-planning exports.
@@ -1345,6 +1349,10 @@ different approximations and limits.
 ::: increment.estimators.switchback_achieved_power
 
 ::: increment.estimators.switchback_minimum_detectable_effect
+
+::: increment.power.switchback_profile_plan
+
+::: increment.power.switchback_schedule_refusal_probability
 
 ::: increment.estimators.unit_cycle_power_lower_bound
 

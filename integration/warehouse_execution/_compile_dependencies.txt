@@ -1,4 +1,4 @@
-# Traced on commit: a84bce7c3e340017cec03aad6a3efeafb9e9c0a0
+# Traced on commit: 418f2f3ec4e620848e4952994d6f13c7f5aa60f6
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -159,6 +159,7 @@ increment.power.pairwise
 increment.power.sequential
 increment.power.switchback
 increment.power.switchback_profiles
+increment.power.switchback_schedule
 increment.power.unit_cycle
 increment.query
 increment.query._artifact_float

@@ -342,7 +342,9 @@ passing it back as `relative_lift`; see the [complete example](../reference/plan
 
 Count independent **units** if each unit draws its own orders, or **blocks**
 if a whole roster follows one schedule. A larger roster does not buy more
-shared blocks. Choose a pilot for the metric you will actually test:
+shared blocks. Before collecting a pilot,
+[check the schedule before launch](switchback.md#check-the-schedule-before-launch).
+Choose a pilot for the metric you will actually test:
 
 - **Unadjusted mean, paired order:** `planning_baseline` fits a
   `SwitchbackBaseline` for the moment-t solvers. Power approximates the

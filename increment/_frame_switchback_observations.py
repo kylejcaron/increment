@@ -209,12 +209,18 @@ def _logged_periods(
     rows = log.select(*(name for _, name in roles)).iter_rows()
     missing_arms = log.select(_is_missing(log, axes.group)).iter_rows()
     for (u, c, p, arm), (missing,) in zip(rows, missing_arms, strict=True):
-        if (
-            not isinstance(u, str)
-            or u not in roster
-            or not 0 <= c < schedule.cycles
-            or not 0 <= p < periods
-        ):
+        if not isinstance(u, str):
+            reject_schedule(
+                message=(
+                    "Assignment-log unit IDs must be text. Convert unit IDs to strings "
+                    "in both the assignment log and the observations."
+                ),
+                unit=u,
+                cycle=c,
+                period=p,
+                reason="unit_not_text",
+            )
+        if u not in roster or not 0 <= c < schedule.cycles or not 0 <= p < periods:
             reject_schedule(
                 message="An assignment lies outside the declared roster, cycles or periods.",
                 unit=u,

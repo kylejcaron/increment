@@ -596,3 +596,32 @@ def test_planner_refuses_mismatched_reference_and_invalid_models():
             rho=0,
         )
     assert exc.value.code == "power.switchback.baseline"
+
+
+def test_shared_trajectory_plan_is_not_capped_by_roster_size():
+    # A shared block simulates its roster average, one row of five positions.
+    a = assignment()
+    roster = tuple(f"site-{i:03d}" for i in range(600))
+    b = SwitchbackTrajectoryBaseline(
+        **model_args(a, roster), profiles=(((1, 0, 0, 0, 0),) * len(roster),)
+    )
+    (row,) = switchback_profile_plan(
+        b, procedure(a), sizes=[96], effects=[2], repetitions=256
+    ).points
+    # Block contrasts are 2 - 1 or 2 + 1/4, and an admitted schedule has both:
+    # the mean is at least 2 - 91/96 and the standard error at most
+    # sqrt(1.25**2 / 4 / 95), so t > 16 and every admitted schedule rejects.
+    assert row.n == 96
+    assert 0 < row.rejected == row.attempts - row.admission_failures
+
+
+def test_shared_conversion_plan_still_counts_every_roster_member():
+    # Each roster member draws its own windows: 96 * 600 * 5 exceeds 262,144.
+    a = assignment()
+    roster = tuple(f"site-{i:03d}" for i in range(600))
+    b = SwitchbackConversionBaseline(**model_args(a, roster), untreated_risk=0.5)
+    with pytest.raises(InvalidRequestError) as exc:
+        switchback_profile_plan(b, procedure(a), sizes=[96], effects=[0], repetitions=1)
+    assert exc.value.code == "power.switchback.n"
+    assert exc.value.context["field"] == "n"
+    assert exc.value.context["value"] == 96

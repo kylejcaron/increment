@@ -143,16 +143,31 @@ def test_fixed_count_requires_interior_count_and_distinct_multi_period_law():
         assert caught.value.code == "definition.assignment.fixed_count"
 
 
-def test_fixed_count_rejects_identification_with_paired_arm_shares():
-    from increment.estimators import SwitchbackStudyEnvelope
-
+def test_unequal_allocation_refusal_states_the_expected_weights():
+    allocation = {"control": 0.4285714286, "treatment": 0.5714285714}
     with pytest.raises(InvalidRequestError) as caught:
-        SwitchbackStudyEnvelope(
-            assignment=_assignment(5, 4, "shared_block"),
-            identification=Randomized(control_group="A", allocation={"A": 0.5, "B": 0.5}),
+        from_switchback_frame(
+            pl.DataFrame(
+                {"u": ["a"], "c": [0], "p": [0], "s": [0], "arm": ["control"], "response": [1]}
+            ),
+            unit="u",
+            cycle="c",
+            period="p",
+            step="s",
+            group="arm",
+            metrics={"response": "mean"},
+            assignment=_assignment(7, 4, "shared_block"),
+            identification=Randomized(control_group="control", allocation=allocation),
         )
     assert caught.value.code == "source.frame.switchback.identification"
     assert caught.value.context["reason"] == "unequal_allocation"
+    assert caught.value.context["allocation"] == allocation
+    assert caught.value.context["control_group"] == "control"
+    assert caught.value.context["treatment_group"] == "treatment"
+    assert isinstance(caught.value.context["expected_control_weight"], float)
+    assert isinstance(caught.value.context["expected_treatment_weight"], float)
+    assert caught.value.context["expected_control_weight"] == pytest.approx(3 / 7, rel=1e-15)
+    assert caught.value.context["expected_treatment_weight"] == pytest.approx(4 / 7, rel=1e-15)
 
 
 def test_nonuniform_position_probabilities_do_not_identify_the_fixed_count_contrast():

@@ -815,7 +815,9 @@ matching baseline, not a renamed one.
 Use distinct integer sizes of at least two replicates, and distinct
 finite signed effects. The grid is limited to 4,096 size/effect pairs and
 262,144 retained windows per simulated experiment: `n × K × cycles_per_unit`
-for independent units, `n × K × roster size` for shared blocks.
+for independent units, `n × K × roster size` for shared-block conversion
+baselines, and `n × K` for shared-block trajectory baselines, which average
+the roster within each block.
 
 For each `(n, delta)`, `points` records `attempts`, `admission_failures`,
 `zero_se`, other `decision_failures`, `rejected`, `power`, `power_lower` and

@@ -113,6 +113,8 @@ Neither washout outcomes nor a forecast copied from the outcome table
 establish that timing.
 If pandas stores Python dates as `object`, convert both clock columns with
 `pd.to_datetime` first. An unreadable date is not evidence the forecast was late.
+Increment compares the two clock columns you supply; it cannot verify
+either timestamp against the scheduler.
 
 ```python
 forecasts = pl.DataFrame(
@@ -230,6 +232,95 @@ The reader keeps the pilot values measured at construction. Editing the
 original dataframe later doesn't change planning or the readout; build
 a new reader to use corrected measurements.
 
+### Check the schedule before launch
+
+Every position must appear in both arms across the independent draws.
+For a shared schedule those draws are blocks, not stores. Before drawing,
+check the chance of a refusal under the declared order:
+
+```python
+from increment.power import switchback_schedule_refusal_probability
+
+print("Blocks  Refusal probability")
+for blocks in (12, 24, 36, 48):
+    chance = switchback_schedule_refusal_probability(assignment, blocks)
+    print(f"{blocks:6d}  {chance:.9f}")
+```
+
+<!-- output -->
+```text
+Blocks  Refusal probability
+    12  0.321997312
+    24  0.023564451
+    36  0.001622490
+    48  0.000111504
+```
+
+After drawing, validate the actual assignment log **before collecting
+responses**. The loader accepts an empty response table with declared
+column types; no outcome values are needed. Here the drawn log passes,
+but a log that always gives position zero to control does not:
+
+```python
+from increment.errors import InvalidRequestError
+
+empty_responses = pl.DataFrame(
+    schema={
+        "store": pl.String,
+        "block": pl.Int64,
+        "position": pl.Int64,
+        "step": pl.Int64,
+        "orders": pl.Int64,
+    }
+)
+
+
+def check_schedule(candidate):
+    return from_switchback_frame(
+        empty_responses,
+        unit="store",
+        cycle="block",
+        period="position",
+        step="step",
+        group="arm",
+        metrics=[metrics[0]],
+        identification=design,
+        assignment=assignment,
+        schedule=candidate,
+    )
+
+
+_, checked_reader = check_schedule(schedule)
+with checked_reader:
+    print("Schedule accepted; no outcomes supplied.")
+
+unsupported_assignments = assignments.with_columns(
+    pl.when(pl.col("position") == 0)
+    .then(pl.lit("control"))
+    .otherwise(pl.lit("treatment"))
+    .alias("arm")
+)
+unsupported_schedule = SwitchbackObservationSchedule(
+    assignments=unsupported_assignments, units=stores, cycles=n_blocks
+)
+try:
+    check_schedule(unsupported_schedule)
+except InvalidRequestError as exc:
+    print(exc.code)
+```
+
+<!-- output -->
+```text
+Schedule accepted; no outcomes supplied.
+source.frame.switchback.schedule
+```
+
+More blocks are the primary remedy. Analysed studies are already only
+those whose schedule passes. A rule fixed before drawing that redraws
+only when this check fails yields the same set of analysable schedules;
+redrawing for any other reason does not. Passing this check says nothing
+about carryover, missing responses or the eventual test's precision.
+
 ### 4. Size a future study with the same randomization
 
 For orders, assume treatment adds the same amount to each retained-window
@@ -237,6 +328,8 @@ total. The planner subtracts the fitted shift from treated pilot windows,
 resamples entire blocks (both stores together), then redraws the positions
 under the 4-of-5 law. Match the prospective decision: the zero null is
 two-sided, and the plan splits its alpha across the three primary metrics.
+Sizing a fixed-count mean needs a completed pilot or hand-built profiles;
+a first study without either relies on the schedule check alone.
 
 ```python
 procedure = ContrastDecisionProcedure(
@@ -295,7 +388,8 @@ More transactions in each block don't create more independent draws.
   denominator or a missing forecast is never filled with zero.
 - **No support at a position?** Fixed-count analysis requires each position
   to appear in both arms across the independent draws. Shared paired
-  schedules need both CT and TC. More roster members cannot repair either.
+  schedules need both CT and TC. More roster members cannot repair either:
+  [check the schedule before launch](#check-the-schedule-before-launch).
 
 `increment.workflows.assignment_diagnostic` reports schedule integrity, not
 a sample-ratio test or proof the scheduler drew uniformly. For exact reasons

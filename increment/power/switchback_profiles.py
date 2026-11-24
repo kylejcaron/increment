@@ -691,6 +691,13 @@ class SwitchbackProfilePlan(_Frozen):
         return self._first([r for r in self.points if r.delta == delta], "n")
 
 
+def _windows_per_replicate(b: _Baseline) -> int:
+    # A trajectory block is simulated as its roster average; conversion draws every member.
+    shared = len(b.roster) if isinstance(b, SwitchbackConversionBaseline) else 1
+    rows = b.cycles_per_unit if b.planning_grain == "unit" else shared
+    return rows * b.assignment.periods_per_cycle
+
+
 def _point(
     b: _Baseline,
     proc: ContrastDecisionProcedure,
@@ -701,8 +708,7 @@ def _point(
     tail: float,
     table: _TrajectoryTable | None,
 ) -> _Point:
-    length = b.cycles_per_unit if b.planning_grain == "unit" else len(b.roster)
-    batch_size = min(512, _MAX_WINDOWS // (n * length * b.assignment.periods_per_cycle))
+    batch_size = min(512, _MAX_WINDOWS // (n * _windows_per_replicate(b)))
     risks = _risks(b, delta) if isinstance(b, SwitchbackConversionBaseline) else None
     admission = zero = failed = rejected = 0
     for start in range(0, reps, batch_size):
@@ -775,8 +781,7 @@ def switchback_profile_plan(
         _invalid("n", f"Supply a nonempty size by effect grid of at most {_MAX_CELLS} points.")
     ns = tuple(sorted(_count(n, "sizes", 2) for n in sizes))
     ds = tuple(_finite(d, "effects") for d in effects)
-    length = baseline.cycles_per_unit if baseline.planning_grain == "unit" else len(baseline.roster)
-    if ns[-1] * length * baseline.assignment.periods_per_cycle > _MAX_WINDOWS:
+    if ns[-1] * _windows_per_replicate(baseline) > _MAX_WINDOWS:
         _invalid(
             "n",
             f"One simulated experiment exceeds {_MAX_WINDOWS} retained windows.",

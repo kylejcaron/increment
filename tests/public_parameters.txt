@@ -40,6 +40,7 @@ covariate: Pre-exposure covariate column or covariate definition.
 covariate_missing: Policy for missing covariate values.
 credible_level: Posterior probability level for allocation bands.
 cycle: Column identifying switchback cycles.
+cycles_per_unit: Number of independent schedule draws per unit; one for shared schedules.
 date: Column containing observation dates.
 day_domain: Ordered observation days requested for a temporal view.
 decision_method: Estimator or variance-reduction method.

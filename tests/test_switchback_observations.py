@@ -146,6 +146,27 @@ def test_observations_cannot_supply_a_missing_assignment(loss):
     assert tuple(caught.value.context[k] for k in ("unit", "cycle", "period")) == expected
 
 
+@pytest.mark.parametrize(
+    ("unit_ids", "reason", "first_unit"),
+    [
+        ({"a": 0, "b": 1}, "unit_not_text", 0),
+        ({"a": "absent", "b": "1"}, "off_schedule_assignment", "absent"),
+    ],
+)
+def test_non_text_unit_in_assignment_log_is_named_as_such(unit_ids, reason, first_unit):
+    schedule = replace(
+        _schedule(),
+        assignments=_log().with_columns(pl.col("unit").replace_strict(unit_ids)),
+        units=("0", "1"),
+    )
+    rows = _observed().with_columns(pl.col("unit").replace_strict({"a": "0", "b": "1"}))
+    with pytest.raises(InvalidRequestError) as caught:
+        _build(rows, schedule)
+    assert caught.value.code == "source.frame.switchback.schedule"
+    assert caught.value.context["reason"] == reason
+    assert tuple(caught.value.context[k] for k in ("unit", "cycle", "period")) == (first_unit, 0, 0)
+
+
 @pytest.mark.parametrize("loss", ["last_cycle", "whole_unit", "retained_step", "all_null"])
 def test_known_assignment_requires_every_retained_response(loss):
     rows = _observed()

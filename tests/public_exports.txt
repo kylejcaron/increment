@@ -292,6 +292,7 @@ SwitchbackTrajectoryBaseline: Retain whole pilot trajectories for unequal-exposu
 SwitchbackConversionBaseline: Specify retained-window event risk for conversion planning.
 SwitchbackProfilePlan: Read power bounds and the first resolved size or effect on the tested grid.
 switchback_profile_plan: Estimate power over a grid of switchback sizes and effects, counting refused experiments.
+switchback_schedule_refusal_probability: Check the chance a drawn switchback schedule cannot support analysis.
 switchback_achieved_power: Compute achieved power for a switchback design.
 switchback_minimum_detectable_effect: Compute the minimum detectable effect of a switchback design.
 switchback_required_blocks_or_units: Size a switchback design in blocks or units.

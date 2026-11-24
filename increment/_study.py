@@ -103,13 +103,25 @@ def refuse_allocation_defect(
             allocation=allocation,
             reason="invalid_allocation",
         )
+    if assignment.sequence.scheme == "fixed_count":
+        expected_control_weight, expected_treatment_weight = assignment.exposure
+        refuse(
+            SWITCHBACK_IDENTIFICATION,
+            message=(
+                f"switchback allocation requires control weight {expected_control_weight!r} "
+                f"for {control_group!r} and treatment weight {expected_treatment_weight!r} "
+                f"for {treatment_group!r}; use these weights without rounding"
+            ),
+            allocation=allocation,
+            control_group=control_group,
+            treatment_group=treatment_group,
+            expected_control_weight=expected_control_weight,
+            expected_treatment_weight=expected_treatment_weight,
+            reason="unequal_allocation",
+        )
     refuse(
         SWITCHBACK_IDENTIFICATION,
-        message=(
-            "switchback allocation must match the control and treatment shares of the cycle"
-            if assignment.sequence.scheme == "fixed_count"
-            else "switchback allocation requires exact 0.5/0.5 control/treatment weights"
-        ),
+        message="switchback allocation requires exact 0.5/0.5 control/treatment weights",
         allocation=allocation,
         control_group=control_group,
         treatment_group=treatment_group,

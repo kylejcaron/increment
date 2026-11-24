@@ -1320,7 +1320,7 @@ path = "increment.power"
 layer = "core"
 depends_on = [
   "increment.power.core", "increment.power.curve", "increment.power.pairwise", "increment.power.switchback", "increment.power.unit_cycle", "increment.estimation.arm_contract",
-  "increment.power.switchback_profiles", "increment.estimation.decision_types",
+  "increment.power.switchback_profiles", "increment.power.switchback_schedule", "increment.estimation.decision_types",
 ]
 
 [[modules]]
@@ -1364,6 +1364,14 @@ layer = "core"
 depends_on = [
   "increment._unit_cycle", "increment.errors", "increment.estimation._tails", "increment.estimation.decision_types",
   "increment.power._validation", "increment.power.switchback", "increment.semantics",
+]
+
+[[modules]]
+path = "increment.power.switchback_schedule"
+layer = "core"
+depends_on = [
+  "increment._unit_cycle", "increment.errors", "increment.power._validation",
+  "increment.power.switchback", "increment.semantics",
 ]
 
 [[modules]]

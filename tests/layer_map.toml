@@ -25,6 +25,7 @@ core = [
   "increment.plan*",
   "increment.power*",
   "increment.power.switchback_profiles",
+  "increment.power.switchback_schedule",
   "increment.results",
   "increment.result_envelope",
   "increment.decide*",
