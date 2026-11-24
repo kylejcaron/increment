@@ -20,12 +20,12 @@ Before looking at results, record and check:
   (and its timezone), and check training units against experiment IDs. Do not
   train on the experiment's assignments, features measured after assignment,
   or outcomes.
-- **Model and feature timing.** Record the model version, input transformations,
-  and timestamps showing that every feature was available before each unit's
-  assignment. A frozen model does not make a late feature safe.
-- **Scoring coverage.** Count scored and missing units separately by assigned
-  arm; an overall percentage can hide a gap. Investigate the cause of missing
-  scores, even when coverage looks balanced.
+- **Model and feature timing.** Record the model version and verify that every
+  feature was available before assignment. Use the same model, scoring code,
+  and join for both arms. A frozen model does not make a late feature safe.
+- **Scoring coverage.** Compare scored and missing counts and score percentiles
+  by arm. Count missing scores among all assigned units; compute percentiles
+  only from scores you have. Similar distributions do not prove a safe join.
 - **Reproducibility.** Retain the model, scoring code, input snapshot, and scored
   outputs. Check that the same inputs reproduce the stored scores.
 
@@ -141,12 +141,17 @@ the prediction model does not set the CUPED adjustment in advance.
 
 ## Interpret the comparison
 
-A useful score can narrow an interval. A score based on an irrelevant feature
-may change little, and a score trained on a different population can lose
-precision when the relationship between features and outcomes shifts. The
-notebook compares all three on one synthetic experiment. Its control-arm
-calibration is about prediction quality; neither it nor a narrower interval
-establishes interval coverage. The [validation record](../validation.md) describes
-the separate repeated-draw checks and their limits.
+On historical data the model did not train on, check whether higher scores go
+with higher observed outcomes. A model that overpredicts everyone by the same
+amount can still help. In the experiment, compare the [standard errors of the
+same absolute difference](cuped.md#measuring-variance-reduction) with and
+without adjustment. A weak or shifted score may add little precision.
+
+An [unusual gap in average scores](cuped.md#when-cuped-misleads-a-covariate-that-differs-by-arm)
+triggers a warning, not a refusal. Investigate scoring, the join, and assignment.
+If the score used late information or the scoring process differed by arm, do
+not interpret the adjusted result, even if it looks more precise. Neither
+check changes the planned decision or establishes interval coverage. See the
+[validation record](../validation.md#scalar-cuped-with-a-frozen-external-prediction).
 
 For the original recipe, see [DoorDash's introduction to CUPAC](https://careersatdoordash.com/blog/improving-experimental-power-through-control-using-predictions-as-covariate-cupac).

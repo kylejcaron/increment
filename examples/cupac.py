@@ -64,6 +64,23 @@ def _(np, pd):
     frozen = np.linalg.lstsq(features(history), historical_revenue, rcond=None)[0]
     weak = np.linalg.lstsq(irrelevant_feature(history), historical_revenue, rcond=None)[0]
 
+    holdout_rng = np.random.default_rng(4103)
+    holdout = holdout_rng.normal(size=(2000, 3))
+    holdout_revenue = mu + signal(holdout) + holdout_rng.normal(0, 2, len(holdout))
+    holdout_quality = pd.DataFrame(
+        [
+            {
+                "score": name,
+                "holdout_units": len(holdout),
+                "holdout_correlation": np.corrcoef(score, holdout_revenue)[0, 1],
+            }
+            for name, score in (
+                ("useful", features(holdout) @ frozen),
+                ("irrelevant feature", irrelevant_feature(holdout) @ weak),
+            )
+        ]
+    )
+
     experiment_rng = np.random.default_rng(4102)
     inputs = experiment_rng.normal(size=(n_units, 3))
     prediction = features(inputs) @ frozen
@@ -99,47 +116,54 @@ def _(np, pd):
             }
         ]
     )
-    return known_lift, provenance, shifted, units, weak_prediction
+    return holdout_quality, known_lift, provenance, shifted, units, weak_prediction
 
 
 @app.cell(hide_code=True)
 def _(mo, provenance, units):
-    coverage = units.groupby("variant", as_index=False).agg(
-        units=("user_id", "size"), scored=("prediction", "count")
-    )
-    coverage["scored_fraction"] = coverage["scored"] / coverage["units"]
+    def score_summary(frame):
+        summary = frame.groupby("variant", as_index=False).agg(
+            units=("user_id", "size"),
+            scored=("prediction", "count"),
+            score_p10=("prediction", lambda score: score.quantile(0.10)),
+            score_median=("prediction", "median"),
+            score_p90=("prediction", lambda score: score.quantile(0.90)),
+        )
+        return summary.assign(missing=summary["units"] - summary["scored"])[
+            ["variant", "units", "scored", "missing", "score_p10", "score_median", "score_p90"]
+        ].round(2)
+
     mo.vstack(
         [
-            mo.md("## Check timing, model identity, and scoring coverage by arm"),
+            mo.md("## Can you trust how the scores were made?"),
             mo.ui.table(provenance),
-            mo.ui.table(coverage),
-            mo.md("The score column itself cannot prove the timing or rule out leakage."),
+            mo.md(
+                "Here we apply one frozen model before assigning shoppers to either arm. "
+                "For your data, verify the training cutoff, feature timestamps, model version, "
+                "and that the same scoring code and join apply to both arms."
+            ),
+            mo.ui.table(score_summary(units)),
+            mo.md(
+                "Counts include every assigned shopper. The 10th, 50th, and 90th percentiles "
+                "describe only the scores you have. Similar distributions cannot rule out "
+                "late features or a bad join."
+            ),
         ]
     )
-    return
+    return (score_summary,)
 
 
 @app.cell
-def _(alt, mo, np, units):
-    control = units.loc[units["variant"] == "control"]
-    slope, intercept = np.polyfit(control["prediction"], control["revenue"], 1)
-    calibration = (
-        alt.Chart(control.sample(n=600, random_state=17))
-        .mark_circle(opacity=0.35, size=20)
-        .encode(
-            x=alt.X("prediction:Q", title="Frozen prediction", scale=alt.Scale(zero=False)),
-            y=alt.Y("revenue:Q", title="Observed revenue", scale=alt.Scale(zero=False)),
-        )
-        .properties(width="container", height=240)
-    )
+def _(holdout_quality, mo):
     mo.vstack(
         [
-            mo.md("## Check prediction quality"),
-            calibration,
+            mo.md("## Does the score predict revenue for shoppers the model hasn’t seen?"),
+            mo.ui.table(holdout_quality.round({"holdout_correlation": 3})),
             mo.md(
-                f"The fitted line on control units has slope **{slope:.2f}** and "
-                f"intercept **{intercept:.2f}**. This checks the relationship between "
-                "the score and the outcome in this sample, not interval coverage."
+                "These historical shoppers were used for neither training nor the experiment. "
+                "Correlation measures whether higher scores tend to go with higher revenue. "
+                "A score can be off in dollars and still be useful. This check does not "
+                "establish that an experiment interval covers the true effect."
             ),
         ]
     )
@@ -228,51 +252,47 @@ def _(alt, analyze, known_lift, method_record, mo, pd, units):
 
 @app.cell(hide_code=True)
 def _(analyze, estimates, mo, pd, shifted, units, weak_prediction):
-    def width_ratio(rows):
-        lifts = {row.method: row.require_lift() for row in rows if row.metric == "revenue"}
-        return (lifts["cuped"].ub - lifts["cuped"].lb) / (
-            lifts["unadjusted"].ub - lifts["unadjusted"].lb
+    comparison = []
+    for scenario, rows in (
+        ("useful", estimates),
+        ("irrelevant feature", analyze(units.assign(prediction=weak_prediction))),
+        ("shifted population", analyze(shifted)),
+    ):
+        revenue = {row.method: row for row in rows if row.metric == "revenue"}
+        comparison.append(
+            {
+                "scenario": scenario,
+                "unadjusted_abs_se": revenue["unadjusted"].abs_se,
+                "cuped_abs_se": revenue["cuped"].abs_se,
+            }
         )
-
-    comparison = pd.DataFrame(
-        [
-            {"score": "useful", "CUPED / unadjusted interval width": width_ratio(estimates)},
-            {
-                "score": "irrelevant feature",
-                "CUPED / unadjusted interval width": width_ratio(
-                    analyze(units.assign(prediction=weak_prediction))
-                ),
-            },
-            {
-                "score": "shifted population",
-                "CUPED / unadjusted interval width": width_ratio(analyze(shifted)),
-            },
-        ]
-    )
     mo.vstack(
         [
-            mo.md("## Compare useful, weak, and shifted predictions"),
-            mo.ui.table(comparison),
-            mo.md("Below one means narrower. These are results from one draw, not guarantees."),
+            mo.md("## Did CUPED make the revenue comparison more precise?"),
+            mo.ui.table(pd.DataFrame(comparison).round(4)),
+            mo.md(
+                "Both columns give the standard error of the treatment-minus-control difference "
+                "in mean revenue, in the same units as revenue. Compare the columns within each "
+                "row. Lower means less estimated uncertainty in this draw, not a guarantee. "
+                "A weak score may add little. If scores used late data or were made differently "
+                "by arm, do not interpret the adjusted result even if its standard error is smaller."
+            ),
         ]
     )
     return
 
 
 @app.cell
-def _(analyze, mo, units):
+def _(analyze, mo, score_summary, units):
     treated = units["variant"] == "treatment"
     high = units["prediction"] >= units.loc[treated, "prediction"].quantile(0.55)
     missing_units = units.assign(prediction=units["prediction"].mask(treated & high))
-    missingness = missing_units.groupby("variant", as_index=False).agg(
-        units=("user_id", "size"), scored=("prediction", "count")
-    )
     results = {row.method: row for row in analyze(missing_units)}
     decision, sensitivity = results["unadjusted"], results["cuped"]
     mo.vstack(
         [
             mo.md("## What happens when scores are missing"),
-            mo.ui.table(missingness),
+            mo.ui.table(score_summary(missing_units)),
             mo.md(
                 f"The unadjusted decision still reports **{decision.require_lift().value:.2%}**. "
                 f"The CUPED sensitivity is unavailable: `{sensitivity.failure_code}`. "
