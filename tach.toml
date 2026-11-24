@@ -80,7 +80,6 @@ path = "increment.readouts._spillover_result"
 layer = "core"
 depends_on = [
   "increment._spillover_design",
-  "increment._spillover_registration",
   "increment._canonical", "increment.declarations", "increment.estimation.readout_types",
   "increment.estimation.spillover", "increment.estimation.spillover_results",
   "increment.kernel.contracts", "increment.kernel.ports", "increment.result_envelope", "increment.semantics",

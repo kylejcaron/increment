@@ -12,19 +12,27 @@ import pandas as pd
 import pytest
 import yaml
 
-from increment import Experiment, Spillover, SpilloverComparison, from_definitions, run, workflows
+from increment import (
+    Experiment,
+    Spillover,
+    SpilloverComparison,
+    from_definitions,
+    run,
+    runnable,
+    workflows,
+)
 from increment.errors import CodedError
+from increment.kernel.contracts import contract_hash
 from increment.power import spillover_power
+from tests.query.statement_census import count_statements
 from tests.spillover_trial import (
     ANCHOR,
     WAREHOUSE_ROLES,
     WINDOW_END,
     bind_summary,
     complete_receipt,
-    frame_design,
     frame_trial,
     launched_study,
-    legacy_spillover_file,
     paired_trial,
     spillover_rows,
     three_policy_trial,
@@ -243,32 +251,46 @@ def test_registration_binds_comparison_and_group_specific_offer_counts():
         assert stale.value.code == "kernel.run.execution_unavailable"
 
 
-def test_saved_v2_registration_rejects_every_nonmethod_reader_change():
-    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
-    fields, frames = paired_trial()
-    declaration = frame_design(fields)
-    roster = frames["roster"].to_pandas()
-    counts = frames["offer_counts"].to_pandas()
-    swapped = roster.copy()
-    swapped.loc[[0, 4], "group_id"] = swapped.loc[[4, 0], "group_id"].to_list()
-    for population, schedule, options in (
-        (roster, counts, {"alpha": 0.01}),
-        (roster, counts, {"metric": "clicked"}),
-        (roster, counts, {"window_days": 8}),
-        (roster, counts.assign(offers=counts.offers.where(counts.index != 1, 1)), {}),
-        (swapped, counts, {}),
-    ):
-        _, rebound = bind_summary(population, schedule, None, declaration, **options)
-        with rebound, pytest.raises(CodedError) as stale:
-            run(registered, rebound)
-        assert stale.value.code == "kernel.run.execution_unavailable"
-    payload = json.loads(registered.to_json())
-    payload["source_refs"][0]["expected_digest"] = "changed-source"
-    changed_source = Experiment.from_json(json.dumps(payload))
-    _, reader = frame_trial(fields, frames)
-    with reader, pytest.raises(CodedError) as stale:
-        run(changed_source, reader)
-    assert stale.value.code == "kernel.request.invalid"
+@pytest.mark.integration
+@pytest.mark.parametrize("revision", [99, 2], ids=["unknown", "unsupported"])
+def test_unknown_registered_method_refuses_before_reader_matching_and_reads(
+    con, tmp_path, revision
+):
+    design, frames = three_policy_trial()
+    with launched_study(con, tmp_path, design, frames) as (path, bound_con, saved):
+        registered, original = from_definitions(path, bound_con, experiment_name="pilot")
+        with original:
+            payload = json.loads(saved)
+            payload["design"]["method"] = f"two-stage-fixed-bet-v{revision}"
+            payload["registration"] = {
+                "registration_hash": contract_hash(
+                    "registration",
+                    {
+                        "experiment_id": registered.experiment_id,
+                        "design": payload["design"],
+                        "metrics": registered.metrics,
+                        "sources": [ref.canonical_payload() for ref in registered.source_refs],
+                        "planning": registered.analysis_context,
+                    },
+                )
+            }
+            unknown = Experiment.from_json(json.dumps(payload))
+            _, rebuilt = from_definitions(path, bound_con, experiment_name="pilot")
+            with rebuilt, count_statements(bound_con) as census:
+                with pytest.raises(CodedError) as power:
+                    spillover_power(unknown)
+                assert power.value.code == "kernel.request.invalid"
+                (feasibility,) = runnable(unknown, "bought").values()
+                (static,) = feasibility.static_refusals
+                assert (static.code, static.context) == (power.value.code, power.value.context)
+                for reader in (original, rebuilt):
+                    with pytest.raises(CodedError) as execution:
+                        run(unknown, reader)
+                    assert (execution.value.code, execution.value.context) == (
+                        static.code,
+                        static.context,
+                    )
+            assert census.total == 0
 
 
 def test_unsupported_run_options_refuse_before_missing_logs():

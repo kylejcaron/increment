@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from increment._canonical import canonical_digest_bytes
 from increment._spillover_design import SPILLOVER_ESTIMATOR
-from increment._spillover_registration import require_registered_spillover
 from increment.declarations import CellKey
 from increment.estimation.readout_types import (
     CellRecord,
@@ -143,8 +142,7 @@ def finish_spillover(
         identity_metric=metric.name,
         policy_interval=terms,
     )
-    method = require_registered_spillover(experiment)
-    rule = SpilloverInterval(population, method=method)
+    rule = SpilloverInterval(population)
     policy_count = len(design.compared_policies)
     rows = []
     for comparison in design.comparisons:
@@ -155,7 +153,6 @@ def finish_spillover(
                 reference=comparison.reference,
                 metric=metric.name,
                 window_days=metric.window_days,
-                method=method,
                 estimate=point,
                 lower=lower,
                 upper=upper,

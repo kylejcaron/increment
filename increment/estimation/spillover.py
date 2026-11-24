@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,9 +18,6 @@ from increment._spillover_design import (
 )
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
 from increment.estimation._spillover_mixture import PolicyMixture
-
-if TYPE_CHECKING:
-    from increment._spillover_registration import SpilloverMethod
 
 _AVAILABLE, _TOO_FEW, _NO_VARIATION, _ZERO_VARIANCE, _NONFINITE = range(5)
 _REASON_TEXT = {
@@ -426,9 +423,7 @@ class SpilloverInterval:
     truth; if the intersection is empty, the full attainable range contains it.
     """
 
-    def __init__(
-        self, population: SpilloverPopulation, *, method: SpilloverMethod = "two-stage-fixed-bet-v3"
-    ) -> None:
+    def __init__(self, population: SpilloverPopulation) -> None:
         self._population = population
         design = population.design
         quotas = design.groups_per_policy
@@ -446,7 +441,7 @@ class SpilloverInterval:
         policies = design.compared_policies
         level = math.log(2 * len(policies)) - math.log(design.alpha)
         self._laws = {
-            p: PolicyMixture(np.array([quotas[s][p] for s in self._strata]), weights, level, method)
+            p: PolicyMixture(np.array([quotas[s][p] for s in self._strata]), weights, level)
             for p in policies
         }
         self._dense: dict[tuple[str, str], _CountDesign] = {}

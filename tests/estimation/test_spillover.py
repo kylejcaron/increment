@@ -675,9 +675,7 @@ def test_many_one_group_strata_keep_the_outward_side_of_the_product_mixture():
             else:
                 right = mid
         limit = left
-        old = Decimal(".475") / (Decimal(80) ** (Decimal(1) / n) - Decimal(".05"))
-        # The extra small bets improve heterogeneous designs, not all designs.
-        assert 0 < 1 - 2 * old < 1 - 2 * limit < Decimal(".002")
+        assert 0 < 1 - 2 * limit < Decimal(".002")
         assert Decimal.from_float(lo[0]) <= 2 * limit - 1
         assert Decimal.from_float(hi[0]) >= 1 - 2 * limit
         assert lo[0] == pytest.approx(float(2 * limit - 1), rel=0, abs=1e-10)

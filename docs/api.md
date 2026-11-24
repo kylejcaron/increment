@@ -171,10 +171,8 @@ values.
   certified cutoff and completeness. `results_store=` saves signed policy
   comparisons for offline reopening. `increment.power.spillover_power`
   checks pre-launch power without reading purchases.
-  New registrations use interval method `two-stage-fixed-bet-v3`, which
-  accounts for replication across many small regions. Saved v2 experiments
-  keep their original calculation and identity when reopened or completed
-  with a fresh matching reader. Neither method guarantees a narrow range.
+  The interval method `two-stage-fixed-bet-v3` accounts for replication
+  across many small regions but does not guarantee a narrow range.
   PostgreSQL sources bind the table visible on the connection's search path,
   not simply its first schema.
 

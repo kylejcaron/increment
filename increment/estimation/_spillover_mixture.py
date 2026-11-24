@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import elementwise
-
-if TYPE_CHECKING:
-    from increment._spillover_registration import SpilloverMethod
 
 
 class PolicyMixture:
@@ -21,13 +17,11 @@ class PolicyMixture:
         counts: NDArray[np.int64],
         weights: NDArray[np.float64],
         log_threshold: float,
-        method: SpilloverMethod,
     ) -> None:
         self.counts = counts
         rates = weights / counts
         total = sum(map(int, counts))
-        scale = int(counts.max()) if method == "two-stage-fixed-bet-v2" else total
-        self.terms = 1 + (scale - 1).bit_length()
+        self.terms = 1 + (total - 1).bit_length()
         bets = np.ldexp(0.95, -np.arange(self.terms))
         eta = bets[:, None] * (rates / rates.max())
         self.log_base = np.log1p(-eta)

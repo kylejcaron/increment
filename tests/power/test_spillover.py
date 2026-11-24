@@ -1,7 +1,7 @@
 """Operating characteristics for the prospective two-stage binary model."""
 
 import json
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError
 from functools import cache
 from itertools import combinations, product
 from math import ceil, comb, log2, prod
@@ -20,8 +20,6 @@ from increment.power import spillover_power
 from tests.spillover_trial import (
     bind_summary,
     frame_trial,
-    legacy_spillover_file,
-    paired_trial,
     three_policy_trial,
 )
 
@@ -40,47 +38,6 @@ def test_offline_power_refuses_edited_group_quotas_under_the_saved_registration(
     with pytest.raises(CodedError) as stale:
         spillover_power(edited)
     assert stale.value.code == "kernel.request.invalid"
-
-
-@pytest.mark.slow
-@pytest.mark.numerical_certification
-def test_saved_v2_optional_power_uses_the_same_registered_interval_after_upgrade():
-    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
-    expected = json.loads(legacy_spillover_file("paired-power.json").read_text())
-    rows = spillover_power(registered)
-    old = [asdict(row) for row in rows]
-    actual = json.loads(json.dumps(old))
-    # Freeze counts and advice; validate probability bounds through independent binomial tails.
-    for row, recorded, baseline in zip(rows, actual, expected, strict=True):
-        for scenario, observed, saved in zip(
-            row.evidence.scenarios,
-            recorded["evidence"]["scenarios"],
-            baseline["evidence"]["scenarios"],
-            strict=True,
-        ):
-            _check_bounds(scenario, len(rows))
-            for bound in ("miss_upper", "detection_lower", "detection_upper"):
-                observed.pop(bound)
-                saved.pop(bound)
-    assert actual == expected
-    current, reader = frame_trial(*paired_trial(), planning=True)
-    with reader:
-        fresh = spillover_power(current)
-    assert [asdict(row) for row in fresh] != old
-
-
-def test_offline_power_refuses_unknown_registered_method_even_with_matching_digest():
-    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
-    payload = json.loads(registered.to_json())
-    payload["design"]["method"] = "two-stage-fixed-bet-v99"
-    # Digest of the frozen pre-launch fixture with only its method changed to v99.
-    payload["registration"] = {
-        "registration_hash": "0f7594192a2146b4d46f41ef97d155d96f95bc6ba019aab36ac74a1348690606"
-    }
-    unknown = Experiment.from_json(json.dumps(payload))
-    with pytest.raises(CodedError) as unsupported:
-        spillover_power(unknown)
-    assert unsupported.value.code == "kernel.request.invalid"
 
 
 def _comparison(rate=0.4, effect=0.1, policy="upper"):

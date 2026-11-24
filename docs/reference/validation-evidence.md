@@ -351,18 +351,18 @@ To reproduce, run `Rscript --vanilla tests/oracles/generate/gen_spillover_publis
 
     If two policies assign the same quota to a group, the untreated potential outcome for each person is the same under both: only the number of peers offered treatment matters here. Let $D$ be the fraction of **all eligible people** in groups where the two quotas differ. Binary outcomes imply the true person-weighted difference lies in $[-D,D]$. Intersect the family interval with that range. If they do not overlap, return the whole attainable range, not a signed endpoint. A true effect covered by the original interval is still covered, so this step cannot increase the chance of a false call. If $D=0$, the difference is exactly zero irrespective of the observed event rates.
 
-New registrations record `two-stage-fixed-bet-v3`. Its fixed grid uses the total number of groups receiving a policy across regions, rather than the largest regional count used by v2. This lets many small independent regions contribute precision; each bet and their prechosen average satisfy the same bound above. More terms also increase the mixture penalty, so v3 is not always narrower. A saved v2 registration still uses its original calculation for analysis and optional power; an upgrade does not silently change the method of an experiment already launched.
+Registrations record `two-stage-fixed-bet-v3`. Its fixed grid uses the total number of groups receiving a policy across regions. This lets many small independent regions contribute precision; each bet and their prechosen average satisfy the same bound above. More terms also increase the mixture penalty.
 
 **Many small regions.** A diagnostic case has 4,000 independent pairs of four-person stores, one store per policy in each pair. Store outcomes vary across pairs; the true policy difference is 50 percentage points. A second case holds every store's normalized outcome at one half, with no policy difference. These deliberately contrasting cases show the tradeoff, not typical business effects. Observed intervals at family `alpha=.05`:
 
-| Case | v2 range, percentage points | v3 range, percentage points |
-|---|---:|---:|
-| Different outcomes across pairs | −28.80 to +99.98 | +44.80 to +54.93 |
-| Identical outcomes across pairs | −0.11525 to +0.11525 | −0.18136 to +0.18136 |
+| Case | Range, percentage points |
+|---|---:|
+| Different outcomes across pairs | +44.80 to +54.93 |
+| Identical outcomes across pairs | −0.18136 to +0.18136 |
 
-`tests/test_spillover.py::test_heterogeneous_matched_pairs_learn_a_half_point_effect_as_strata_grow` exercises the public path at 400 and 4,000 pairs and compares the latter endpoints with a separate 90-digit product-mixture inversion (absolute tolerance `1e-10`). `tests/estimation/test_spillover.py::test_many_one_group_strata_keep_the_outward_side_of_the_product_mixture` checks the homogeneous case at 8,192 pairs against a Decimal inversion, including outward rounding and its wider range than v2. The unequal-group, shared-reference inversion also runs at `alpha=.01` in `tests/estimation/test_spillover.py::test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisance`. These are bounded numerical checks alongside the coverage derivation, not a universal precision guarantee.
+`tests/test_spillover.py::test_heterogeneous_matched_pairs_learn_a_half_point_effect_as_strata_grow` exercises the public path at 400 and 4,000 pairs and compares the latter endpoints with a separate 90-digit product-mixture inversion (absolute tolerance `1e-10`). `tests/estimation/test_spillover.py::test_many_one_group_strata_keep_the_outward_side_of_the_product_mixture` checks the homogeneous case at 8,192 pairs against a Decimal inversion, including outward rounding. The unequal-group, shared-reference inversion also runs at `alpha=.01` in `tests/estimation/test_spillover.py::test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisance`. These are bounded numerical checks alongside the coverage derivation, not a universal precision guarantee.
 
-`tests/store/test_spillover.py::test_saved_v2_prelaunch_runs_its_original_interval_and_reopens_unchanged` completes a genuine earlier-version registration in a fresh process and reopens its saved result. `tests/power/test_spillover.py::test_saved_v2_optional_power_uses_the_same_registered_interval_after_upgrade` preserves its planning calculation too. New v3 plans may take longer because they evaluate more terms. Batching reduces temporary work; a single large design still needs arrays for all its regions and terms.
+Planning evaluates the same fixed grid as analysis. Batching reduces temporary work; a single large design still needs arrays for all its regions and terms.
 
 **What size change can it show?** Here are observed ranges, not predictions of how often an experiment succeeds. Half the stores made no offers; the other half offered 100 of their 200 people. Reference stores' untreated rates were 20% or 30% in equal numbers. In the other arm, both rates rose by the indicated amount. Two-sided family alpha .05:
 

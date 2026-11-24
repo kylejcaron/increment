@@ -7,7 +7,6 @@ import pytest
 
 from increment import (
     AnalysisPlan,
-    Experiment,
     MetricSpec,
     RunResult,
     Spillover,
@@ -23,7 +22,6 @@ from increment.results import ReadoutResults, ResultCell, SpilloverEffect, Spill
 from increment.store import HistorySelector, ParquetResultsStore, Run, WarehouseResultsStore
 from increment.store.types import pinned_run
 from tests._unit_boundary import backend_fixture
-from tests.spillover_trial import frame_trial, legacy_spillover_file, paired_trial
 
 _PAIRS = (("a:b", "c"), ("a", "b:c"))
 
@@ -78,54 +76,6 @@ def warehouse_store():
 
 def test_reopened_policy_pairs_keep_direction_and_separate_histories(tmp_path):
     _check_reopened_policy_pairs(ParquetResultsStore(tmp_path))
-
-
-def _run_upgraded_trial(saved, store_path):
-    registered = Experiment.from_json(saved)
-    current, reader = frame_trial(*paired_trial())
-    assert current.design["method"] == "two-stage-fixed-bet-v3"
-    assert current.registration != registered.registration
-    store = ParquetResultsStore(store_path)
-    with reader:
-        replay = run(registered, reader, run_id="after-upgrade", results_store=store)
-        fresh = run(current, reader)
-    assert registered.to_json() == saved
-    fresh_row, replay_row = fresh.readout()[0], replay.readout()[0]
-    assert isinstance(fresh_row, SpilloverEffect) and isinstance(replay_row, SpilloverEffect)
-    assert fresh_row.lower is not None and replay_row.lower is not None
-    assert fresh_row.lower > replay_row.lower
-    return (
-        replay.readout().model_dump_json(),
-        replay.cells[0].identity.hash(),
-        fresh.cells[0].identity.method_config_hash,
-    )
-
-
-@pytest.mark.integration
-def test_saved_v2_prelaunch_runs_its_original_interval_and_reopens_unchanged(tmp_path):
-    from concurrent.futures import ProcessPoolExecutor
-    from multiprocessing import get_context
-
-    registered = Experiment.from_json(legacy_spillover_file("paired-prelaunch.json").read_text())
-    completed = ReadoutResults.model_validate_json(
-        legacy_spillover_file("paired-readout.json").read_text()
-    )
-    assert isinstance(completed, SpilloverEffects)
-    with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as workers:
-        saved, identity, fresh_method = workers.submit(
-            _run_upgraded_trial, registered.to_json(), tmp_path
-        ).result()
-    replay = ReadoutResults.model_validate_json(saved)
-    # Completed numbers and their method remain unchanged, even when the
-    # registered trial is first measured by a fresh process after an upgrade.
-    assert tuple(replay) == tuple(completed)
-    assert replay[0].method == "two-stage-fixed-bet-v2"
-    store = ParquetResultsStore(tmp_path)
-    handle = store.open_run("pilot", registered.analysis_spec_hash, "after-upgrade")
-    restored = RunResult.from_handle(handle, registration=registered.registration)
-    assert tuple(restored.readout()) == tuple(completed)
-    assert restored.cells[0].identity.hash() == identity
-    assert restored.cells[0].identity.method_config_hash != fresh_method
 
 
 @pytest.mark.integration

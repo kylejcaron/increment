@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
@@ -187,10 +186,6 @@ def paired_trial(strata=40):
         "offer_counts": pa.Table.from_pylist(counts),
         "group_policy": pa.Table.from_pylist(policies),
     }
-
-
-def legacy_spillover_file(name):
-    return Path(__file__).parent / "fixtures" / "spillover_legacy" / name
 
 
 def write_study(path, design, names, *, dialect=None):
