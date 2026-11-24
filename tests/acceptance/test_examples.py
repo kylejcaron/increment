@@ -17,11 +17,13 @@ run via `make test-examples`.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, cast
 
@@ -316,6 +318,79 @@ def test_cuped_export_renders_expected_figures(tmp_path):
     assert "avg_session_duration" in html
     assert "purchase_rate" in html
     assert "d7_retention" in html
+
+
+class _RenderedMarimoTables(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[dict[str, Any]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "marimo-table" and (data := dict(attrs).get("data-data")) is not None:
+            self.records.extend(json.loads(json.loads(data)))
+
+
+def _assert_cupac_score_diagnostics(records: list[dict[str, Any]]) -> None:
+    coverage = [row for row in records if "score_p90" in row]
+    control = [row for row in coverage if row["variant"] == "control"]
+    (full,) = (row for row in coverage if row["variant"] == "treatment" and row["missing"] == 0)
+    (missing,) = (row for row in coverage if row["variant"] == "treatment" and row["missing"] > 0)
+    assert [(row["units"], row["scored"], row["missing"]) for row in control] == [
+        (1500, 1500, 0)
+    ] * 2
+    assert (full["units"], full["scored"]) == (1500, 1500)
+    assert (missing["units"], missing["scored"], missing["missing"]) == (1500, 825, 675)
+    assert missing["score_p90"] < full["score_median"] < full["score_p90"]
+
+    holdout = {row["score"]: row for row in records if "holdout_correlation" in row}
+    assert holdout["useful"]["holdout_units"] == 2000
+    assert holdout["irrelevant feature"]["holdout_units"] == 2000
+    assert 0.80 < holdout["useful"]["holdout_correlation"] < 0.97
+    assert abs(holdout["irrelevant feature"]["holdout_correlation"]) < 0.1
+
+    ratios = {}
+    for row in records:
+        if "unadjusted_abs_se" not in row:
+            continue
+        assert 0.08 < row["unadjusted_abs_se"] < 0.3
+        assert row["cuped_abs_se"] > 0
+        ratios[row["scenario"]] = row["cuped_abs_se"] / row["unadjusted_abs_se"]
+    assert 0.30 < ratios["useful"] < 0.65
+    assert ratios["irrelevant feature"] == pytest.approx(1.0, rel=0.05)
+    assert 0.75 < ratios["shifted population"] < 0.97
+
+
+@pytest.mark.integration
+def test_cupac_export_renders_expected_figures(tmp_path):
+    html = _export_html("cupac.py", tmp_path)
+    match = re.search(r'"session":\s*(\{.*?\})\s*,\s*"runtimeConfig"', html, re.DOTALL)
+    assert match, "marimo export did not contain serialized cell outputs"
+    outputs = [
+        output["data"]
+        for cell in json.loads(match.group(1))["cells"]
+        for output in cell.get("outputs", [])
+    ]
+    tables = _RenderedMarimoTables()
+    for output in outputs:
+        tables.feed(output.get("text/html", ""))
+    method_rows = {
+        (row["metric"], row["method"]): row
+        for row in tables.records
+        if "metric" in row and "method" in row
+    }
+    for metric in ("revenue", "revenue_per_session"):
+        for method, role in (("unadjusted", "decision"), ("cuped", "sensitivity")):
+            row = method_rows[metric, method]
+            assert row["role"] == role
+            assert all(math.isfinite(row[field]) for field in ("lift", "lower", "upper"))
+            assert row["lower"] < row["lift"] < row["upper"]
+    _assert_cupac_score_diagnostics(tables.records)
+    rendered = json.dumps(outputs)
+    for field in ("training_cutoff", "feature_as_of", "model_version", "trained_on"):
+        assert field in rendered
+    assert "shifted" in rendered
+    assert "frame.validation.metric_covariate_column" in rendered
+    assert any(row.get("imputed_cuped_lift") is not None for row in tables.records)
 
 
 # --- analysis_from_a_warehouse.py: realistic warehouse, needs tables -------

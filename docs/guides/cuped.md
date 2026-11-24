@@ -129,6 +129,7 @@ including the population used for imputation.
 | Situation | Method or next step |
 |---|---|
 | One continuous covariate | `Method.cuped` |
+| One prediction scored by a frozen external model | Follow the [CUPAC recipe](cupac.md) |
 | Several covariates, categories or missingness indicators | `Method.cuped_multicovariate` |
 | Warehouse pre-period outcome | Set `n_pre_periods` and request CUPED |
 | Repeated decisions | Check the [sequential restrictions](#cuped-under-sequential-inference) first |

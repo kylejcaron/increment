@@ -52,6 +52,7 @@ FROZEN_OPERATION_CUTOVERS = (
     "pre-kernel-asof",
     "relative-prior-v1",
     "shared-metric-definitions",
+    "cupac-external-prediction",
 )
 
 

@@ -1066,11 +1066,11 @@ with adequate category support; do not duplicate observations as if they
 were new users. A failed decision fit stays unavailable rather than silently
 switching to unadjusted inference.
 
-This same-experiment estimator does not train an external prediction model:
-external-prediction training (tracker #72) and longitudinal dependence
-(tracker #80) are not implemented. A preregistered coverage campaign exists
-but has not been run, so coverage is not established. Its current commands
-and status are recorded in [External validation coverage](../validation.md#mixed-covariate-linear-cuped).
+This estimator does not train an external prediction model. To supply one
+frozen score per unit, use the [CUPAC recipe](../guides/cupac.md) with scalar
+CUPED. The multicovariate estimator does not handle longitudinal dependence.
+Its preregistered coverage campaign has not been run; see
+[External validation coverage](../validation.md#mixed-covariate-linear-cuped).
 
 
 Fits must lie in support region **M1**: at most 203 encoded covariates,

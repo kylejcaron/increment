@@ -120,7 +120,14 @@ The full scope retains every cell. The PR scope selects the cheapest cell with a
 
 ## Existing scenario cases
 
-The 86 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, triggered daily/as-of outcomes and assignment-anchored triggered compliance across definitions and a reopened unit-day artifact, assigned and triggered sitewide impact under a declared trigger across definitions and a site-volume artifact, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal, mixed-catalog checkpoint replay, and clustered assignment-integrity metadata across definitions and a reopened unit-day artifact).
+The registered `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, triggered daily/as-of outcomes and assignment-anchored triggered compliance across definitions and a reopened unit-day artifact, assigned and triggered sitewide impact under a declared trigger across definitions and a site-volume artifact, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal, mixed-catalog checkpoint replay, and clustered assignment-integrity metadata across definitions and a reopened unit-day artifact).
+
+`cuped_external_prediction_fixed_horizon` compares the unadjusted decision and
+scalar CUPED sensitivity for the same units and saved pre-assignment scores.
+Definitions bind the named continuous property with `n_pre_periods=0`; the
+published artifact retains the raw scores and their binding. Summary, panel and
+portable moments agree on the whole-window results; the attempted switchback
+builder refuses CUPED with `source.frame.switchback.metric`.
 
 The mixed-catalog checkpoint scenario compares the modeled conversion's rows and retained state across definitions, a reopened unit-day artifact, unit summary, unit panel, and moments replay. The first four routes export and reopen a checkpoint while preserving the unmodeled, unwindowed quantile's catalog entry and level. Explicit quantile estimation refuses with `sequential.route.unsupported`; moments replay refuses re-export with `evidence.operation_unavailable`. Switchback is source-waived: it cannot declare this quantile catalog or construct the sequential checkpoint.
 

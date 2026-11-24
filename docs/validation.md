@@ -131,6 +131,26 @@ cover arithmetic, confounding bounds, binomial sets, cluster covariance, CUPED,
 meta-analysis and targeting. Their finite grids and regression bands are not
 universal coverage guarantees.
 
+### Scalar CUPED with a frozen external prediction
+
+The [CUPAC recipe](guides/cupac.md) uses scalar CUPED for a fixed horizon.
+The interval [treats the CUPED adjustment coefficient as fixed](limitations.md#cuped-treats-its-adjustment-coefficient-as-known),
+even though Increment estimates it from the experiment.
+
+`tests/test_cupac.py::test_cupac_coverage_and_bias` checks mean and ratio results
+with useful, irrelevant-feature and shifted predictors. It compares nominal
+95% coverage and signed lift error with prespecified bands over 1,500 draws
+per metric and scenario, with 1,000 units per arm.
+`tests/test_cupac.py::test_cupac_precision_tracks_prediction_quality` separately
+compares interval widths with 20,000 units per arm. Neither check establishes
+a new finite-sample guarantee.
+
+The `cuped_external_prediction_fixed_horizon` case in
+`helper:tests/parity_harness/cases.py` checks that the same units and frozen
+scores produce matching decision and sensitivity results on five supported
+inputs and a CUPED refusal on switchback input. That comparison checks agreement
+across sources, not interval coverage.
+
 ## Methods without an independent reference
 
 Use the [method evidence index](reference/validation-evidence.md#methods-without-an-independent-reference)

@@ -591,6 +591,7 @@ EXAMPLE_NOTEBOOKS = (
     "dashboard",
     "observational",
     "cuped",
+    "cupac",
     "breakout",
     "power",
     "hte",
