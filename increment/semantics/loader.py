@@ -209,14 +209,17 @@ def load(path: str | Path) -> Definitions:
     return _load(Path(path), advise=True)
 
 
+def _raw_definitions(path_obj: Path, *, advise: bool) -> tuple[dict[str, Any], _Provenance]:
+    if path_obj.is_file():
+        return _load_single(path_obj)
+    if path_obj.is_dir():
+        return _load_dir(path_obj, advise=advise)
+    refuse(_MISSING_PATH, path=str(path_obj))
+
+
 def _load(path_obj: Path, *, advise: bool) -> Definitions:
     """Load and validate definitions, emitting load-time warnings only when ``advise``."""
-    if path_obj.is_file():
-        raw, provenance = _load_single(path_obj)
-    elif path_obj.is_dir():
-        raw, provenance = _load_dir(path_obj, advise=advise)
-    else:
-        refuse(_MISSING_PATH, path=str(path_obj))
+    raw, provenance = _raw_definitions(path_obj, advise=advise)
 
     dialect = raw.get("dialect")
 

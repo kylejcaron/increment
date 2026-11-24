@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment._canonical import declaration_value
 from increment._evidence_refusals import refuse_grain, refuse_operation, require_evidence
@@ -40,7 +40,26 @@ from increment.decision import ContrastContext
 from increment.errors import CapabilityError, _ArtifactContractErrorMarker
 
 if TYPE_CHECKING:
+    from increment._spillover_design import PolicyCell, SpilloverDesign, SpilloverPopulation
     from increment.kernel.context import EvidenceExecutionContext
+
+
+class SpilloverSource(Protocol):
+    def freeze(self, design: SpilloverDesign, /) -> SpilloverPopulation: ...
+
+    def observe(self, population: SpilloverPopulation, /) -> tuple[PolicyCell, ...]: ...
+
+
+def freeze_spillover(source: SpilloverSource, design: SpilloverDesign) -> SpilloverPopulation:
+    """Acquire the roster identity and every group's fixed offer counts before assignment."""
+    return source.freeze(design)
+
+
+def observe_spillover(
+    source: SpilloverSource, population: SpilloverPopulation
+) -> tuple[PolicyCell, ...]:
+    """Reconcile the logs with the frozen population and acquire one summary per policy cell."""
+    return source.observe(population)
 
 
 def load_moments_batch(

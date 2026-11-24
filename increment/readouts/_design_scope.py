@@ -16,7 +16,7 @@ from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_identity import source_identity
 from increment._source_types import declared_evidence
 from increment.breakout.estimates import LiftEstimates
-from increment.decision import evidence_request_procedure
+from increment.decision import HypothesisKey, evidence_request_procedure
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
@@ -814,9 +814,9 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
             try:
                 p_value = row.p_value()
                 if isinstance(p_value, (int, float)):
-                    evidence = PValueEvidence(
-                        cell.hypothesis(), cell.method, p_value, row.reference_kind
-                    )
+                    hypothesis = cell.hypothesis()
+                    assert isinstance(hypothesis, HypothesisKey)
+                    evidence = PValueEvidence(hypothesis, cell.method, p_value, row.reference_kind)
             except (AttributeError, ValueError):
                 evidence = None
         posterior = (

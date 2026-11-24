@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from increment._binding import ExperimentReader
     from increment._run import RunResult, run
+    from increment._spillover_design import Spillover, SpilloverComparison
     from increment.builders import (
         from_definitions,
         from_frame,
@@ -77,6 +78,8 @@ __all__ = [
     "CupedCovariateBinding",
     "Winsorization",
     "Design",
+    "Spillover",
+    "SpilloverComparison",
     "Randomized",
     "Observational",
     "Encouragement",
@@ -116,6 +119,8 @@ _LAZY_IMPORTS = {
     "CupedCovariateBinding": ("increment.semantics.models", "CupedCovariateBinding"),
     "MethodSpec": ("increment.semantics.models", "MethodSpec"),
     "Design": ("increment.semantics.design", "Design"),
+    "Spillover": ("increment._spillover_design", "Spillover"),
+    "SpilloverComparison": ("increment._spillover_design", "SpilloverComparison"),
     "Randomized": ("increment.semantics.design", "Randomized"),
     "Observational": ("increment.semantics.design", "Observational"),
     "Encouragement": ("increment.semantics.design", "Encouragement"),

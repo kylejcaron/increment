@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, cast
 
 from increment.errors import CodedError
+from increment.estimation.readout_types import validate_collection
 from increment.kernel.contracts import CompiledPlanBinding, Registration, contract_hash
 from increment.kernel.ports import RunHandlePort, RunRecord
 from increment.kernel.program_refusals import refuse_store
@@ -402,7 +403,86 @@ def _decision_integrity_reasons(
     )
 
 
-def decide(  # noqa: PLR0915
+def _spillover_decisions(handle: RunHandlePort, registration: Registration) -> Decisions:
+    run = handle.run
+    envelope = _validated_envelope(run, handle)
+    metadata = run.metadata
+    if (
+        metadata is None
+        or metadata != envelope.metadata
+        or metadata.partial
+        or len(metadata.scope.families) != 1
+        or metadata.scope.populations != ("assigned",)
+        or metadata.analysis_spec_hash != run.analysis_spec_hash
+        or metadata.registration_hash != registration.registration_hash
+        or metadata.run_id != run.run_id
+    ):
+        refuse_store(
+            "store.run.metadata_mismatch",
+            "Inconsistent policy comparison metadata",
+            run_id=run.run_id,
+        )
+    if tuple(c.identity for c in envelope.cells) != run.expected_roster:
+        refuse_store(
+            "store.run.roster_mismatch",
+            "Saved comparisons differ from the registered order",
+            run_id=run.run_id,
+        )
+    if envelope.cells != run.cells:
+        refuse_store(
+            "store.run.provenance_mismatch",
+            "Saved comparisons differ from their run",
+            run_id=run.run_id,
+        )
+
+    family = metadata.scope.families[0]
+    members = set(family.members)
+    policies = {p for key in members for p in (key.policy, key.reference)}
+    terms = family.policy_interval
+    if (
+        not family.complete
+        or family.view != "spillover"
+        or terms is None
+        or family.source_snapshot_id != metadata.scope.snapshot_id
+        or family.members != tuple(cell.identity.key for cell in envelope.cells)
+    ):
+        refuse_store("store.run.roster_mismatch", "Incomplete comparison family", run_id=run.run_id)
+    rows = tuple(cell._projection_row() for cell in envelope.cells)
+    validate_collection(rows, metadata)
+    for row, cell in zip(rows, envelope.cells, strict=True):
+        if (
+            cell.row_kind != "spillover"
+            or cell.family != family
+            or cell.identity.scope is None
+            or cell.identity.scope.view != "spillover"
+            or cell.source_snapshot_id != family.source_snapshot_id
+            or row.registration_hash != registration.registration_hash
+            or row.family_size != len(members)
+            or row.policy_count != len(policies)
+            or row.metric != family.identity_metric
+            or row.alpha != terms.alpha
+            or row.window_days != terms.window_days
+        ):
+            refuse_store(
+                "store.run.identity_mismatch",
+                "Policy result differs from its registered family",
+                run_id=run.run_id,
+            )
+    # A simultaneous range is not an arm-level rejection or a shipping rule.
+    verdicts = tuple(
+        Verdict(cell.identity.hash(), None, "not_evaluated", None, (), family.family_id, "member")
+        for cell in envelope.cells
+    )
+    return Decisions(
+        verdicts,
+        (),
+        ProgramVerdict("not_evaluated", ()),
+        registration.registration_hash,
+        run.run_id,
+    )
+
+
+def decide(
     handle: RunHandlePort, registration: Registration, plan: object | None = None
 ) -> Decisions:
     """Evaluate only the immutable evidence and manifest pinned by a RunHandle."""
@@ -413,9 +493,21 @@ def decide(  # noqa: PLR0915
             "Run registration differs from decision registration",
             run_id=run.run_id,
         )
-    plan = _validated_plan(run, registration, plan)
-    envelope = _validated_envelope(run, handle)
+    if run.cells and run.cells[0].row_kind == "spillover":
+        if plan is not None or run.decision_plan is not None:
+            refuse_store(
+                "store.decision.reference_invalid",
+                "Policy comparisons have no arm decision plan",
+                run_id=run.run_id,
+            )
+        return _spillover_decisions(handle, registration)
+    validated = _validated_plan(run, registration, plan)
+    return _decisions_from_plan(run, registration, validated, _validated_envelope(run, handle))
 
+
+def _decisions_from_plan(  # noqa: PLR0915
+    run: RunRecord, registration: Registration, plan: _DecisionPlan, envelope: Any
+) -> Decisions:
     verdicts: dict[tuple[str | None, str], Verdict] = {}
     for cell in envelope.cells:
         verdict = _scope_verdict(cell, plan.procedures)

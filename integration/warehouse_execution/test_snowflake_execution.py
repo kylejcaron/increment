@@ -6,6 +6,7 @@ publish/adopt parity -- not a hand-assembled query-builder pipeline."""
 from __future__ import annotations
 
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,6 +43,84 @@ def test_ratio_metric_lift(snowflake_con):
 
 def test_summary_sql_preview(snowflake_con):
     run_summary_sql_probe(snowflake_con, dialect="snowflake")
+
+
+def test_spillover_policy_comparisons(snowflake_con, tmp_path):
+    from tests.spillover_trial import run_three_policy_probe
+
+    run_three_policy_probe(snowflake_con, tmp_path)
+
+
+def test_spillover_requires_session_independent_sources(snowflake_con, tmp_path):
+    import sqlglot as sg
+
+    from increment.errors import CodedError
+    from tests.spillover_trial import (
+        WAREHOUSE_ROLES,
+        complete_receipt,
+        three_policy_trial,
+        write_study,
+    )
+
+    con = snowflake_con
+    design, frames = three_policy_trial()
+    tag = uuid4().hex[:12]
+    names = {role: f"spill_{tag}_{role}" for role in WAREHOUSE_ROLES}
+    study = tmp_path / "study.yaml"
+    namespace = f"{con.current_catalog}.{con.current_database}"
+    write_study(
+        study,
+        design,
+        {role: f"{namespace}.{name}" for role, name in names.items()},
+        dialect="snowflake",
+    )
+    with ExitStack() as cleanup:
+        for role, name in names.items():
+            if role == "offer_counts":
+                base = con.create_table(f"{name}_base", frames[role])
+                cleanup.callback(con.drop_table, f"{name}_base")
+                con.create_view(name, base)
+                cleanup.callback(con.drop_view, name)
+            else:
+                con.create_table(name, frames[role])
+                cleanup.callback(con.drop_table, name)
+
+        # A session-local log is irrelevant before launch but cannot be the readout source.
+        con.create_table(names["purchases"], frames["purchases"], temp=True)
+        cleanup.callback(con.drop_table, names["purchases"])
+        experiment, reader = from_definitions(
+            study, con, experiment_name="pilot", source_snapshot_evidence=complete_receipt()
+        )
+        with reader, pytest.raises(CodedError) as temporary:
+            run(experiment, reader)
+        assert (temporary.value.code, temporary.value.context["field"]) == (
+            "spillover.design.invalid",
+            "purchases",
+        )
+
+        temp_view = f"{names['roster']}_view"
+        create = sg.exp.Create(
+            kind="VIEW",
+            this=sg.table(temp_view, quoted=True),
+            properties=sg.exp.Properties(expressions=[sg.exp.TemporaryProperty()]),
+            expression=sg.select("*").from_(sg.table(names["roster"], quoted=True)),
+        )
+        with con.raw_sql(create.sql(dialect="snowflake")):
+            pass
+        cleanup.callback(con.drop_view, temp_view)
+        names["roster"] = temp_view
+        write_study(
+            study,
+            design,
+            {role: f"{namespace}.{name}" for role, name in names.items()},
+            dialect="snowflake",
+        )
+        with pytest.raises(CodedError) as temporary:
+            from_definitions(study, con, experiment_name="pilot")
+        assert (temporary.value.code, temporary.value.context["field"]) == (
+            "spillover.design.invalid",
+            "roster",
+        )
 
 
 def test_materialized_cache_reflects_true_correction(snowflake_con, monkeypatch):

@@ -20,7 +20,6 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.semantics.models import Breakout, Metric, RetentionMetric
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -33,6 +32,7 @@ if TYPE_CHECKING:
     from increment.declarations import Method
     from increment.estimation.cuped.types import CategoricalCells, MulticovariateCupedFit
     from increment.semantics.design import Encouragement, Observational, Randomized
+    from increment.semantics.models import Breakout, Metric
     from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.sequential_state import SequentialSnapshot
 
@@ -203,10 +203,8 @@ class DayAxisRequest:
 
 def day_axis_time_basis(metric: object, grain: str) -> Literal["calendar", "cohort"]:
     """Return the date coordinate used by a day-axis metric."""
-    is_retention = isinstance(metric, RetentionMetric) or (
-        isinstance(metric, Mapping) and metric.get("type") == "retention"
-    )
-    return "cohort" if grain == "daily" and is_retention else "calendar"
+    kind = metric.get("type") if isinstance(metric, Mapping) else getattr(metric, "type", None)
+    return "cohort" if grain == "daily" and kind == "retention" else "calendar"
 
 
 def _experiment_breakouts(experiment: object) -> tuple[object, ...]:

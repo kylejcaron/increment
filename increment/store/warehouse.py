@@ -26,7 +26,6 @@ from increment.store.types import (
     HistorySelector,
     Run,
     RunHandle,
-    _matches_contrast,
     history_table,
     pinned_run,
     run_record_key,
@@ -324,20 +323,7 @@ class WarehouseResultsStore:
             if manifest.get("experiment_id") != experiment_id:
                 continue
             run = self._load_committed_name(name)
-            cells = [
-                cell
-                for cell in run.cells
-                if (
-                    cell.identity.metric_hash == selector.metric_hash
-                    and cell.identity.estimator_id == selector.estimator_id
-                    and cell.identity.method_config_hash == selector.method_config_hash
-                    and cell.identity.method_instance_id == selector.method_instance_id
-                    and cell.identity.scope is not None
-                    and cell.identity.scope.hash() == selector.scope_hash
-                )
-                and (selector.contrast is None or _matches_contrast(run, cell, selector.contrast))
-                and (selector.role is None or cell.identity.key.method_role == selector.role)
-            ]
+            cells = [cell for cell in run.cells if selector._matches(run, cell)]
             if len(cells) > 1:
                 refuse_store(
                     "store.history.ambiguous",

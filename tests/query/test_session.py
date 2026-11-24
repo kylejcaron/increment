@@ -1189,7 +1189,7 @@ def test_cleanup_preserves_other_namespace_data(monkeypatch, physical_name, remo
     con.create_table(physical_name, ibis.memtable(sentinel))
     create_table = con.create_table
 
-    def create_in_physical_namespace(name, expr, *, temp):
+    def create_in_physical_namespace(name, expr, *, temp, database=None):
         return create_table(physical_name, expr, database="materialized")
 
     monkeypatch.setattr(con, "create_table", create_in_physical_namespace)
@@ -3001,7 +3001,14 @@ class _BigQueryNetworkBoundary:
         self, name, obj=None, *, schema=None, database=None, overwrite=False, **kwargs
     ):
         self.executed_ddl.append("CREATE TABLE")
-        if kwargs.get("temp") and obj is not None:
+        table = self.sqlglot.parse_one(name, into=self.sqlglot.exp.Table, read="bigquery")
+        session = self.backend._session_dataset
+        if kwargs.get("temp"):
+            project, dataset = session.project, session.dataset_id
+        else:
+            default_project, default_dataset = self._resolve_location(database)
+            project, dataset = table.catalog or default_project, table.db or default_dataset
+        if obj is not None and (project, dataset) == (session.project, session.dataset_id):
             compiled = self.backend.compile(obj)
             parsed = self.sqlglot.parse_one(compiled, read="bigquery")
             for padding in parsed.find_all(self.sqlglot.exp.Pad):
@@ -3013,15 +3020,14 @@ class _BigQueryNetworkBoundary:
                     ),
                 )
             query = parsed.sql("duckdb")
-            self.real.con.execute(f'CREATE TEMP TABLE "{name}" AS {query}')
-            return self.real.table(name)
-        table = self.sqlglot.parse_one(name, into=self.sqlglot.exp.Table, read="bigquery")
-        project, dataset = self._resolve_location(database)
+            target = self.sqlglot.to_identifier(table.name, quoted=True).sql("duckdb")
+            self.real.con.execute(f"CREATE TEMP TABLE {target} AS {query}")
+            return self.real.table(table.name)
         return self.real.create_table(
             table.name,
             obj,
             schema=schema,
-            database=self._ensure_database(table.catalog or project, table.db or dataset),
+            database=self._ensure_database(project, dataset),
             overwrite=overwrite,
         )
 

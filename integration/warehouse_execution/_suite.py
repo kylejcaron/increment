@@ -351,7 +351,12 @@ def run_materialized_cache_correction_probe(
 
     def recording_create_table(name, *args, **kwargs):
         relation = create_table(name, *args, **kwargs)
-        if kwargs.get("temp") is True:
+        if dialect == "bigquery":
+            # Its temporary tables are ordinary tables in this connection's anonymous dataset.
+            scratch = con._session_dataset
+            if _materialization_database(relation) == (scratch.project, scratch.dataset_id):
+                created_relations.append((relation.op().name, relation))
+        elif kwargs.get("temp") is True:
             physical = _physical_temp_relation(con, relation, dialect)
             created_relations.append((name, physical))
         return relation

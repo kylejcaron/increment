@@ -13,6 +13,7 @@ from tests.capability_contracts import (
     OutcomeKind,
     ParityDeclaration,
 )
+from tests.parity_harness.matrix import SPILLOVER_DISPOSITIONS
 
 
 def _expectation(
@@ -1080,6 +1081,41 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 codes=("source.frame.switchback.identification",),
                 reason="Switchback identification requires a supported randomized design.",
                 stage="construction",
+            ),
+        ),
+    ),
+    ConsumerContract(
+        "spillover",
+        tuple(
+            _expectation(
+                f"{ingress}_not_expressible",
+                "run(experiment, reader)",
+                ingress,
+                "The input does not carry store policy, individual assignment and planned offer counts",
+                "not_expressible",
+                "tests.test_spillover_capability::test_other_inputs_cannot_declare_both_random_draws",
+                reason="Use a one-row-per-person summary or a named warehouse experiment.",
+                stage="construction",
+            )
+            for ingress, status in SPILLOVER_DISPOSITIONS.items()
+            if status == "not_expressible"
+        )
+        + (
+            _expectation(
+                "from_unit_summary_supported",
+                "from_frame(..., shape='summary', design=...) and run()",
+                "from_unit_summary",
+                "Every eligible person has an assignment; everyone without an offer has a measured conversion",
+                "supported",
+                "tests.test_spillover_capability::test_named_spillover_comparisons_match_through_frame_and_definitions",
+            ),
+            _expectation(
+                "from_definitions_supported",
+                "from_definitions(..., experiment_name=...) and run()",
+                "from_definitions",
+                "Both assignment logs match the frozen roster and the purchase feed covers all windows",
+                "supported",
+                "tests.test_spillover_capability::test_named_spillover_comparisons_match_through_frame_and_definitions",
             ),
         ),
     ),

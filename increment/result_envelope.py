@@ -68,7 +68,28 @@ def _safe_projection_fields(row: LiftEstimate) -> dict[str, Any]:
     return {name: row_fields[name] for name in _PROJECTION_FIELDS if name in row_fields}
 
 
+_TYPED_REPORT_MODELS = {
+    "breakout": ("increment.breakout.estimates", "BreakoutEstimate"),
+    "daily_metric": ("increment.breakout.estimates", "DailyMetricValue"),
+    "asof_metric": ("increment.breakout.estimates", "DailyMetricValue"),
+    "daily_lift": ("increment.breakout.estimates", "DailyLiftEstimate"),
+    "asof_lift": ("increment.breakout.estimates", "DailyLiftEstimate"),
+    "spillover": ("increment.estimation.spillover_results", "SpilloverEffect"),
+    **dict.fromkeys(
+        (
+            "switchback_variance",
+            "switchback_unit_t_approximation",
+            "switchback_block_t",
+            "switchback_unit_variance_envelope",
+        ),
+        ("increment.estimation.contrast_results", "ContrastResult"),
+    ),
+}
+
+
 def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
+    if identity.key.kind == "spillover":
+        return project_effect(row)
     if hasattr(row, "lift"):
         effect = project_effect(row)
         reason = next(
@@ -160,24 +181,10 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
 def _restore_typed_report_row(row_kind: str, row_payload: Mapping[str, Any]) -> Any:
     from importlib import import_module
 
-    module_name = (
-        "increment.breakout.estimates"
-        if row_kind in {"breakout", "daily_metric", "asof_metric", "daily_lift", "asof_lift"}
-        else "increment.estimation.contrast_results"
+    module_name, model_name = _TYPED_REPORT_MODELS[row_kind]
+    return getattr(import_module(module_name), model_name).model_validate_json(
+        _json(_plain(row_payload["data"]))
     )
-    module = import_module(module_name)
-    model_name = {
-        "breakout": "BreakoutEstimate",
-        "daily_metric": "DailyMetricValue",
-        "asof_metric": "DailyMetricValue",
-        "daily_lift": "DailyLiftEstimate",
-        "asof_lift": "DailyLiftEstimate",
-        "switchback_variance": "ContrastResult",
-        "switchback_unit_t_approximation": "ContrastResult",
-        "switchback_block_t": "ContrastResult",
-        "switchback_unit_variance_envelope": "ContrastResult",
-    }[row_kind]
-    return getattr(module, model_name).model_validate_json(_json(_plain(row_payload["data"])))
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,17 +334,9 @@ class ResultCell:
         )
         allowed_row_kinds = {
             "lift_estimate",
-            "breakout",
-            "daily_lift",
-            "daily_metric",
-            "asof_lift",
-            "asof_metric",
+            *_TYPED_REPORT_MODELS,
             "cate",
-            "switchback_variance",
             "cate_validation",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
             "sensitivity",
             "targeting",
             "targeting_selection",
@@ -371,6 +370,12 @@ class ResultCell:
                     "source_snapshot_id": self.source_snapshot_id,
                     "identity_source_snapshot_id": self.identity.source_snapshot_id,
                 },
+            )
+        if (self.row_kind == "spillover") != (self.identity.key.kind == "spillover"):
+            raise CodedError(
+                "Policy comparison does not match its cell key",
+                code="results.cell.schema_unsupported",
+                context={"row_kind": self.row_kind},
             )
         object.__setattr__(self, "row_payload", payload)
         support: dict[str, frozenset[Operation]] = {}
@@ -642,7 +647,9 @@ class ResultCell:
         metric = getattr(row, "metric", None)
         # A fixed-horizon row that carries the sampling marker but never recorded it cannot
         # show its estimate as available; a report type without the marker is not affected.
-        if (
+        if row_kind == "spillover" and summary.reason is not None:
+            sampling = ComponentStatus("unavailable", code=summary.reason, reason=summary.reason)
+        elif (
             retained
             and getattr(row, "sampling_available", False) is None
             and getattr(row, "sequential_result", None) is None
@@ -855,17 +862,7 @@ class ResultCell:
         )
         if state is not None:
             return _restore_row(state.fields)
-        if self.row_payload is not None and self.row_kind in {
-            "breakout",
-            "daily_metric",
-            "asof_metric",
-            "daily_lift",
-            "asof_lift",
-            "switchback_variance",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
-        }:
+        if self.row_payload is not None and self.row_kind in _TYPED_REPORT_MODELS:
             row = _restore_typed_report_row(self.row_kind, self.row_payload)
             status = self.components["sampling"][0]
             if status.code != _UNRECORDED_SAMPLING:
@@ -1130,17 +1127,6 @@ class ResultCell:
             summary_data["intervals"] = tuple(
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
-        typed_report_rows = {
-            "breakout",
-            "daily_metric",
-            "asof_metric",
-            "daily_lift",
-            "asof_lift",
-            "switchback_variance",
-            "switchback_unit_t_approximation",
-            "switchback_block_t",
-            "switchback_unit_variance_envelope",
-        }
         if row is not None:
             sampling_state = components["sampling"][0].state
             sequential_state = components["sequential"][0].state
@@ -1149,8 +1135,17 @@ class ResultCell:
                 if sampling_state in {"available", "advisory"} or sequential_state == "available"
                 else None
             )
-        elif row_payload is not None and row_kind in typed_report_rows:
+        elif row_payload is not None and row_kind in _TYPED_REPORT_MODELS:
             typed_row = _restore_typed_report_row(row_kind, row_payload)
+            if row_kind == "spillover" and (
+                CellIdentity.from_row(typed_row).key != identity.key
+                or typed_row.source_snapshot_id != identity.source_snapshot_id
+            ):
+                raise CodedError(
+                    "Policy comparison row differs from its saved identity",
+                    code="results.cell.schema_unsupported",
+                    context={"row_kind": row_kind},
+                )
             summary = _report_summary(typed_row, identity)
         else:
             summary = None if summary_data is None else EffectEstimate(**summary_data)
@@ -2042,6 +2037,8 @@ def render(
     )
 
     rows = result_rows(envelope.cells, live_rows)
+    if envelope.cells and all(cell.row_kind == "spillover" for cell in envelope.cells):
+        return "\n".join(row._display(full=audience == "full") for row in rows)
     interpretation = interpret_readout(rows, envelope.metadata)
 
     brief_cells = tuple(

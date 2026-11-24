@@ -102,7 +102,7 @@ for completed changes and remaining investigations (`1tce`, `xeth`, `0p4v`, `4xw
 ## Reference inventory
 
 The [evidence index](reference/validation-evidence.md#find-an-evidence-record) leads
-to all 19 evidence IDs. Each record keeps the method, guarantee, assumptions,
+to the evidence records. Each record keeps the method, guarantee, assumptions,
 reference version, tolerance, source files, direct and transitive input-path
 coverage, and regimes not covered.
 
@@ -123,6 +123,7 @@ written in this repository is not independent review. See the exact
 | Meta-analysis: DL, HKSJ and HT | [EV-META-DL-HKSJ-HT](reference/validation-evidence.md#ev-meta-dl-hksj-ht) |
 | Quantile order-statistic bracket | [EV-QUANTILE-QBINOM](reference/validation-evidence.md#ev-quantile-qbinom) |
 | DML, AIPW and IPTW aggregation | [EV-ADJ-DML-AIPW-IPTW](reference/validation-evidence.md#ev-adj-dml-aipw-iptw) |
+| Two-stage untreated spillover, person-weighted point and variance | [EV-SPILLOVER-RCT2](reference/validation-evidence.md#ev-spillover-rct2) |
 
 ### In-repo derivations and calibration evidence
 
@@ -170,6 +171,12 @@ gates, not observed results.
 - **Switchbacks:** carryover is assumed away, not tested, and the default t
   reference is approximate ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
   [reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
+- **Two-stage spillover:** two- and three-policy point estimates match the
+  published R calculation. The family interval has a separate finite-sample
+  derivation under the registered draws. Simulations estimate how often it
+  would detect a chosen change; they do not license the interval or establish
+  that a real population will behave like the simulation.
+  [Published comparisons, counterexample and proof](reference/validation-evidence.md#ev-spillover-rct2).
 - **Adaptive logged policies:** refused. Historical coverage figures predate the
   gate and cannot be reproduced from the retained estimator
   ([measurements](reference/validation-evidence.md#adaptive-logger-measurements),
@@ -182,10 +189,9 @@ gates, not observed results.
 
 ## Reproduce
 
-Ordinary comparison tests read frozen JSON: no R, network or external tool is
+Ordinary comparison tests use frozen values: no R, network or external tool is
 needed at test time. [Reproduction instructions](reference/validation-evidence.md#reproduce)
-list the test commands; each frozen record lists its generator, tool versions,
-fixture digest and one-time regeneration result (2026-10-03, macOS arm64).
+list test commands. Each frozen record names its reference and how to reproduce it.
 Regeneration is deliberate: record a numeric discrepancy; never widen a tolerance
 to make a regenerated fixture agree.
 

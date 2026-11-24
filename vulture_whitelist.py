@@ -8,6 +8,7 @@ tb
 RawOutcomeSource  # increment/estimation/winsor.py:59, increment/readouts/_metric_rows.py:12 —
 # imported only under TYPE_CHECKING and consumed exclusively inside
 # cast("RawOutcomeSource", ...), which vulture's static scan can't see.
+PostgresBackend  # increment/query/_spillover_sql.py: type-only cast; no runtime driver import.
 # Parameter names of ibis builtin SQL function stubs in
 # increment/query/artifact_digest.py: ibis reads the signature, not the body.
 case

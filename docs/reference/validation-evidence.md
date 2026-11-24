@@ -16,6 +16,7 @@ mathematical guarantee.
 | Meta-analysis: DL, HKSJ and HT | [EV-META-DL-HKSJ-HT](#ev-meta-dl-hksj-ht) |
 | Quantile order-statistic bracket | [EV-QUANTILE-QBINOM](#ev-quantile-qbinom) |
 | DML, AIPW and IPTW aggregation | [EV-ADJ-DML-AIPW-IPTW](#ev-adj-dml-aipw-iptw) |
+| Two-stage untreated spillover | [EV-SPILLOVER-RCT2](#ev-spillover-rct2) |
 | Marginal confounding bound | [EV-CONFOUNDING-MARGINAL](#ev-confounding-marginal) |
 | Segment posterior quadrature | [EV-META-POSTERIOR-QUAD](#ev-meta-posterior-quad) |
 | Welch arithmetic | [EV-WELCH-ARITHMETIC](#ev-welch-arithmetic) |
@@ -80,7 +81,7 @@ no current large-design timing is inferred from the earlier PR45 probes.
 - **`none_found`:** a matched reference was looked for and not found.
   Independent-reference classification is not applicable.
 
-Ordinary tests read frozen JSON only: no R, no network, no external package at test time. The
+Ordinary comparison tests use frozen values: no R, network or external reference package at test time. The
 comparisons below are at estimator level unless the direct-coverage fields name an entry point. A
 transitive ingress is claimed only where a parity-matrix cell or parity case exercises the same
 estimator path; cross-ingress equivalence is owned by the parity harness
@@ -305,6 +306,92 @@ These records compare the named estimator and assumptions, not every use of the 
 
 **One-time regeneration (2026-10-03, macOS arm64):** CSV byte-identical; fixture differs only in the trailing newline, every value identical
 
+
+### EV-SPILLOVER-RCT2
+
+**What matches.** The untreated policy contrast in the [spillover guide](../guides/spillover.md) follows [Jiang, Imai & Malani (2023)](https://imai.fas.harvard.edu/research/twostage.html). The independent reference is [`CalAPO` in RCT2 v0.0.1](https://github.com/cran/RCT2/blob/5820e34f4a20ca116f0b7fd069ebdf735523324d/R/CalAPO.R), not `Test2SRE`, the joint test for treated and untreated people. We scale each person's outcome by their group size divided by the mean size **across the whole roster**. That gives people equal weight in RCT2's group average, even when a third policy is not part of a particular comparison.
+
+| Six-group trial | Directed comparison | Point | Estimated variance |
+|---|---|---:|---:|
+| Two policies, sizes 4, 5, 6, 8, 7, 9 | More minus fewer | −0.17777778 | 0.06519687 |
+| Three policies, sizes 6, 8, 5, 7, 9, 10 | Middle minus base | +0.03015873 | 0.06292013 |
+| Same three-policy trial | Upper minus base | +0.48095238 | 0.05671202 |
+
+For the three-policy trial, the offer counts were 1, 2 and 3. The six groups were assigned base, middle, upper, base, middle, upper; counts of untreated successes were 0, 2, 2, 3, 1 and 4. These checks validate points and variances, not coverage. To reproduce, save the pinned R source above (SHA-256 `db9f91a162f366af68974757d0a485d2a02fd5b55c624ecf45f5a2ec3473d648`) and run `Rscript tests/oracles/generate/gen_spillover_oracle.R /path/to/CalAPO.R`.
+
+The point and variance comparisons take completed binary outcomes as inputs. On a one-row-per-person frame, those are supplied measurements. In a named warehouse experiment they come from the registered conversion and the individual assignment time, not a separately prepared purchase flag. Interval coverage assumes the two random draws; it cannot establish that a missing purchase feed was complete.
+
+**Where the old interval failed.** In a nine-group trial, gains and losses cancelled exactly, yet the approximate 95% interval excluded zero on 12 of 60 assignments. This isn't just a small-study issue. In a 240-store trial, every store had 59 people. Four stores had 59 events each; every other store had 14. Half the stores made one offer and half made none. Offers changed **nobody's** outcome. The old interval called a difference on **10.74%** of assignments, although the historical event rate was exactly right. The new interval contained zero in **all 595 possible observed summaries** at both .05 and .01. That checks this population, not every experiment.
+
+One possible draw gave a +2.54-point estimate. These are ranges for the **same observation**, not coverage rates:
+
+| Method | Range, percentage points | What the comparison establishes |
+|---|---:|---|
+| Previous normal approximation | +0.07 to +5.00 | Wrongly excludes zero on this draw. |
+| [Tchetgen Tchetgen & VanderWeele, Theorem 3](https://pmc.ncbi.nlm.nih.gov/articles/PMC4216807/) | −22.05 to +27.12 | Conservative published benchmark. Its group average equals the person average here because stores are equally large. |
+| [Rigdon & Hudgens, §4.2](https://pmc.ncbi.nlm.nih.gov/articles/PMC4504023/), sampled approximation | +0.94 to +4.17 | An independent implementation of their sampled search (100 by 100, seed 519) excludes zero. The exact no-effect test on the known population gives p = .0711, so the full 95% inversion **must** include zero. |
+| Increment, registered family alpha .05 | −6.63 to +12.07 | Includes harm and benefit. At alpha .01 the range widens to −8.34 to +13.79. |
+
+The R package `interferenceCI` and Theorem 3 are not identical: the [implementation](https://github.com/cran/interferenceCI/blob/9352a8ec903a01f0abf4eb83f7e689e5ff1922dd/R/interferenceCI.R#L272-L281) squares the assignment-probability divisor an extra time. Its range on this draw is −36.14 to +41.21 points. The published **exact** inversion is useful on small problems; randomly checking a subset of possible truths does not give certified endpoints. Neither published procedure can simply relabel its group average as a person average when store sizes differ.
+
+To reproduce, run `Rscript --vanilla tests/oracles/generate/gen_spillover_published.R` for the pinned R routines, `python tests/oracles/generate/gen_spillover_inversion.py` for the tiny complete inversions, and `python tests/oracles/generate/gen_spillover_null.py` for the 240-store case. The fixtures, assumptions, and exact-versus-sampled distinction are recorded in `helper:calibration/protocols/spillover_published_intervals.md`.
+
+**Why Increment's range covers the registered family.** We adapt the [bounded-mean betting method of Waudby-Smith & Ramdas](https://arxiv.org/abs/2010.09686) to the two random draws and the summaries already computed by the warehouse. The adaptation is Increment's; it is not the interval supplied by RCT2 or `interferenceCI`. The mathematical coverage is **at least** the chosen level over the registered draws. This does not guarantee a narrow range or bit-exact endpoints: warehouse averages and variances and the numerical search use floating-point arithmetic.
+
+??? info "Derivation: equal weight per person, fixed counts per region"
+    Let $N$ be the number of people. In region $h$ there are $G_h$ groups; the largest has $B_h$ people. For policy $k$, $n_h$ groups receive it. In an assigned group of size $s$, let $u>0$ people go without an offer and let $e$ of them have the event. The group contributes $T=se/u$. Because the $u$ people are chosen uniformly, its expectation is the sum of the group's untreated outcomes under that policy. This is why the calculation targets people, not equally weighted group rates.
+
+    Set $C=\sum_h G_h B_h/N$, $w_h=G_h B_h/(NC)$ and $X=T/B_h$. Then $0\le X\le1$ and the weighted policy mean $m=\sum_h w_h E_h X$ is the person-level policy rate divided by $C$. Let $R=\max_h w_h/n_h$. Before observation, choose $t_j=.95/2^j$ for $j=0,\ldots,\lceil\log_2\sum_h n_h\rceil$, and $\eta_{hj}=t_j w_h/(n_h R)$.
+
+    For a candidate $m>0$, multiply $1+\eta_{hj}(X/m-1)$ over assigned groups. Its expectation at the true $m$ is at most one. To see why, imagine drawing each group's second-stage outcome for this policy in advance and independently. Within each region, the expected product for a uniform subset is an elementary symmetric mean of the expected factors, at most their arithmetic mean raised to $n_h$. Multiply across independent regions and apply $1+x\le e^x$: the exponent is $t_j(\sum_h w_h E_h X-m)/(mR)=0$.
+
+    The raw group outcomes need not leave the warehouse. For each region and policy let $a$ be its observed mean of $X$, $q=a^2+SS/n_h$ its second moment. If $a>0$, put $b=q/a$, $p=a^2/q$. For $f(x)=\log(1-\eta+\eta x/m)$, the quadratic interpolant at $0,b,b$ lies below $f(x)$ for all $x\ge0$: the error has the sign of $f'''(\xi)x(x-b)^2$, and $f'''>0$. The two-point distribution with mass $p$ at $b$ has the observed first two moments. Thus $n_h[(1-p)f(0)+pf(b)]$ is a lower bound for the observed sum of log factors. If $a=0$ use $n_h f(0)$. Reported endpoints use an outward numerical bracket on the resulting monotone function; arithmetic is conditional on the supplied floating-point summaries.
+
+    Exponentiate the summed lower bounds and average across the fixed $t_j$. The mean of this nonnegative statistic under the true policy rate is still at most one. For $K$ distinct policies participating in the registered comparisons, exclude lower-tail candidates whose statistic exceeds $2K/\alpha$; use $1-X$ for the upper tail. The probability of excluding a true policy mean on either tail is at most $\alpha/K$. Scaling back by $C$ and bounding rates to $[0,1]$ preserves coverage. Subtract the opposite policy endpoints to get the contrast. The union bound protects **all** registered differences at once, including pairs sharing a policy. At the true boundary $m=0$ every observed $X$ is zero, so the lower endpoint stays zero.
+
+    If two policies assign the same quota to a group, the untreated potential outcome for each person is the same under both: only the number of peers offered treatment matters here. Let $D$ be the fraction of **all eligible people** in groups where the two quotas differ. Binary outcomes imply the true person-weighted difference lies in $[-D,D]$. Intersect the family interval with that range. If they do not overlap, return the whole attainable range, not a signed endpoint. A true effect covered by the original interval is still covered, so this step cannot increase the chance of a false call. If $D=0$, the difference is exactly zero irrespective of the observed event rates.
+
+Registrations record `two-stage-fixed-bet-v3`. Its fixed grid uses the total number of groups receiving a policy across regions. This lets many small independent regions contribute precision; each bet and their prechosen average satisfy the same bound above. More terms also increase the mixture penalty.
+
+**Many small regions.** A diagnostic case has 4,000 independent pairs of four-person stores, one store per policy in each pair. Store outcomes vary across pairs; the true policy difference is 50 percentage points. A second case holds every store's normalized outcome at one half, with no policy difference. These deliberately contrasting cases show the tradeoff, not typical business effects. Observed intervals at family `alpha=.05`:
+
+| Case | Range, percentage points |
+|---|---:|
+| Different outcomes across pairs | +44.80 to +54.93 |
+| Identical outcomes across pairs | −0.18136 to +0.18136 |
+
+`tests/test_spillover.py::test_heterogeneous_matched_pairs_learn_a_half_point_effect_as_strata_grow` exercises the public path at 400 and 4,000 pairs and compares the latter endpoints with a separate 90-digit product-mixture inversion (absolute tolerance `1e-10`). `tests/estimation/test_spillover.py::test_many_one_group_strata_keep_the_outward_side_of_the_product_mixture` checks the homogeneous case at 8,192 pairs against a Decimal inversion, including outward rounding. The unequal-group, shared-reference inversion also runs at `alpha=.01` in `tests/estimation/test_spillover.py::test_compressed_decimal_roots_for_unequal_groups_shared_reference_and_nuisance`. These are bounded numerical checks alongside the coverage derivation, not a universal precision guarantee.
+
+Planning evaluates the same fixed grid as analysis. Batching reduces temporary work; a single large design still needs arrays for all its regions and terms.
+
+**What size change can it show?** Here are observed ranges, not predictions of how often an experiment succeeds. Half the stores made no offers; the other half offered 100 of their 200 people. Reference stores' untreated rates were 20% or 30% in equal numbers. In the other arm, both rates rose by the indicated amount. Two-sided family alpha .05:
+
+| Stores | Observed increase | Range, percentage points |
+|---:|---:|---:|
+| 1,000 | 1 point | −1.76 to +3.74 |
+| 1,000 | 3 points | +0.21 to +5.72 |
+| 1,000 | 10 points | +7.08 to +12.68 |
+| 10,000 | 1 point | +0.38 to +1.62 |
+
+If store rates vary much more, or a few stores contain most eligible people, the same count of stores can give a much wider range. This construction is not uniformly narrower than the published conservative benchmark.
+
+For a 20% purchase probability without offers and 25% under the higher-offer policy, these are **single seeded draws, not expected widths**. Half the stores in each stratum offered half their customers a coupon; the rest offered none. Reproduce with `python -m calibration.spillover --widths` (seed 521, family alpha .05).
+
+| Stores | People per store | Size strata | Full interval width (percentage points) |
+|---:|---:|---:|---:|
+| 200 | 50 | 1 | 20.33 |
+| 1,000 | 50 | 1 | 6.95 |
+| 400 | 30 | 1 | 14.75 |
+| 400 | 10–80 | 1 | 22.91 |
+| 400 | 10–80 | 8 | 15.69 |
+
+In the reproducible two-policy planning example (`python -m calibration.spillover --two-policy`), 1,000 stores had 20 people each. Each store would make either five or ten offers. Across the modeled ways the change could occur, a rise of 1, 3, or 10 points fell short of 80% detection in at least one scenario. A 25-point rise cleared 80% in every scenario. These are prelaunch probabilities under stated models; they do not contradict the observed ranges above.
+
+**Planning is separate.** A historical rate enables a prelaunch power check on the actual roster. Baseline events are spread proportionally or concentrated in the largest or smallest groups. For each baseline, the planner models no change, cancelling changes, and the chosen signed change spread out or concentrated. Only groups whose offer quota changes can have a modeled spillover. Each draw uses the registered allocations, then calls the same interval rule as analysis. A detection must exclude zero on the intended side; a zero or a wrong-direction result does not count.
+
+Tie-breaking and simulation draws use group sizes, offer counts and numbers of groups per policy, not names. Renaming regions or stores does not change the power assessment.
+
+The headline compares the two proportional-baseline detection bounds with 80%. The four concentrated-baseline alternatives give a separate stress result under the same rule. A result is supported if every lower bound in its set reaches 80%, underpowered if any upper bound is below 80%, and inconclusive otherwise. The planner uses up to 4,096 simulated assignments per scenario, reducing this count for larger rosters under a common family work limit. Fewer than 256 feasible repetitions, missing history or infeasible models leave power unassessed, without withholding a live range. Simulation confidence is separate from study `alpha`. Neither simulation nor interval coverage establishes that the draws were random, that only the number of peers offered matters, or that stores were isolated. Run `python -m calibration.spillover --certify` for the numerical checks.
 
 ## In-repo derivations and calibration evidence
 

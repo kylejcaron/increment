@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from increment.errors import CodedError, DefinitionError, InvalidRequestError, raiser, refusals
 from increment.errors import refuse as _refuse
-from increment.query._native_refusals import _NATIVE_FACT_NULL_VALUES
+from increment.query._native_refusals import _NATIVE_FACT_NULL_VALUES, _refuse_operation
 from increment.semantics.models import (
     Breakout,
     Definitions,
@@ -81,6 +81,26 @@ def resolve_fact_source_sql(resolve_sql: Callable[[str], Table], fs: FactSource)
             raise error from exc
 
 
+def validate_sql_exposure_columns(table: Table, experiment: str, exposure: str) -> None:
+    required = frozenset({"unit_id", "ts", "group_id"})
+    missing = sorted(required - set(table.columns))
+    if missing:
+        _refuse_operation(
+            operation="exposure_events",
+            request={
+                "experiment": experiment,
+                "exposure": exposure,
+                "required": tuple(sorted(required)),
+                "missing": tuple(missing),
+            },
+            offered=tuple(sorted(table.columns)),
+            route=(
+                "select unit_id, ts, and group_id (plus an optional experiment_id) "
+                "in the exposure sql; enrollment and arm assignment read them"
+            ),
+        )
+
+
 def validate_fact_source_schema(
     tbl: Table, fs: FactSource, *, require_event: bool = True, require_values: bool = True
 ) -> None:
@@ -107,8 +127,7 @@ def validate_fact_source_schema(
         )
 
 
-def validate_shared_fact(
-    con: SQLBackend,
+def shared_fact_grain(
     relation: Table,
     source: FactSource,
     binding: SharedFact,
@@ -116,8 +135,8 @@ def validate_shared_fact(
     metric: str,
     unit: str,
     captured: bool,
-) -> None:
-    """Check the native event stream still has the declared shared grain."""
+) -> ir.Scalar:
+    """Full-stream validity; a scoped capture can retain this one value."""
     validate_fact_source_schema(relation, source, require_values=not captured)
     key = binding.row_key
     route = "expose the declared non-null, unique row key on the native event stream"
@@ -126,30 +145,47 @@ def validate_shared_fact(
             metric, f"source {source.name!r} does not project {key!r}", route=route
         )
     rows = relation.filter(relation.event == binding.fact)
-    valid = (
+    return (
         (rows.count() == rows[key].nunique())
         & (rows.count() == rows[unit].count())
         & (rows.count() == rows[source.timestamp_column].count())
-    )
-    if not con.execute(valid):
+    ).as_scalar()
+
+
+def validate_shared_fact(
+    valid: object, source: FactSource, binding: SharedFact, *, metric: str
+) -> None:
+    if not valid:
         refuse_shared_metric(
             metric,
-            f"source {source.name!r} has null units or event times, or null or repeated {key!r}",
-            route=route,
+            f"source {source.name!r} has null units or event times, or null or repeated {binding.row_key!r}",
+            route="expose the declared non-null, unique row key on the native event stream",
         )
 
 
 _ROSTER_ROUTE = "use a roster containing exactly one row for each assigned experiment unit"
 
 
-def resolve_shared_roster(con: SQLBackend, roster: SharedRoster, *, metric: str) -> Table:
-    """Resolve and project the eligible unit key for a shared population."""
-    parts = roster.table.split(".")
-    database = None if len(parts) == 1 else parts[0] if len(parts) == 2 else (parts[0], parts[1])
+def shared_roster_parts(roster: SharedRoster, *, metric: str) -> tuple[str, ...]:
+    """Return the supported physical name components without reading the population."""
+    parts = tuple(roster.table.split("."))
     if len(parts) > 3:
         refuse_shared_metric(
             metric, f"cannot resolve eligible roster {roster.table!r}", route=_ROSTER_ROUTE
         )
+    return parts
+
+
+def resolve_shared_roster(
+    con: SQLBackend,
+    roster: SharedRoster,
+    *,
+    metric: str,
+    location: tuple[str, str, str] | None = None,
+) -> Table:
+    """Resolve and project the eligible unit key, using the registered location if supplied."""
+    parts = location or shared_roster_parts(roster, metric=metric)
+    database = None if len(parts) == 1 else parts[0] if len(parts) == 2 else (parts[0], parts[1])
     try:
         table = con.table(parts[-1], database=database)
     except Exception as exc:
@@ -167,7 +203,12 @@ def resolve_shared_roster(con: SQLBackend, roster: SharedRoster, *, metric: str)
 
 
 def validate_shared_roster(
-    con: SQLBackend, exposures: Table, eligible: Table, *, roster: SharedRoster, metric: str
+    execute: Callable[[ir.Scalar], object],
+    exposures: Table,
+    eligible: Table,
+    *,
+    roster: SharedRoster,
+    metric: str,
 ) -> None:
     """Require a unique eligible roster with exactly the enrolled unit identities."""
     import ibis
@@ -188,7 +229,7 @@ def validate_shared_roster(
     invalid = counts.filter(
         counts.unit_id.isnull() | (counts.in_roster != 1) | (counts.assigned != 1)
     )
-    if con.execute(invalid.limit(1).count()):
+    if execute(invalid.limit(1).count()):
         refuse_shared_metric(
             metric, f"eligible roster {roster.table!r} differs from assigned units", route=route
         )
@@ -497,6 +538,7 @@ def _dim_joined_fact_table(
     require_event: bool = True,
     require_values: bool = True,
     naive_utc: bool = False,
+    execute: Callable[[ir.Scalar], object] | None = None,
 ) -> Table:
     """Fact-source SQL -> declared dim joins -> builder column renames.
 
@@ -523,7 +565,9 @@ def _dim_joined_fact_table(
                 cached = resolve_sql(dim.sql)
                 dim_cache[name] = cached
             pairs.append((dim, cached))
-        tbl = join_dims(tbl, ts_column=fs.timestamp_column, dims=pairs, execute=con.execute)
+        tbl = join_dims(
+            tbl, ts_column=fs.timestamp_column, dims=pairs, execute=execute or con.execute
+        )
     return _rename_to_builder_cols(tbl, fs, unit, naive_utc=naive_utc)
 
 

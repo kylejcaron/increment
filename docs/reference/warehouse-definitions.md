@@ -22,6 +22,8 @@ Loading validates syntax, known fields, duplicate names, SQL, and the references
 between experiments, exposures, metrics, and units. Errors name the offending
 file.
 
+For a [two-stage offer experiment](../guides/spillover.md), select the experiment by name as usual. Its exposure records each eligible person's assignment, including no offer. `design.mechanism: spillover` adds three table locators: `roster` (eligible people, groups and strata), `offer_counts` (each group's planned counts under every possible policy), and `group_policy` (each group's actual assignment). Only the first two are needed before launch. The primary metric still names an ordinary fixed-window conversion.
+
 ??? info "Definition validation and errors"
     Loading validates everything up front: YAML syntax, model fields (unknown
     fields are rejected at every level), fact-source SQL syntax, duplicate names

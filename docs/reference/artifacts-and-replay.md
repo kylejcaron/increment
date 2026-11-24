@@ -7,9 +7,11 @@ Saving an experiment declaration does not save its rows or results. Choose the b
 | Analysis settings | `Experiment.to_json()` and `Experiment.from_json()` |
 | Warehouse unit-day data | A published unit-day artifact |
 | Reduced data for another analysis | `export_moments` and `from_moments` |
-| A completed run and its decisions | A results store and `RunResult.from_handle` |
+| A completed run's results | A results store and `RunResult.from_handle` |
 
 See [saved-format versions](saved-formats.md) before moving data between releases. For a complete declare/run/save workflow, start with [experiment specifications](../guides/experiment-specifications.md).
+
+For [two-stage offer experiments](../guides/spillover.md), keep the pre-launch experiment JSON for registration and use the results store to reopen the policy comparisons, even after disconnecting from the source. Neither file is a snapshot of the assignment and purchase logs. Recomputing against exactly those logs requires separately retained input versions.
 
 ## Canonical unit-day artifacts
 

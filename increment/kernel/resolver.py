@@ -5,8 +5,9 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment._source_types import declared_day_axis_metric_objects_supported
+from increment._spillover_design import SPILLOVER_ESTIMATOR
 from increment.errors import CodedError
-from increment.kernel.contracts import View, declared_breakouts
+from increment.kernel.contracts import View, _refuse, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
 
 if TYPE_CHECKING:
@@ -86,6 +87,8 @@ def _scope_compatibility(
 
 def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedError]:
     """Return source-declaration incompatibilities without acquiring evidence."""
+    if exp.design.get("kind") == "spillover":
+        return list(_spillover_runnable(exp, metric, estimator_id).static_refusals)
     return _resolve(estimator_id, exp, metric, eligibility_unknown=False)
 
 
@@ -408,10 +411,28 @@ def _runnable_metric(
     return exploratory, "add"
 
 
+def _spillover_runnable(exp: Experiment, metric: object, estimator_id: str) -> Runnable:
+    from increment._runnability import require_runnable_spillover_metric
+
+    try:
+        require_runnable_spillover_metric(exp, metric)
+        if estimator_id != SPILLOVER_ESTIMATOR:
+            _refuse("kernel.request.invalid", field="use the registered two-stage spillover method")
+    except CodedError as refusal:
+        return Runnable(static_refusals=(refusal,))
+    return Runnable(
+        deferred_checks=("recorded assignments and offer counts", "complete conversion outcomes")
+    )
+
+
 def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     """Conservative offline feasibility: absent declarations remain unknown."""
     from increment.declarations import estimator_refs
 
+    if not isinstance(exp, Experiment):
+        _refuse("kernel.request.invalid", field="runnable requires an Experiment")
+    if exp.design.get("kind") == "spillover":
+        return {SPILLOVER_ESTIMATOR: _spillover_runnable(exp, metric, SPILLOVER_ESTIMATOR)}
     exploratory_metric = None
     eligibility_unknown = False
     if isinstance(metric, str):

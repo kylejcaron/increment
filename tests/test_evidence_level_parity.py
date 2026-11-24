@@ -2145,6 +2145,7 @@ def _consumer_context(transcript):
 
 
 def _assert_current_input_scope_metadata(results, rows, receipt, advisories):
+    from increment.declarations import SegmentHypothesisKey
     from increment.estimation.decision_types import PValueEvidence
     from increment.estimation.readout_types import (
         CellKey,
@@ -2286,9 +2287,11 @@ def _assert_current_input_scope_metadata(results, rows, receipt, advisories):
             and cell.dimension_value == row.dimension_value
         )
         assert cell.method is not None
+        hypothesis = cell.hypothesis()
+        assert isinstance(hypothesis, SegmentHypothesisKey)
         p_value = row.p_value() if row.sampling_available and row.lift is not None else None
         evidence = (
-            PValueEvidence(cell.hypothesis(), cell.method, p_value, row.reference_kind)
+            PValueEvidence(hypothesis, cell.method, p_value, row.reference_kind)
             if isinstance(p_value, (int, float))
             else None
         )

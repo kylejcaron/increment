@@ -1409,6 +1409,7 @@ def _create_sql_digest_hash_table(
     from increment.query.session import (
         _RELATION_NAME_OCCUPIED,
         _cleanup_failed_temporary_relation,
+        _create_session_temp,
         _temporary_relation_exists,
         _temporary_relation_locator,
     )
@@ -1424,7 +1425,7 @@ def _create_sql_digest_hash_table(
             route="retry with a new publication or scratch relation name",
         )
     try:
-        return con.create_table(name, row_hashes, temp=True)
+        return _create_session_temp(con, locator, name, row_hashes)
     except BaseException:
         if locator is not None and not _cleanup_failed_temporary_relation(
             con, locator, created=False

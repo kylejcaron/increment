@@ -9,18 +9,22 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
 from increment._canonical import declaration_value
 from increment._execute import execute_views, operation_parameters, selected_binding
 from increment._runnability import _UNDECLARED_BREAKOUT, operation_options, scope_refusals
+from increment._spillover_registration import require_registered_spillover
 from increment.decision import AnalysisState, ContrastContext, DefinitionsArmAnalysisState
 from increment.errors import CodedError, refuse
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from increment._evidence_loaders import SpilloverSource
     from increment._evidence_types import BreakoutIdentity, SequentialCaptureRequest
     from increment._literals import Backend
+    from increment._spillover_design import SpilloverPopulation
     from increment.estimation.readout_types import ScopedReadout
     from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import DeclarationValue, Experiment, SourceReference
-    from increment.semantics.models import Breakout
+    from increment.semantics.models import Breakout, ConversionMetric
+    from increment.semantics.models import Experiment as ExperimentDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +233,8 @@ def _differing_field(experiment: Experiment, declared: Experiment) -> str | None
 
 def _validate_experiment(experiment: Experiment, declared: Experiment) -> None:
     """Refuse an experiment the reader was not built for; views and a metric subset are free."""
+    if experiment.design.get("kind") == "spillover":
+        require_registered_spillover(experiment)
     field = _differing_field(experiment, declared)
     if field is not None:
         raise CodedError(
@@ -334,6 +340,15 @@ _READS: Mapping[str, str] = MappingProxyType(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class SpilloverBinding:
+    source: SpilloverSource
+    population: SpilloverPopulation
+    metric: ConversionMetric
+    definition: ExperimentDefinition | None
+    input_backend: Backend | None = None
+
+
 class ExperimentReader:
     """Read the data behind one experiment for ``run`` and the functions that read data.
 
@@ -346,7 +361,7 @@ class ExperimentReader:
 
     def __init__(
         self,
-        binding: SourceBinding | None,
+        binding: SourceBinding | SpilloverBinding | None,
         experiment: Experiment,
         *,
         catalog_writer: Callable[[Experiment], None] | None = None,
@@ -369,7 +384,7 @@ class ExperimentReader:
         return self._closed
 
     @property
-    def _binding(self) -> SourceBinding:
+    def _active(self) -> SourceBinding | SpilloverBinding:
         from increment.kernel.contracts import _refuse
 
         if self._closed:
@@ -377,6 +392,26 @@ class ExperimentReader:
         if self._bound is None:
             _refuse("kernel.run.reader_offline", experiment_id=self._experiment.experiment_id)
         return self._bound
+
+    @property
+    def _binding(self) -> SourceBinding:
+        from increment.kernel.contracts import _refuse
+
+        binding = self._active
+        if isinstance(binding, SpilloverBinding):
+            _refuse(
+                "kernel.request.invalid", field="use run() for the registered spillover comparisons"
+            )
+        return binding
+
+    @property
+    def _spillover(self) -> SpilloverBinding:
+        from increment.kernel.contracts import _refuse
+
+        binding = self._active
+        if not isinstance(binding, SpilloverBinding):
+            _refuse("kernel.request.invalid", field="spillover experiment and reader must match")
+        return binding
 
     @property
     def _source(self) -> Any:
@@ -388,18 +423,29 @@ class ExperimentReader:
     def _resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> object:
         """The one acquisition step every read takes, refused after close, offline or on edits."""
         del source_refs, ctx
-        binding = self._binding
+        binding = self._active
         if self._definitions_guard is not None:
             self._definitions_guard()
-        return binding.state.source
+        return binding.source
 
     def _verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
         from increment._source_types import effective_capabilities, provider_refusal
 
+        binding = self._active
+        if isinstance(binding, SpilloverBinding):
+            if provider is binding.source and tuple(source_refs) == self._experiment.source_refs:
+                return []
+            return [
+                provider_refusal(
+                    "kernel.provider.digest_mismatch",
+                    source_refs=tuple(reference.name for reference in source_refs),
+                    detail="the recorded sources do not match this two-stage experiment",
+                )
+            ]
         failures = []
-        if provider is not self._binding.state.source or tuple(
-            (r.name, r.uri) for r in source_refs
-        ) != tuple((r.name, r.uri) for r in self._experiment.source_refs):
+        if provider is not binding.source or tuple((r.name, r.uri) for r in source_refs) != tuple(
+            (r.name, r.uri) for r in self._experiment.source_refs
+        ):
             return [
                 provider_refusal(
                     "kernel.provider.digest_mismatch",
@@ -489,10 +535,12 @@ class ExperimentReader:
         """Release what the builder opened; a connection you supplied stays open."""
         if self._closed:
             return
-        if self._bound is not None and self._bound.owns_source:
+        if isinstance(self._bound, SourceBinding) and self._bound.owns_source:
             close = getattr(self._bound.state.source, "close", None)
             if callable(close):
                 close()
+        if isinstance(self._bound, SpilloverBinding):
+            self._bound = None
         self._closed = True
 
     def __enter__(self) -> Self:
@@ -534,12 +582,16 @@ def require_reader(reader: object) -> ExperimentReader:
     return reader
 
 
-def binding_for(experiment: Experiment, reader: object) -> SourceBinding:
+def verified_reader(experiment: Experiment, reader: object) -> ExperimentReader:
     from increment.kernel.resolver import _resolve_verified
 
     reader = require_reader(reader)
     _resolve_verified(experiment, reader)
-    return reader._binding
+    return reader
+
+
+def binding_for(experiment: Experiment, reader: object) -> SourceBinding:
+    return verified_reader(experiment, reader)._binding
 
 
 def resolver_for(

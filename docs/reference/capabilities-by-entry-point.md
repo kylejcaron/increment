@@ -99,6 +99,7 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 | Triggered daily/as-of outcome value and lift history (membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_summary) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_panel) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_switchback_panel) | [supported (conditional)](#capability-ingresses-triggered-day-axis-histories-from_definitions) | [supported (conditional)](#capability-ingresses-triggered-day-axis-histories-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-triggered-day-axis-histories-from_moments) |
 | Triggered encouragement compliance (daily and as-of lift, compliance only; uptake stays assignment-anchored while membership enters at first eligible trigger) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_unit_summary) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_unit_panel) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_switchback_panel) | [supported](#capability-ingresses-triggered-encouragement-compliance-from_definitions) | [supported](#capability-ingresses-triggered-encouragement-compliance-from_unit_day_artifact) | [refused](#capability-ingresses-triggered-encouragement-compliance-from_moments) |
 | Triggered clustered daily/as-of outcome readouts | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_summary) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_panel) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_switchback_panel) | [refused / supported (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_definitions) | [refused / supported (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_unit_day_artifact) | [refused (conditional)](#capability-ingresses-triggered-clustered-day-axis-from_moments) |
+| Two-stage spillover: policy difference under personal nonoffer | [supported (conditional)](#capability-ingresses-untreated-spillover-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_switchback_panel) | [supported (conditional)](#capability-ingresses-untreated-spillover-from_definitions) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-untreated-spillover-from_moments) |
 | Logged-policy contrast | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_summary) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_panel) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_switchback_panel) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_definitions) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_unit_day_artifact) | [not expressible (conditional)](#capability-ingresses-logged-policy-contrast-from_moments) |
 | TabularPolicy persistence (JSON dump and validate) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_summary) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_panel) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_switchback_panel) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_definitions) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_unit_day_artifact) | [not comparable (conditional)](#capability-ingresses-tabular-policy-persistence-from_moments) |
 | Mixed-covariate CUPED × scalar cuped | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_summary) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_panel) | [source limited](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_switchback_panel) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_definitions) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_unit_day_artifact) | [supported](#capability-ingresses-cuped-linear-interaction-scalar_cuped-from_moments) |
@@ -7457,6 +7458,103 @@ Select a status for its conditions, codes and reason. A conditional cell is not 
 **Operation:** `run_asof_lift(population='triggered')`
 
 **Stage:** read
+
+
+<span id="capability-ingresses-untreated-spillover"></span>
+
+### Two-stage spillover: policy difference under personal nonoffer
+
+<span id="capability-ingresses-untreated-spillover-from_unit_summary"></span>
+
+#### Two-stage spillover: policy difference under personal nonoffer — Unit summary
+
+**Recorded path:** `from_unit_summary`
+
+**Condition:** Every eligible person has an assignment; everyone without an offer has a measured conversion
+
+**Status:** supported
+
+**Operation:** `from_frame(..., shape='summary', design=...) and run()`
+
+**Stage:** read
+
+<span id="capability-ingresses-untreated-spillover-from_unit_panel"></span>
+
+#### Two-stage spillover: policy difference under personal nonoffer — Unit panel
+
+**Recorded path:** `from_unit_panel`
+
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
+
+**Status:** not expressible
+
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
+
+**Operation:** `run(experiment, reader)`
+
+**Stage:** construction
+
+<span id="capability-ingresses-untreated-spillover-from_switchback_panel"></span>
+
+#### Two-stage spillover: policy difference under personal nonoffer — Switchback panel
+
+**Recorded path:** `from_switchback_panel`
+
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
+
+**Status:** not expressible
+
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
+
+**Operation:** `run(experiment, reader)`
+
+**Stage:** construction
+
+<span id="capability-ingresses-untreated-spillover-from_definitions"></span>
+
+#### Two-stage spillover: policy difference under personal nonoffer — Definitions
+
+**Recorded path:** `from_definitions`
+
+**Condition:** Both assignment logs match the frozen roster and the purchase feed covers all windows
+
+**Status:** supported
+
+**Operation:** `from_definitions(..., experiment_name=...) and run()`
+
+**Stage:** read
+
+<span id="capability-ingresses-untreated-spillover-from_unit_day_artifact"></span>
+
+#### Two-stage spillover: policy difference under personal nonoffer — Unit-day artifact
+
+**Recorded path:** `from_unit_day_artifact`
+
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
+
+**Status:** not expressible
+
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
+
+**Operation:** `run(experiment, reader)`
+
+**Stage:** construction
+
+<span id="capability-ingresses-untreated-spillover-from_moments"></span>
+
+#### Two-stage spillover: policy difference under personal nonoffer — Portable moments
+
+**Recorded path:** `from_moments`
+
+**Condition:** The input does not carry store policy, individual assignment and planned offer counts
+
+**Status:** not expressible
+
+**Reason:** Use a one-row-per-person summary or a named warehouse experiment.
+
+**Operation:** `run(experiment, reader)`
+
+**Stage:** construction
 
 
 <span id="capability-ingresses-logged-policy-contrast"></span>

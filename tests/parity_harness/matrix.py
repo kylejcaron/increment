@@ -144,6 +144,45 @@ QR_CUPED_SOURCE_REFUSALS = {
     "from_switchback_panel": "source.frame.switchback.metric",
 }
 
+# Spillover uses two random draws rather than the one assignment in the scalar cells.
+SPILLOVER_DISPOSITIONS = {
+    "from_definitions": "supported",
+    "from_unit_day_artifact": "not_expressible",
+    "from_unit_summary": "supported",
+    "from_unit_panel": "not_expressible",
+    "from_switchback_panel": "not_expressible",
+    "from_moments": "not_expressible",
+}
+
+# The fixed-horizon policy interval is a different construction from an A/B interval.
+SPILLOVER_INTERACTIONS: dict[str, tuple[Status, str]] = {
+    "Conversion": ("supported", "One binary metric with a fixed window after assignment."),
+    "Groups": (
+        "supported",
+        "Groups receive policies; people within each group receive individual assignments. "
+        "The two draws determine the uncertainty, not a single cluster correction.",
+    ),
+    "Multiplicity": (
+        "supported",
+        "One alpha protects every policy-minus-reference comparison registered for that metric.",
+    ),
+    "Additional metrics or guardrails": (
+        "construction_limited",
+        "The family consists of policy comparisons for one primary metric, not metric roles.",
+    ),
+    "Ratio metrics": ("construction_limited", "The interval requires binary outcomes."),
+    "CUPED": ("construction_limited", "The interval does not use covariate-adjusted outcomes."),
+    "Winsorization": ("construction_limited", "The outcome is already a zero-or-one conversion."),
+    "Sequential and daily views": (
+        "construction_limited",
+        "Every registered customer's window must be complete; the interval is not for repeat looks.",
+    ),
+    "Breakouts": (
+        "construction_limited",
+        "Comparisons target the full eligible population, not a selected segment.",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class Cell:

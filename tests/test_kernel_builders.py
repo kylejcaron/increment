@@ -891,6 +891,7 @@ def test_concurrent_definitions_builders_retain_both_catalog_entries(
             bound = [writer.result()[0] for writer in writers]
 
     for experiment in bound:
+        assert isinstance(experiment, Experiment)
         restored, _ = from_definitions(definitions, experiment_name=experiment.experiment_id)
         assert restored.hash() == experiment.hash()
 

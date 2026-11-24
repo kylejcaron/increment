@@ -30,6 +30,11 @@ from increment._artifact_identity import (
 from increment._canonical import canonical_json_bytes
 from increment.errors import CodedValidationMixin, InvalidRequestError, raiser, refusals
 from increment.semantics.models import (
+    RelationLocator as RelationLocator,
+)
+from increment.semantics.models import (
+    _artifact_identifier,
+    _artifact_scalar,
     _definition_refusal,
     _ExplicitOnlyFields,
     _validate_day_boundary,
@@ -39,8 +44,6 @@ from increment.semantics.models import (
 # Unit-day artifact contract: snapshot and provenance models. The query layer
 # owns relation reads and writes and consumes this vocabulary.
 
-_ARTIFACT_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
-_ARTIFACT_CATALOG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$-]*$")
 _ARTIFACT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_REFUSALS = refusals(
     InvalidRequestError,
@@ -85,50 +88,6 @@ _EXTENSION_KIND_RANK = {
     "unit_covariate_level": 10,
     "cuped_measure_covariate": 11,
 }
-
-
-def _artifact_scalar(value: str, field_name: str) -> str:
-    """Validate an exact, non-empty UTF-8 scalar used in artifact identity."""
-    if not isinstance(value, str) or not value:
-        _definition_refusal(
-            "definition.non_empty_string",
-            f"{field_name} must be a non-empty string",
-            field_name=field_name,
-        )
-    if value != value.strip():
-        _definition_refusal(
-            "definition.surrounding_whitespace",
-            f"{field_name} must not have surrounding whitespace",
-            field_name=field_name,
-        )
-    if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value):
-        _definition_refusal(
-            "definition.contain_control_characters",
-            f"{field_name} must not contain control characters",
-            field_name=field_name,
-        )
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        _definition_refusal(
-            "definition.utf",
-            f"{field_name} must be valid UTF-8",
-            field_name=field_name,
-        )
-    return value
-
-
-def _artifact_identifier(value: str, field_name: str) -> str:
-    value = _artifact_scalar(value, field_name)
-    pattern = _ARTIFACT_CATALOG_RE if field_name == "catalog" else _ARTIFACT_IDENTIFIER_RE
-    if not pattern.fullmatch(value):
-        _definition_refusal(
-            "definition.single_sql_identifier",
-            f"{field_name} must be a single SQL identifier "
-            "(letters, digits, '_', '$', '-' in catalogs; no quoting or separators)",
-            field_name=field_name,
-        )
-    return value
 
 
 def _artifact_sha256(value: str, field_name: str) -> str:
@@ -219,34 +178,6 @@ class _ArtifactBase(CodedValidationMixin, BaseModel):
         extra="forbid",
         revalidate_instances="always",
     )
-
-
-class RelationLocator(_ArtifactBase):
-    """A namespace-qualified relation name; never a backend SQL fragment."""
-
-    model_config = ConfigDict(
-        frozen=True,
-        extra="forbid",
-        revalidate_instances="always",
-        populate_by_name=True,
-        serialize_by_alias=True,
-    )
-
-    catalog: str | None = Field(default=None, max_length=255)
-    schema_name: str | None = Field(default=None, alias="schema", max_length=255)
-    name: str = Field(min_length=1, max_length=255)
-
-    @field_validator("catalog", "schema_name")
-    @classmethod
-    def _namespace_identifier(cls, value: str | None, info) -> str | None:
-        if value is not None:
-            return _artifact_identifier(value, info.field_name)
-        return value
-
-    @field_validator("name")
-    @classmethod
-    def _relation_identifier(cls, value: str) -> str:
-        return _artifact_identifier(value, "name")
 
 
 class UnitDayArtifactRef(_ArtifactBase):

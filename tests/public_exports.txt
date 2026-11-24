@@ -13,6 +13,8 @@ Design: Declare the experiment's assignment and identification design.
 Randomized: Describe random assignment with a named control arm.
 Observational: Define an adjusted non-randomized comparison.
 Encouragement: Describe random encouragement assignment and participant uptake.
+Spillover: Set the group policies and both individual assignment labels for a two-stage randomized experiment.
+SpilloverComparison: Choose a policy, its reference, and the signed change that would matter.
 UptakeSpec: Declare the binary uptake fact for an encouragement study.
 ExclusionRestriction: State the exclusion assumption for an encouragement effect.
 AdjustmentSet: Name covariates used to adjust an observational comparison.
@@ -283,6 +285,8 @@ require_evidence: Refuse an undeclared operation inside a custom provider before
 EvidenceExecutionContext: Hold one pinned evidence scope across a run.
 
 [increment.power]
+SpilloverPowerResult: Read the planning judgment, assumptions and reason for one registered policy comparison.
+spillover_power: Check whether the registered two-stage trial can detect each chosen change.
 SwitchbackBaseline: Supply switchback planning variance and correlation assumptions.
 SwitchbackPowerResult: Read a switchback power solver's answer.
 switchback_achieved_power: Compute achieved power for a switchback design.
@@ -335,6 +339,8 @@ LiftEstimate: Read one metric, method and arm's lift with its inference.
 LiftEstimates: Read a run's whole-window lift rows.
 ContrastResult: Read one switchback contrast.
 ContrastResults: Read a run's switchback contrasts.
+SpilloverEffect: Read one policy's conversion difference from its reference under personal nonoffer.
+SpilloverEffects: Read the two-stage trial's registered policy comparisons and their intervals.
 SwitchbackAssignmentDiagnostic: Check switchback schedule and assignment integrity.
 BreakoutEstimate: Read one segment's lift.
 BreakoutEstimates: Read a run's segment lift rows.
@@ -352,6 +358,7 @@ RolloutRecommendations: Read every rollout recommendation.
 RolloutSegment: Read one segment's rollout evidence.
 RolloutSegments: Read every segment's rollout evidence.
 PowerResult: Read a power solver's answer.
+SpilloverPowerResult: Read the planning judgment and reason for one registered policy comparison.
 SwitchbackPowerResult: Read a switchback power solver's answer.
 UnitCycleFailureCount: Read Monte Carlo failure counts of a unit-cycle power model.
 UnitCycleLawMoments: Read the population moments of a unit-cycle law.

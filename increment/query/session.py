@@ -276,6 +276,22 @@ def _note_unverified_warehouse(con: SQLBackend) -> None:
     _NOTIFIED_CONNECTIONS[key] = weakref.ref(con, lambda _ref: _NOTIFIED_CONNECTIONS.pop(key, None))
 
 
+def _require_warehouse_digest_verifier(
+    con: SQLBackend,
+    *,
+    relation: str,
+    digest_format: int,
+    route: str = "republish from trusted definitions with warehouse-side integrity enabled",
+) -> None:
+    if con.name not in _SQL_DIGEST_BACKENDS:
+        _raise(
+            "query.session.warehouse_artifact.verification_unavailable",
+            relation=relation,
+            digest_format=digest_format,
+            route=route,
+        )
+
+
 def _validate_artifact_schema(table: ir.Table, role: str) -> None:
     type_names = {
         "STRING": "string",
@@ -500,20 +516,10 @@ class WarehouseArtifactStore:
 
     def preflight_publication(self) -> None:
         """Refuse before source assembly unless writes can be verified and stored."""
-        self._require_warehouse_digest_verifier(
-            relation="<publication>", digest_format=BUCKETED_DIGEST_FORMAT
+        _require_warehouse_digest_verifier(
+            self._con, relation="<publication>", digest_format=BUCKETED_DIGEST_FORMAT
         )
         self._prepare_write()
-
-    def _require_warehouse_digest_verifier(self, *, relation: str, digest_format: int) -> None:
-        if self._con.name in _SQL_DIGEST_BACKENDS:
-            return
-        _raise(
-            "query.session.warehouse_artifact.verification_unavailable",
-            relation=relation,
-            digest_format=digest_format,
-            route="republish from trusted definitions with warehouse-side integrity enabled",
-        )
 
     def _validate_namespace(self) -> None:
         try:
@@ -1028,7 +1034,9 @@ class WarehouseArtifactStore:
 
     def _digest_table_for_write(self, table: ir.Table, role: str):
         """Write only the warehouse-verifiable format-4 codec."""
-        self._require_warehouse_digest_verifier(relation=role, digest_format=BUCKETED_DIGEST_FORMAT)
+        _require_warehouse_digest_verifier(
+            self._con, relation=role, digest_format=BUCKETED_DIGEST_FORMAT
+        )
         return self._digest_table(table, role, digest_format=SQL_DIGEST_FORMAT)
 
     def _write_relation(
@@ -1339,11 +1347,12 @@ class WarehouseArtifactStore:
                     _raise("query.session.snapshot.materialization_failed")
                 cleanup = candidate
             live = self._con.table(relation_ref.relation.name, database=self._database)
-            snapshot_table = self._con.create_table(
+            snapshot_table = _create_session_temp(
+                self._con,
+                candidate,
                 snapshot_name,
                 live,
                 database=cast("Any", database),
-                temp=True,
                 overwrite=False,
             )
             op = snapshot_table.op()
@@ -1661,6 +1670,25 @@ def _temporary_relation_locator(con: SQLBackend, name: str) -> _MaterializedRela
     return None
 
 
+def _create_session_temp(
+    con: SQLBackend,
+    locator: _MaterializedRelation | None,
+    name: str,
+    expression: ir.Table,
+    **options: Any,
+) -> ir.Table:
+    if con.name == "bigquery" and locator is not None and locator.catalog and locator.schema:
+        # Ibis resolves the default dataset before handling temp=True. Use the
+        # same anonymous, expiring dataset it owns, including for project-only connections.
+        target = sqlglot.table(name, db=locator.schema, catalog=locator.catalog, quoted=True)
+        options["database"] = locator.schema
+        return con.create_table(target.sql(dialect="bigquery"), expression, **options)
+    if con.name == "duckdb":
+        # Ibis 10.1 sets the temp catalog but otherwise uses the current schema.
+        options["database"] = "main"
+    return con.create_table(name, expression, temp=True, **options)
+
+
 def _temporary_relation_exists(con: SQLBackend, relation: _MaterializedRelation) -> bool:
     """Probe only the relation's owned temporary namespace."""
     if con.name == "duckdb":
@@ -1885,7 +1913,7 @@ class _WarehouseArtifactQrSession:
                 if _temporary_relation_exists(self._con, candidate):
                     _raise("query.session.snapshot.materialization_failed")
                 cleanup = candidate
-            create_kwargs: dict[str, Any] = {"temp": True}
+            create_kwargs: dict[str, Any] = {}
             if replace:
                 create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
@@ -1896,7 +1924,7 @@ class _WarehouseArtifactQrSession:
                 database = sqlglot.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
                 create_kwargs["database"] = database
-            created = self._con.create_table(name, expr, **create_kwargs)
+            created = _create_session_temp(self._con, candidate, name, expr, **create_kwargs)
             operation = created.op()
             catalog = operation.namespace.catalog
             schema = operation.namespace.database
@@ -2428,7 +2456,7 @@ class WarehouseSession:
                 if _temporary_relation_exists(self._con, candidate):
                     _raise("query.session.snapshot.materialization_failed")
                 cleanup = candidate
-            create_kwargs: dict[str, Any] = {"temp": True}
+            create_kwargs: dict[str, Any] = {}
             if replace:
                 create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
@@ -2441,7 +2469,7 @@ class WarehouseSession:
                 database = sg.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
                 create_kwargs["database"] = database
-            created = self._con.create_table(name, expr, **create_kwargs)
+            created = _create_session_temp(self._con, candidate, name, expr, **create_kwargs)
             op = created.op()
             if self._con.name == "postgres":
                 cleanup = _MaterializedRelation(name, op.name, None, "pg_temp")

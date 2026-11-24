@@ -51,6 +51,7 @@ from increment.semantics.models import (
     ActiveMetric,
     ConversionMetric,
     Experiment,
+    Exposure,
     FactNullPolicy,
     FactRef,
     Filter,
@@ -377,6 +378,34 @@ def _reject_null_identity(table: ir.Table, *columns: str) -> ir.Table:
     return table if condition is None else table.filter(condition)
 
 
+def declared_experiment_rows(rows: ir.Table, experiment: Experiment) -> ir.Table:
+    """An entirely null experiment key is unused; mixed nulls do not match."""
+    unused = ~rows.experiment_id.notnull().any()
+    rows = rows.mutate(experiment_id=ibis.ifelse(unused, experiment.name, rows.experiment_id))
+    return rows.filter(rows.experiment_id == experiment.name)
+
+
+def declared_exposure_rows(
+    rows: ir.Table, exposure: Exposure, experiment: Experiment, *, keyed: bool
+) -> ir.Table:
+    """Scope the raw assignment stream without deduplicating any draws."""
+    if keyed:
+        rows = declared_experiment_rows(rows, experiment)
+    elif exposure.sql is not None:
+        rows = rows.mutate(experiment_id=ibis.literal(experiment.name))
+    for flt in exposure.filters:
+        rows = _apply_filter(rows, flt)
+    return rows
+
+
+def enrollment_window(ts: ir.TimestampColumn, experiment: Experiment) -> ir.BooleanValue:
+    day = _local_date(ts, experiment)
+    kept = day >= ibis.literal(experiment.start_day)
+    if experiment.end_day is not None:
+        kept &= day <= ibis.literal(experiment.end_day)
+    return kept
+
+
 def _scope_exposure_events(exposure_events: ir.Table, experiment: Experiment) -> ir.Table:
     """Admit raw exposure rows to the experiment's declared enrollment window.
 
@@ -391,13 +420,7 @@ def _scope_exposure_events(exposure_events: ir.Table, experiment: Experiment) ->
     integrity boundary, which executes over this same admission rule --
     do not introduce a second one.
     """
-    exposure_events = exposure_events.filter(
-        _local_date(exposure_events.ts, experiment) >= ibis.literal(experiment.start_day)
-    )
-    if experiment.end is not None:
-        exposure_events = exposure_events.filter(
-            _local_date(exposure_events.ts, experiment) <= ibis.literal(experiment.end_day)
-        )
+    exposure_events = exposure_events.filter(enrollment_window(exposure_events.ts, experiment))
     return exposure_events.mutate(
         experiment_id=ibis.coalesce(exposure_events.experiment_id, experiment.name)
     )
@@ -781,17 +804,27 @@ def outcome_rows(
     through the observation horizon."""
     anchors = exposures.select("unit_id", "first_exposure_ts").distinct()
     joined = rows.join(anchors, rows.unit_id == anchors.unit_id, rname="{name}_anchor")
-    day = _local_date(joined.ts, experiment)
-    first_day = _local_date(joined.first_exposure_ts, experiment)
+    kept = outcome_window(joined.ts, joined.first_exposure_ts, experiment, band)
+    return joined.filter(kept).select(rows.columns)
+
+
+def outcome_window(
+    ts: ir.TimestampColumn,
+    first: ir.TimestampColumn,
+    experiment: Experiment,
+    band: tuple[int, int | None],
+) -> ir.BooleanValue:
+    day = _local_date(ts, experiment)
+    first_day = _local_date(first, experiment)
     band_start, band_end = band
-    kept = joined.ts > joined.first_exposure_ts
+    kept = ts > first
     if band_start:
         kept &= day >= first_day + _days_literal(band_start).as_interval("D")
     if band_end is not None:
         kept &= day < first_day + _days_literal(band_end).as_interval("D")
     if experiment.observation_horizon is not None:
         kept &= day <= ibis.literal(experiment.observation_horizon_day)
-    return joined.filter(kept).select(rows.columns)
+    return kept
 
 
 def panel_rows(

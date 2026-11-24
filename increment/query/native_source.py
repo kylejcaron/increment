@@ -112,6 +112,7 @@ from increment.query.builders import (
     component_window_values,
     daily_exposure_counts,
     daily_group_summary,
+    declared_exposure_rows,
     emit_centered_moments,
     first_exposures,
     group_summary,
@@ -155,9 +156,11 @@ from increment.query.fact_resolution import (
     refuse_null_fact_values,
     resolve_fact_source_sql,
     resolve_shared_roster,
+    shared_fact_grain,
     validate_fact_source_schema,
     validate_shared_fact,
     validate_shared_roster,
+    validate_sql_exposure_columns,
     with_null_counts,
 )
 from increment.query.integrity import (
@@ -523,8 +526,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 if fact in checked_facts:
                     continue
                 source = sources[fact.source]
-                validate_shared_fact(
-                    self._con,
+                grain = shared_fact_grain(
                     resolve_fact_source_sql(self._session.source_sql, source),
                     source,
                     fact,
@@ -532,6 +534,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     unit=binding.unit,
                     captured=captured,
                 )
+                validate_shared_fact(self._con.execute(grain), source, fact, metric=binding.name)
                 checked_facts.add(fact)
             roster = binding.roster
             if roster is not None and roster not in checked_rosters:
@@ -541,7 +544,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     else resolve_shared_roster(self._con, roster, metric=binding.name)
                 )
                 validate_shared_roster(
-                    self._con, self._get_exposures(), eligible, roster=roster, metric=binding.name
+                    self._con.execute,
+                    self._get_exposures(),
+                    eligible,
+                    roster=roster,
+                    metric=binding.name,
                 )
                 checked_rosters.add(roster)
         if captured:
@@ -2093,18 +2100,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """
         exposure_def = self._exp_lookup_exposures[exposure_name]
         tbl, keyed = self._unscoped_exposure_events(exposure_name, dim_joined=dim_joined)
-        if keyed:
-            tbl = self._scope_to_experiment_key(tbl)
-        elif exposure_def.sql is not None:
-            # The column is documented as optional, and downstream reductions
-            # read it unconditionally, so supply it rather than crashing on a
-            # query that returned exactly the required three columns.
-            tbl = tbl.mutate(experiment_id=ibis.literal(self._experiment.name))
-        # Declared Exposure.filters (fact-based exposures only; validated at load
-        # time) narrow enrollment.
-        for flt in exposure_def.filters:
-            tbl = _apply_filter(tbl, flt)
-        return tbl
+        return declared_exposure_rows(tbl, exposure_def, self._experiment, keyed=keyed)
 
     def _unscoped_exposure_events(
         self, exposure_name: str, *, dim_joined: bool
@@ -2114,26 +2110,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         exposure_def = self._exp_lookup_exposures[exposure_name]
         if exposure_def.sql is not None:
             tbl = self._session.source_sql(exposure_def.sql)
-            # first_exposures() requires unit_id/ts/group_id; a documented
-            # (entity_id, first_exposure_ts)-only result would otherwise
-            # surface as an opaque AttributeError deep inside first_exposures.
-            required = frozenset({"unit_id", "ts", "group_id"})
-            missing = sorted(required - set(tbl.columns))
-            if missing:
-                _refuse_operation(
-                    operation="exposure_events",
-                    request={
-                        "experiment": self._experiment.name,
-                        "exposure": exposure_name,
-                        "required": tuple(sorted(required)),
-                        "missing": tuple(missing),
-                    },
-                    offered=tuple(sorted(tbl.columns)),
-                    route=(
-                        "select unit_id, ts, and group_id (plus an optional experiment_id) "
-                        "in the exposure sql; enrollment and arm assignment read them"
-                    ),
-                )
+            validate_sql_exposure_columns(tbl, self._experiment.name, exposure_name)
             if self._timestamp_kinds_mixed():
                 tbl = _naive_utc_ts(tbl)
             return tbl, "experiment_id" in tbl.columns
@@ -2164,19 +2141,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 naive_utc=self._timestamp_kinds_mixed(),
             )
         return tbl.filter(tbl.event == exposure_def.fact), raw_has_experiment_id
-
-    def _scope_to_experiment_key(self, tbl: Table) -> Table:
-        """Keep the rows whose ``experiment_id`` is this experiment's name.
-
-        A NULL key can mark unrelated rows sharing the relation, such as pre-period
-        events, and those stay excluded. An all-NULL column carries no key, so it
-        enrolls every row like a missing column; one windowed aggregate detects it.
-        """
-        column_unused = ~tbl.experiment_id.notnull().any()
-        tbl = tbl.mutate(
-            experiment_id=ibis.ifelse(column_unused, self._experiment.name, tbl.experiment_id)
-        )
-        return tbl.filter(tbl.experiment_id == self._experiment.name)
 
     def _refuse_unmatched_experiment_key(self) -> None:
         """Refuse an empty enrollment whose exposure rows carry keys, none of them this one."""

@@ -2184,6 +2184,51 @@ def test_readout_table_encouragement_pipeline_renders_three_distinct_rows():
     assert "revenue" in html
 
 
+@pytest.mark.integration
+def test_spillover_table_keeps_both_policies_and_displays_absolute_percentage_points():
+    pytest.importorskip("coeftable")
+    from increment import run
+    from increment.errors import InvalidRequestError
+    from increment.result_envelope import AnalysisEnvelope
+    from tests.store.test_spillover import _bind
+
+    experiment, reader = _bind()
+    with reader:
+        result = run(experiment, reader)
+    scoped = result.readout()
+    projected = estimates_to_readout(scoped)
+    assert [(r["policy"], r["reference"], r["estimate"]) for r in projected] == [
+        ("a:b", "c", 1.0),
+        ("a", "b:c", 0.0),
+    ]
+    assert {"lift", "group_id", "p_value", "posterior_chance_to_beat"}.isdisjoint(projected[0])
+    saved = AnalysisEnvelope.from_arrow(result.envelope.to_arrow())
+    for source in (scoped, result, saved, projected):
+        table = readout_table(source)
+        shown = _Dom(table.gt().as_raw_html()).text
+        assert len(table.data) == 2
+        for text in ("bought", "a:b", "b:c", "+100", "percentage points"):
+            assert text in shown
+        assert "Policy minus reference" in shown
+        assert re.search(r"\[[+-]0, [+-]0\]", shown)
+        assert "inconclusive" in shown and "identical offer counts" in shown.lower()
+        assert "Lift %" not in shown and "Posterior" not in shown
+
+    failed = dict(
+        projected[0],
+        lower=None,
+        upper=None,
+        direction="unavailable",
+        range_basis="unavailable",
+        unavailable_reason="nonfinite_interval",
+    )
+    shown = _Dom(readout_table([failed]).gt().as_raw_html()).text
+    assert "+100" in shown and "nonfinite_interval" in shown
+    with pytest.raises(InvalidRequestError) as unsupported:
+        readout_table(scoped, advisory=True)
+    assert unsupported.value.code == "kernel.request.invalid"
+
+
 def test_readout_table_disambiguates_same_estimand_on_both_scales():
     """An estimand emitted on BOTH scales for the same metric (late
     additive + late relative) must still land as two distinct rows."""

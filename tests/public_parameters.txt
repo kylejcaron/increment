@@ -75,6 +75,7 @@ frame: Eager dataframe supplied as analysis input.
 freeze: Metrics to stop monitoring at the current checkpoint.
 grain: Unit at which observations or counts are represented; View derives it from its view when omitted.
 group: Column containing arm labels.
+group_policy: Table giving the policy actually assigned to each group.
 horizon_metrics: Metrics defined at the analysis horizon.
 identification: Randomized design used for switchback identification.
 include_evaluation_population: Whether to report the evaluation population.
@@ -90,6 +91,7 @@ n_folds: Number of folds for honest validation.
 n_groups: Number of groups to evaluate.
 n_per_arm: Sample size per assignment arm.
 observation_end: Declared end of observation.
+offer_counts: Table giving the number of individual offers planned for each group under every policy.
 on_mixed_assignment: Policy for units assigned to multiple or no arms.
 on_unassigned: Policy for rows without a recognized arm.
 operation: Operation to perform on the supplied data.
@@ -136,6 +138,7 @@ spec: Specification describing behavior or input shape.
 stacklevel: Warning call-site stack depth.
 step: Column identifying steps within a switchback period.
 store: Policy for materializing warehouse reductions.
+stratum: Column naming the sets of groups randomized separately.
 study_id: Stable identifier for the study.
 summary: Per-arm summary statistics.
 target: Policy, population, layer, or standalone experiment to evaluate.
