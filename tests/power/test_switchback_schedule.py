@@ -6,10 +6,9 @@ from math import comb
 
 import polars as pl
 import pytest
-from scipy.stats import binom
+from scipy.stats import binom, binomtest
 
 from increment import Randomized, SwitchbackObservationSchedule, from_switchback_frame, power
-from increment._unit_cycle import unit_cycle_admission_rule
 from increment.errors import InvalidRequestError
 from increment.semantics.assignment import (
     FixedCountOrder,
@@ -165,9 +164,9 @@ def test_independent_bernoulli_refusal_chance_is_the_admission_tail():
         window=SwitchbackWindow(washout_steps=0, observation_steps=1),
     )
     n, cycles = 32, 3
-    rule = unit_cycle_admission_rule(n * cycles, p)
-    expected = binom.cdf(rule.minimum_ct - 1, n * cycles, p) + binom.sf(
-        rule.maximum_ct, n * cycles, p
+    draws = n * cycles
+    expected = sum(
+        binom.pmf(k, draws, p) for k in range(draws + 1) if binomtest(k, draws, p).pvalue < 1e-6
     )
     assert probability(assignment, n, cycles_per_unit=cycles) == pytest.approx(expected, rel=1e-12)
 
