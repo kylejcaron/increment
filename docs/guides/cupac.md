@@ -94,6 +94,10 @@ for row in result.readout():
         print(row.metric, row.method_role, row.method, lift.value, (lift.lb, lift.ub))
 ```
 
+You should see four rows: an unadjusted result and a CUPED result for each
+metric. Use the unadjusted result for your planned decision. Use the CUPED
+result to see how adjusting for the prediction changes the estimate and interval.
+
 With a complete score column, `Method.cuped(covariates="prediction")` is the
 short form. The explicit declaration above lets you choose what happens when a
 score is missing. For revenue per session, the analysis still estimates the
@@ -119,24 +123,21 @@ measure the bias you would get in another experiment.
 
 ## Where to supply the score
 
-The case `cuped_external_prediction_fixed_horizon` compares the decision and
-sensitivity roles, estimates, and intervals on the same units and scores in a
-fixed-horizon, whole-window mean example. It checks source agreement, not
-statistical coverage.
+This table shows what to supply for a mean measured over the full experiment
+at a fixed end date.
 
-| Entry point | How the case uses the score |
+| Entry point | What to supply |
 |---|---|
 | `from_frame(..., shape="summary")` | One score per unit, named on the CUPED sensitivity. |
 | `from_frame(..., shape="panel")` | The same score repeated across the unit's rows. |
 | `from_definitions` | A continuous `as_of: pre_exposure` property on the prediction source, bound on the sensitivity with `n_pre_periods: 0`. |
-| `from_unit_day_artifact` | Reopen the published artifact with its saved named covariate and matching definition binding. |
+| `from_unit_day_artifact` | An artifact with the saved score and the matching definition that names it. |
 | `from_moments` | Replay the moments produced by `workflows.export_moments`; the export must carry the statistics for that score. |
 | `from_switchback_frame` | Refuses CUPED with `source.frame.switchback.metric`. |
 
-This case does not establish support for arbitrary artifacts, breakouts, daily
-or as-of results, or sequential inference. In particular, freezing the predictor
-does not fix the CUPED adjustment coefficient before experiment observations
-arrive. Use the existing [CUPED compatibility rules](compatibility.md).
+For other artifacts, breakouts, daily or as-of results, or sequential
+inference, check the [CUPED compatibility rules](compatibility.md). Freezing
+the prediction model does not set the CUPED adjustment in advance.
 
 ## Interpret the comparison
 

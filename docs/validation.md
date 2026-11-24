@@ -133,9 +133,9 @@ universal coverage guarantees.
 
 ### Scalar CUPED with a frozen external prediction
 
-The [CUPAC recipe](guides/cupac.md) uses scalar CUPED for a fixed horizon. The
-coefficient is still estimated on the experiment, so the interval inherits
-[scalar CUPED's uncertainty qualification](limitations.md#cuped-treats-its-adjustment-coefficient-as-known).
+The [CUPAC recipe](guides/cupac.md) uses scalar CUPED for a fixed horizon.
+The interval [treats the CUPED adjustment coefficient as fixed](limitations.md#cuped-treats-its-adjustment-coefficient-as-known),
+even though Increment estimates it from the experiment.
 
 `tests/test_cupac.py::test_cupac_coverage_and_bias` checks mean and ratio results
 with useful, irrelevant-feature and shifted predictors. It compares nominal

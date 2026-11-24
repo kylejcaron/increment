@@ -271,7 +271,7 @@ def _(analyze, mo, units):
     decision, sensitivity = results["unadjusted"], results["cuped"]
     mo.vstack(
         [
-            mo.md("## Refuse selectively missing scores"),
+            mo.md("## What happens when scores are missing"),
             mo.ui.table(missingness),
             mo.md(
                 f"The unadjusted decision still reports **{decision.require_lift().value:.2%}**. "
@@ -291,7 +291,7 @@ def _(IncrementWarning, analyze, known_lift, missing_units, mo, pd, warnings):
     imputed_lift = next(row for row in imputed if row.method == "cuped").require_lift().value
     mo.vstack(
         [
-            mo.md("## Deliberately impute in a separate analysis"),
+            mo.md("## Why filling missing scores can mislead"),
             mo.ui.table(
                 pd.DataFrame(
                     [{"imputed_cuped_lift": imputed_lift, "known_relative_lift": known_lift}]
