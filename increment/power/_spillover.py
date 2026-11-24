@@ -76,6 +76,7 @@ class PlanningEvidence:
     scenarios: tuple[ScenarioEvidence, ...]
     status: _Status
     reason: str | None
+    stress_status: Literal["supported", "underpowered", "inconclusive"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,6 +504,7 @@ def _measure(
     population: SpilloverPopulation,
     comparison: SpilloverComparison,
     models: tuple[_Scenario, ...],
+    attempts: int,
 ) -> tuple[ScenarioEvidence, ...]:
     rule = SpilloverInterval(population)
     tail = 0.05 / (24 * len(population.design.comparisons))
@@ -517,11 +519,11 @@ def _measure(
         if not _compact(classes, len(population.groups)):
             dense.append(model)
             continue
-        for cells in _frequency_cells(population, comparison, classes, _ATTEMPTS):
+        for cells in _frequency_cells(population, comparison, classes, attempts):
             lo, hi = rule.bounds(comparison, cells)
             tallies[key].observe(lo, hi, model.true_effect)
     if dense:
-        for i, assignment, counts in _states(population, comparison, dense, _ATTEMPTS):
+        for i, assignment, counts in _states(population, comparison, dense, attempts):
             model = dense[i]
             lo, hi = rule.bounds_from_counts(comparison, assignment, counts)
             tallies[model.low, model.high].observe(lo, hi, model.true_effect)
@@ -532,20 +534,29 @@ def _conclude(rows: tuple[ScenarioEvidence, ...]) -> PlanningEvidence:
     expected = {(p, s) for p in _PROFILES for s in _SCHEDULES}
     if len(rows) != len(expected) or {(s.baseline_profile, s.schedule) for s in rows} != expected:
         return PlanningEvidence(rows, "not_assessed", "incomplete_bounds")
-    adequate, underpowered = True, False
-    for s in rows:
-        if s.schedule in ("unchanged", "cancelling"):
+    ordinary, stress = [], []
+    for row in rows:
+        if row.schedule in ("unchanged", "cancelling"):
             continue
-        lo, hi = s.detection_lower, s.detection_upper
+        lo, hi = row.detection_lower, row.detection_upper
         if lo is None or hi is None or not 0 <= lo <= hi <= 1:
             return PlanningEvidence(rows, "not_assessed", "incomplete_bounds")
-        adequate &= lo >= 0.8
-        underpowered |= hi < 0.8
-    if adequate:
-        return PlanningEvidence(rows, "supported", None)
-    if underpowered:
-        return PlanningEvidence(rows, "underpowered", "detection_below_target")
-    return PlanningEvidence(rows, "inconclusive", "detection_bounds_overlap_target")
+        (ordinary if row.baseline_profile == "spread" else stress).append((lo, hi))
+    status = _detection_status(ordinary)
+    reason = {
+        "supported": None,
+        "underpowered": "detection_below_target",
+        "inconclusive": "detection_bounds_overlap_target",
+    }[status]
+    return PlanningEvidence(rows, status, reason, _detection_status(stress))
+
+
+def _detection_status(
+    bounds: list[tuple[float, float]],
+) -> Literal["supported", "underpowered", "inconclusive"]:
+    if all(lo >= 0.8 for lo, _ in bounds):
+        return "supported"
+    return "underpowered" if any(hi < 0.8 for _, hi in bounds) else "inconclusive"
 
 
 def _indices(population: SpilloverPopulation, comparison: SpilloverComparison) -> tuple[int, int]:
@@ -597,8 +608,9 @@ def evaluate_design(
     """Assess directional detection before the trial is assigned."""
     if comparison.baseline_rate is None:
         return PlanningEvidence((), "not_assessed", "missing_baseline_rate")
-    work = len(population.groups) * len(population.design.comparisons) * _ATTEMPTS
-    if work > _MAX_GROUP_ATTEMPTS:
+    work_per_attempt = len(population.groups) * len(population.design.comparisons)
+    attempts = min(_ATTEMPTS, _MAX_GROUP_ATTEMPTS // work_per_attempt)
+    if attempts < 256:
         return PlanningEvidence((), "not_assessed", "simulation_budget_exceeded")
     population = _planning_population(population, comparison)
     groups = population.groups
@@ -619,7 +631,7 @@ def evaluate_design(
                 for k in events
             ):
                 return PlanningEvidence((), "not_assessed", "group_draw_exceeds_planning_limit")
-    return _conclude(_measure(population, comparison, grid))
+    return _conclude(_measure(population, comparison, grid, attempts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,6 +647,10 @@ class SpilloverPowerResult:
         return self.evidence.status
 
     @property
+    def stress_status(self) -> str | None:
+        return self.evidence.stress_status
+
+    @property
     def reason(self) -> str | None:
         return self.evidence.reason
 
@@ -644,16 +660,31 @@ class SpilloverPowerResult:
         if self.status != "not_assessed":
             effect = next(s.true_effect for s in self.evidence.scenarios if s.true_effect != 0)
             change = f"{100 * effect:+.6g} percentage points"
-            if self.evidence.status == "supported":
-                return (
-                    f"All six scenarios modeling a change of {change} met the 80% detection target."
+            conclusion = {
+                "supported": "Both ordinary scenarios met",
+                "underpowered": "At least one ordinary scenario fell short of",
+                "inconclusive": "The ordinary simulations could not establish",
+            }[self.status]
+            parts = [f"{conclusion} 80% detection for a change of {change}."]
+            baselines = {
+                "spread": "Past events proportional to group size",
+                "largest_first": "Stress test: past events packed into the largest groups",
+                "smallest_first": "Stress test: past events packed into the smallest groups",
+            }
+            for s in self.evidence.scenarios:
+                if s.detection_lower is None or s.detection_upper is None:
+                    continue
+                allocation = (
+                    "spread across groups"
+                    if s.schedule == "spread"
+                    else "concentrated in a few groups"
                 )
-            if self.evidence.status == "underpowered":
-                return (
-                    f"At least one scenario modeling a change of {change} fell short of 80% detection. "
-                    "Not detecting the change would not rule it out."
+                parts.append(
+                    f"{baselines[s.baseline_profile]}, change {allocation}: "
+                    f"{s.detection_lower:.2%}–{s.detection_upper:.2%} detection."
                 )
-            return f"The simulations could not establish 80% detection for a change of {change}."
+            parts.append("Not detecting the change would not rule it out.")
+            return " ".join(parts)
         match self.reason:
             case "missing_baseline_rate":
                 why = "Supply a comparable pre-experiment event rate to check power."

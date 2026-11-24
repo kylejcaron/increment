@@ -659,6 +659,64 @@ def test_active_spillover_queries_translate_on_verified_dialects(trial, monkeypa
     }
 
 
+def test_column_mapping_preserves_estimates_but_cannot_rebind_a_saved_trial(tmp_path):
+    from increment import from_definitions, run
+    from tests.spillover_trial import (
+        complete_receipt,
+        frame_trial,
+        spillover_rows,
+        three_policy_trial,
+        write_study,
+    )
+
+    design, frames = three_policy_trial()
+    trial, reader = frame_trial(design, frames)
+    with reader:
+        expected = spillover_rows(run(trial, reader))
+
+    def compare(result):
+        for actual, local in zip(spillover_rows(result), expected, strict=True):
+            assert (actual.policy, actual.reference) == (local.policy, local.reference)
+            assert actual.estimate == pytest.approx(local.estimate, abs=1e-14, rel=0)
+            assert (actual.lower, actual.upper) == pytest.approx(
+                (local.lower, local.upper), abs=1e-10, rel=0
+            )
+
+    path = tmp_path / "study.yaml"
+    names = {role: role for role in _ROLES}
+    roles = {"person_id": "customer_id", "group_id": "store_id", "stratum": "region"}
+    con = ibis.duckdb.connect(tmp_path / "offers.duckdb")
+    try:
+        for role in _ROLES:
+            frame = frames[role]
+            renamed = frame.rename_columns([roles.get(c, c) for c in frame.column_names])
+            if "store_id" in renamed.column_names:
+                renamed = renamed.append_column("group_id", renamed["store_id"])
+            if "region" in renamed.column_names:
+                renamed = renamed.append_column("another_region", renamed["region"])
+            con.create_table(role, renamed)
+        mapped = design | {"unit": "customer_id", "cluster": "store_id", "stratum": "region"}
+        write_study(path, mapped, names)
+        experiment, reader = from_definitions(
+            path, con, experiment_name="pilot", source_snapshot_evidence=complete_receipt()
+        )
+        with reader:
+            compare(run(experiment, reader))
+        for column in ({"cluster": "group_id"}, {"stratum": "another_region"}, {"stratum": None}):
+            write_study(path, mapped | column, names)
+            rebound, reader = from_definitions(
+                path, con, experiment_name="pilot", source_snapshot_evidence=complete_receipt()
+            )
+            with reader:
+                assert rebound.to_json() != experiment.to_json()
+                with pytest.raises(CodedError) as stale:
+                    run(experiment, reader)
+                assert stale.value.code == "kernel.run.execution_unavailable"
+                compare(run(rebound, reader))
+    finally:
+        con.disconnect()
+
+
 def test_registered_tables_do_not_follow_database_namespace_changes(tmp_path):
     from increment import from_definitions, run
     from tests.spillover_trial import (

@@ -17,7 +17,7 @@ from scipy.stats import binom
 
 from increment import AnalysisPlan, MetricSpec, Spillover, SpilloverComparison, from_frame, run
 from increment._spillover_design import GroupProfile, SpilloverPopulation
-from increment.estimation.spillover import summarize_cells, summarize_counts
+from increment.estimation.spillover import SpilloverInterval, summarize_cells, summarize_counts
 from increment.estimation.spillover_results import SpilloverEffects
 from increment.power import _spillover, spillover_power
 
@@ -516,7 +516,7 @@ def _direction_error():
 
 
 def _joint_decision_errors(family):
-    # Power depends on all six signed alternatives, not on a miss-rate gate.
+    # The ordinary scenario and stress tests have independent 80% decisions.
     attempts = 4096
     tail = 0.05 / (24 * family)
     rows = []
@@ -530,29 +530,42 @@ def _joint_decision_errors(family):
         )
         tally = _spillover._Tally(attempts=attempts, positive=attempts if alt else 0)
         rows.append(tally.evidence(case, tail))
-    last = rows[-1]
+
+    def witness(profile, lower, upper):
+        return tuple(
+            replace(s, detection_lower=lower, detection_upper=upper)
+            if (s.baseline_profile, s.schedule) == (profile, "concentrated")
+            else s
+            for s in rows
+        )
+
     below = float(np.nextafter(0.8, 0))
     witnesses = [
-        (rows, "supported", None),
-        ([*rows[:-1], replace(last, misses=attempts, miss_upper=1.0)], "supported", None),
-        ([*rows[:-1], replace(last, detection_lower=0.8)], "supported", None),
+        (rows, "supported", "supported", None),
+        (witness("spread", 0.8, 1.0), "supported", "supported", None),
         (
-            [*rows[:-1], replace(last, detection_lower=below, detection_upper=0.8)],
+            witness("spread", below, 0.8),
             "inconclusive",
+            "supported",
             "detection_bounds_overlap_target",
         ),
+        (witness("spread", below, below), "underpowered", "supported", "detection_below_target"),
+        (witness("largest_first", 0.8, 1.0), "supported", "supported", None),
+        (witness("smallest_first", below, 0.8), "supported", "inconclusive", None),
+        (witness("largest_first", below, below), "supported", "underpowered", None),
+        (witness("smallest_first", None, None), "not_assessed", None, "incomplete_bounds"),
+        (rows[:-1], "not_assessed", None, "incomplete_bounds"),
         (
-            [*rows[:-1], replace(last, detection_lower=below, detection_upper=below)],
-            "underpowered",
-            "detection_below_target",
+            [*rows[:-1], replace(rows[-1], misses=attempts, miss_upper=1.0)],
+            "supported",
+            "supported",
+            None,
         ),
-        ([*rows[:-1], replace(last, detection_lower=None)], "not_assessed", "incomplete_bounds"),
-        (rows[:-1], "not_assessed", "incomplete_bounds"),
     ]
     mistakes = 0
-    for evidence, status, reason in witnesses:
+    for evidence, status, stress, reason in witnesses:
         result = _spillover._conclude(tuple(evidence))
-        mistakes += (result.status, result.reason) != (status, reason)
+        mistakes += (result.status, result.stress_status, result.reason) != (status, stress, reason)
     return CalibrationCheck(f"{family}-comparison power decision errors", float(mistakes), 0)
 
 
@@ -566,12 +579,53 @@ def certify_decisions() -> tuple[CalibrationCheck, ...]:
     )
 
 
+def _width_example(sizes, strata):
+    """Report one seeded two-stage draw, with nested 20% and 25% potential outcomes."""
+    rng = np.random.default_rng(521)
+    group_ids = np.arange(len(sizes))
+    assignment = np.zeros(len(sizes), dtype=int)
+    quotas = {}
+    for region in sorted(set(strata)):
+        members = group_ids[strata == region]
+        half = len(members) // 2
+        quotas[str(region)] = {"base": len(members) - half, "upper": half}
+        assignment[rng.choice(members, half, replace=False)] = 1
+    c = SpilloverComparison("upper", "base", 0.05, 0.20)
+    groups = []
+    counts = []
+    for i, (size, stratum, high) in enumerate(zip(sizes, strata, assignment, strict=True)):
+        n = int(size)
+        offers = (0, n // 2)
+        groups.append((i, str(stratum), n, offers))
+        u = rng.random(n)
+        successes = np.count_nonzero(u < (0.25 if high else 0.20))
+        counts.append(rng.hypergeometric(successes, n - successes, n - offers[high]))
+    pop = diagnostic_population(groups, quotas, (c,))
+    lo, hi = SpilloverInterval(pop).bounds_from_counts(c, assignment[None, :], np.array([counts]))
+    return {
+        "stores": len(sizes),
+        "size_range": [int(min(sizes)), int(max(sizes))],
+        "strata": len(quotas),
+        "width_percentage_points": float(100 * (hi[0] - lo[0])),
+    }
+
+
+def _widths():
+    for count, size in ((200, 50), (1000, 50), (400, 30)):
+        print(json.dumps(_width_example(np.full(count, size), np.zeros(count, dtype=int))))
+    bands = np.repeat(np.arange(8), 50)
+    sizes = 10 * (bands + 1)
+    for strata in (np.zeros_like(bands), bands):
+        print(json.dumps(_width_example(sizes, strata)))
+
+
 def main() -> None:
     """Run a planning example or the numerical certification campaign."""
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--two-policy", action="store_true", help="compare two-policy planning cases")
     mode.add_argument("--certify", action="store_true", help="measure sampler and decision errors")
+    mode.add_argument("--widths", action="store_true", help="show single-draw interval widths")
     args = parser.parse_args()
     if args.certify:
         checks = (*certify_sampling(), *certify_decisions())
@@ -581,6 +635,8 @@ def main() -> None:
         )
         if not passed:
             raise SystemExit(1)
+    elif args.widths:
+        _widths()
     elif args.two_policy:
         for n in (240, 500, 1000):
             changes = (0.01, 0.03, 0.10, 0.25) if n == 1000 else (0.01, 0.10)

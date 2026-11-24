@@ -24,7 +24,7 @@ import ibis.expr.operations as ops
 import ibis.expr.rules as rlz
 import ibis.expr.types as ir
 import sqlglot as sg
-from ibis import Table
+from ibis import Table, literal
 from ibis.backends.sql import SQLBackend
 from ibis.backends.sql.compilers.base import SQLGlotCompiler
 from ibis.common.exceptions import TableNotFound
@@ -262,6 +262,8 @@ def _capture(
     roles: tuple[str, ...],
     locations: Mapping[str, str],
     views: ViewSources | None,
+    columns: Mapping[str, str | None],
+    sole_stratum: str | None,
     queries: tuple[_Query, ...] = (),
     shared: BoundSharedMetric | None = None,
     scope_streams: Callable[
@@ -283,10 +285,15 @@ def _capture(
                 raise
             unavailable[role] = exc
             break
-        columns = _PROJECTIONS[role]
-        if not set(columns).issubset(table.columns):
+        required = {name: columns.get(name, name) for name in _PROJECTIONS[role]}
+        if any(source is not None and source not in table.columns for source in required.values()):
             break
-        inputs[role] = table.select(*columns)
+        inputs[role] = table.select(
+            **{
+                name: table[source] if source is not None else literal(sole_stratum)
+                for name, source in required.items()
+            }
+        )
     targets = {r: names[r] for r in (roles if con.name == "duckdb" else tuple(inputs))}
     if shared is not None and shared.roster is not None:
         location = names[_SHARED_ROSTER]
@@ -850,6 +857,16 @@ class WarehouseSpilloverSource:
         if not isinstance(design, SpilloverDeclaration):
             refuse_input("spillover.design.required", "design")
         self._experiment = experiment
+        self._columns: dict[str, str | None] = {}
+        self._sole_stratum = None
+        if design.cluster is not None:
+            self._columns = {
+                "person_id": experiment.unit,
+                "group_id": design.cluster,
+                "stratum": design.stratum,
+            }
+            if design.stratum is None:
+                self._sole_stratum = next(iter(design.groups_per_policy))
         self._offered_group = design.offered_group
         self._metric = metric
         self._exposure = next(e for e in definitions.exposures if e.name == experiment.exposure)
@@ -903,6 +920,8 @@ class WarehouseSpilloverSource:
             "sources": [s.model_dump(mode="json") for s in selected.fact_sources],
             "dimensions": [d.model_dump(mode="json") for d in selected.dim_sources],
         }
+        if self._columns:
+            semantics["roster_columns"] = self._columns
         if self._shared is not None:
             semantics["shared_conversion"] = asdict(self._shared)
         payload = json.dumps(semantics, sort_keys=True, separators=(",", ":")).encode()
@@ -986,7 +1005,13 @@ class WarehouseSpilloverSource:
         if not isinstance(law, SpilloverDesign):
             refuse_input("spillover.design.required", "design")
         with _capture(
-            self._session, self._names, _DESIGN_ROLES, self._locations, self._views
+            self._session,
+            self._names,
+            _DESIGN_ROLES,
+            self._locations,
+            self._views,
+            self._columns,
+            self._sole_stratum,
         ) as snapshot:
             frozen = _checked_design(snapshot, law)
             groups = _profiles(snapshot, frozen.schedule, law.policies)
@@ -999,6 +1024,8 @@ class WarehouseSpilloverSource:
             tuple(_PROJECTIONS),
             self._locations,
             self._views,
+            self._columns,
+            self._sole_stratum,
             self._queries,
             self._shared,
             self._scope_streams,

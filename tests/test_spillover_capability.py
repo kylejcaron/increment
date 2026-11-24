@@ -5,6 +5,7 @@ from inspect import signature
 
 import pyarrow as pa
 import pytest
+import yaml
 
 from increment import (
     MetricSpec,
@@ -24,6 +25,7 @@ from increment.power import spillover_power
 from increment.results import SpilloverEffects
 from tests.capability_consumers_auxiliary import assert_expected, assert_support
 from tests.spillover_trial import (
+    frame_design,
     frame_trial,
     run_three_policy_probe,
     three_policy_trial,
@@ -67,6 +69,62 @@ def test_other_inputs_cannot_declare_both_random_draws():
         # These constructors have no input for the first draw or the per-policy quotas.
         assert {"offer_counts", "group_policy"}.isdisjoint(signature(builder).parameters)
         assert_expected("spillover", f"{ingress}_not_expressible", kind="not_expressible")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("mistake", "field"),
+    [
+        ("two_metrics", "plan"),
+        ("mean", "metric"),
+        ("missing_region", "stratum"),
+        ("same_unit_store", "relations"),
+        ("same_region_store", "relations"),
+        ("same_region_unit", "relations"),
+    ],
+)
+def test_both_loaders_refuse_the_same_declaration_before_reading(con, tmp_path, mistake, field):
+    design, frames = three_policy_trial()
+    cluster = "person_id" if mistake == "same_unit_store" else "group_id"
+    stratum = {
+        "missing_region": None,
+        "same_region_store": cluster,
+        "same_region_unit": "person_id",
+    }.get(mistake, "stratum")
+    if mistake == "missing_region":
+        quotas = design["groups_per_policy"]["all"]
+        design["groups_per_policy"] = {"north": quotas, "south": quotas}
+    design.update(cluster=cluster, stratum=stratum)
+    path = tmp_path / "trial.yaml"
+    write_study(path, design, {key: key for key in frames})
+    catalog = yaml.safe_load(path.read_text())
+    metric = catalog["metrics"][0]
+    specs = [
+        MetricSpec(name="bought", type="mean" if mistake == "mean" else "conversion", window_days=7)
+    ]
+    if mistake == "two_metrics":
+        catalog["metrics"].append(metric | {"name": "other"})
+        catalog["experiments"][0]["plan"]["primary"] = ["bought", "other"]
+        specs.append(MetricSpec(name="other", type="conversion", window_days=7))
+    if mistake == "mean":
+        metric.update(type="mean", aggregation="count")
+    path.write_text(yaml.safe_dump(catalog))
+    with pytest.raises(CodedError) as warehouse:
+        from_definitions(path, con, experiment_name="pilot")
+    with pytest.raises(CodedError) as local:
+        from_frame(
+            frames["roster"],
+            shape="summary",
+            unit="person_id",
+            group="assignment",
+            cluster=cluster,
+            stratum=stratum,
+            design=frame_design(design),
+            metrics=specs,
+            offer_counts=frames["offer_counts"],
+        )
+    assert local.value.code == warehouse.value.code == "spillover.design.invalid"
+    assert local.value.context["field"] == warehouse.value.context["field"] == field
 
 
 @pytest.mark.integration

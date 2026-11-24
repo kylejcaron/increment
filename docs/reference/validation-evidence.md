@@ -375,13 +375,23 @@ Planning evaluates the same fixed grid as analysis. Batching reduces temporary w
 
 If store rates vary much more, or a few stores contain most eligible people, the same count of stores can give a much wider range. This construction is not uniformly narrower than the published conservative benchmark.
 
+For a 20% purchase probability without offers and 25% under the higher-offer policy, these are **single seeded draws, not expected widths**. Half the stores in each stratum offered half their customers a coupon; the rest offered none. Reproduce with `python -m calibration.spillover --widths` (seed 521, family alpha .05).
+
+| Stores | People per store | Size strata | Full interval width (percentage points) |
+|---:|---:|---:|---:|
+| 200 | 50 | 1 | 20.33 |
+| 1,000 | 50 | 1 | 6.95 |
+| 400 | 30 | 1 | 14.75 |
+| 400 | 10–80 | 1 | 22.91 |
+| 400 | 10–80 | 8 | 15.69 |
+
 In the reproducible two-policy planning example (`python -m calibration.spillover --two-policy`), 1,000 stores had 20 people each. Each store would make either five or ten offers. Across the modeled ways the change could occur, a rise of 1, 3, or 10 points fell short of 80% detection in at least one scenario. A 25-point rise cleared 80% in every scenario. These are prelaunch probabilities under stated models; they do not contradict the observed ranges above.
 
 **Planning is separate.** A historical rate enables a prelaunch power check on the actual roster. Baseline events are spread proportionally or concentrated in the largest or smallest groups. For each baseline, the planner models no change, cancelling changes, and the chosen signed change spread out or concentrated. Only groups whose offer quota changes can have a modeled spillover. Each draw uses the registered allocations, then calls the same interval rule as analysis. A detection must exclude zero on the intended side; a zero or a wrong-direction result does not count.
 
 Tie-breaking and simulation draws use group sizes, offer counts and numbers of groups per policy, not names. Renaming regions or stores does not change the power assessment.
 
-The planner compares exact binomial bounds for the estimated detection probabilities with 80%. Its simulation confidence is separate from study `alpha`. No history, infeasible models, or a simulation too large to run leave power unassessed; they do not withhold a live range. Neither the simulations nor the coverage argument verifies that offers really were random, that a customer's outcome depends only on how many peers got offers, or that groups were isolated. Run `python -m calibration.spillover` for the three-policy example and `python -m calibration.spillover --certify` for the numerical checks.
+The headline compares the two proportional-baseline detection bounds with 80%. The four concentrated-baseline alternatives give a separate stress result under the same rule. A result is supported if every lower bound in its set reaches 80%, underpowered if any upper bound is below 80%, and inconclusive otherwise. The planner uses up to 4,096 simulated assignments per scenario, reducing this count for larger rosters under a common family work limit. Fewer than 256 feasible repetitions, missing history or infeasible models leave power unassessed, without withholding a live range. Simulation confidence is separate from study `alpha`. Neither simulation nor interval coverage establishes that the draws were random, that only the number of peers offered matters, or that stores were isolated. Run `python -m calibration.spillover --certify` for the numerical checks.
 
 ## In-repo derivations and calibration evidence
 

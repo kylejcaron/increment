@@ -170,7 +170,8 @@ values.
   launch; at measurement bind a fresh reader with the purchase feed's
   certified cutoff and completeness. `results_store=` saves signed policy
   comparisons for offline reopening. `increment.power.spillover_power`
-  checks pre-launch power without reading purchases.
+  reports ordinary and concentrated-baseline detection separately. Named
+  designs can declare their store and stratum columns without renaming tables.
   The interval method `two-stage-fixed-bet-v3` accounts for replication
   across many small regions but does not guarantee a narrow range.
   PostgreSQL sources bind the table visible on the connection's search path,

@@ -48,6 +48,8 @@ experiments:
     design:
       mechanism: spillover
       offered_group: offered
+      cluster: store_id
+      stratum: stratum
       groups_per_policy: {all: {few: 2, some: 2, many: 2}}
       comparisons:
         - {policy: some, reference: few, meaningful_effect: 0.05}
@@ -64,26 +66,28 @@ The three source fields point to tables or views you already have; they do not r
 
 | Source field | One row for… | What it records |
 |---|---|---|
-| `roster` | Each eligible customer, before launch | `person_id`, their `group_id` (store), and `stratum` (the set of stores drawn together, here `all`). |
-| `offer_counts` | Each store and **possible** policy, before launch | `group_id`, `policy`, and `offers`: how many customers would get offers if that policy were drawn. Every policy you compare must leave at least one customer in each store without an offer. |
-| `group_policy` | Each store, after the first draw | `group_id` and the one `policy` actually assigned. The customer's assignment and its time come separately from `coupon_assignment`. |
+| `roster` | Each eligible customer, before launch | `customer_id`, `store_id` and `stratum`: customer, store and set of stores drawn together. |
+| `offer_counts` | Each store and **possible** policy, before launch | `store_id`, `policy`, and `offers`: how many customers would receive offers under that policy. Every compared policy must leave someone without an offer. |
+| `group_policy` | Each store, after the first draw | `store_id` and its assigned `policy`. The customer's assignment and its time come separately from `coupon_assignment`. |
 
 Eligibility and assignment answer different questions. `roster` fixes **who could be assigned**, their store and the set of stores randomized together, before either draw. The ordinary `coupon_assignment` exposure records **what each customer was actually assigned and when**, including customers assigned no offer. It is reused, not replaced. Purchases remain the ordinary metric's events.
 
 For example, the first store's eligibility rows look like this:
 
-| `person_id` | `group_id` | `stratum` |
+| `customer_id` | `store_id` | `stratum` |
 |---|---|---|
 | A0 | A | all |
 | A1 | A | all |
 | A2 | A | all |
 | A3 | A | all |
 
-An existing eligibility table can supply these columns directly, or a view can rename your customer and store columns. Keep membership fixed after registration; do not build this list from customers who later visit, redeem an offer or buy. The example below creates small tables only to make it runnable.
+Use your own names: `unit` names the customer column, `design.cluster` the store, and `design.stratum` the set of stores drawn together. With just one such set, you can omit `design.stratum`. Older declarations with neither design field still read `person_id`, `group_id` and `stratum`. Keep membership fixed after registration; do not build it from customers who later visit or buy.
 
 With DuckDB, attach the databases and create any views before registering. Assignment and purchase **tables** can be populated or created later at their registered names; a new view is a different definition. Use absolute database paths to reopen from another connection.
 
 ## 2. Register before either random draw
+
+Small spillovers can require hundreds to thousands of stores. Randomize stores of similar size together when sizes vary widely. In [five seeded examples](../reference/validation-evidence.md#ev-spillover-rct2), increasing the store count or grouping by size narrowed the observed intervals. These are examples, not a minimum sample size.
 
 Freeze the eligible people and planned counts. Two stores per policy gives six stores here; each has four eligible customers. No assignments or purchases need to exist yet.
 
@@ -98,11 +102,11 @@ con = ibis.duckdb.connect(Path("offers.duckdb").resolve())
 stores = list("ABCDEF")
 people = [f"{s}{i}" for s in stores for i in range(4)]
 roster = pa.table(
-    {"person_id": people, "group_id": [p[0] for p in people], "stratum": ["all"] * len(people)}
+    {"customer_id": people, "store_id": [p[0] for p in people], "stratum": ["all"] * len(people)}
 )
 counts = pa.table(
     {
-        "group_id": [s for s in stores for _ in range(3)],
+        "store_id": [s for s in stores for _ in range(3)],
         "policy": ["few", "some", "many"] * len(stores),
         "offers": [0, 1, 2] * len(stores),
     }
@@ -118,7 +122,49 @@ with planning_reader:
         print(check.policy, "minus", check.reference, check.message)
 ```
 
-`meaningful_effect: 0.05` means a rise of **five percentage points**. For a power check, also give the comparison a comparable historical purchase rate as `baseline_rate`. `supported` means all modeled scenarios met the 80% detection target; `underpowered` means at least one fell short; `inconclusive` means the simulations couldn't settle it. Without history, the check says `not_assessed`, not that the final interval is unavailable. Save the experiment file before launch and keep it unchanged.
+`meaningful_effect: 0.05` means a rise of **five percentage points**. Without a comparable historical purchase rate (`baseline_rate`), the check says `not_assessed`; a final effect range is still available. Save the experiment file before launch and keep it unchanged.
+
+**What if purchases cluster in a few stores?** Suppose last year's untreated purchase rate was 25%. You plan to compare five versus ten offers in each of 1,000 stores and want to detect a ten-point increase. This example needs no purchases or assignments:
+
+```python
+from increment import MetricSpec, Spillover, SpilloverComparison, from_frame
+
+store_ids = range(1000)
+eligible = pa.table(
+    {
+        "customer_id": range(20_000),
+        "store_id": [s for s in store_ids for _ in range(20)],
+    }
+)
+planned = pa.table(
+    {
+        "store_id": [s for s in store_ids for _ in range(2)],
+        "policy": ["base", "upper"] * 1000,
+        "offers": [5, 10] * 1000,
+    }
+)
+pilot, reader = from_frame(
+    eligible,
+    shape="summary",
+    unit="customer_id",
+    cluster="store_id",
+    group="assignment",
+    metrics=[MetricSpec(name="purchase", type="conversion", window_days=7)],
+    design=Spillover(
+        control_group="no_offer",
+        offered_group="offered",
+        groups_per_policy={"all": {"base": 500, "upper": 500}},
+        comparisons=(SpilloverComparison("upper", "base", 0.10, baseline_rate=0.25),),
+    ),
+    offer_counts=planned,
+)
+with reader:
+    (advice,) = spillover_power(pilot)
+assert (advice.status, advice.stress_status) == ("supported", "underpowered")
+print(advice.message)
+```
+
+When past purchases are proportional to store size, both ways of distributing the increase clear the 80% detection target. When past purchases are packed into a few stores, at least one scenario falls short. Compare those patterns with store-level purchase history before choosing a design. If the stress case looks plausible, consider adding stores or randomizing stores of similar size together. Not detecting the change would not rule it out.
 
 ## 3. Draw the assignments, then measure
 
@@ -135,7 +181,7 @@ def september(day, hour=0):
     return datetime(2025, 9, day, hour, tzinfo=UTC)
 
 
-policies = pa.table({"group_id": stores, "policy": ["few", "some", "many"] * 2})
+policies = pa.table({"store_id": stores, "policy": ["few", "some", "many"] * 2})
 con.create_table("store_assignments", policies)
 selected = {"B0", "C0", "C1", "E0", "F0", "F1"}
 assignments = ["offered" if p in selected else "no_offer" for p in people]
@@ -294,9 +340,9 @@ local, reader = from_frame(
     summary,
     shape="summary",
     experiment_id="store_offers",
-    unit="person_id",
+    unit="customer_id",
     group="assignment",
-    cluster="group_id",
+    cluster="store_id",
     stratum="stratum",
     design=Spillover(
         control_group="no_offer",

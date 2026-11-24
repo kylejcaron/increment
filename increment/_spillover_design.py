@@ -44,6 +44,14 @@ _raise = raiser(_REFUSALS)
 _REQUIREMENTS = {
     ("spillover.design.invalid", "offered_group"): "use different labels for offer and no offer",
     ("spillover.design.invalid", "window_days"): "give the conversion a fixed positive day count",
+    (
+        "spillover.design.invalid",
+        "stratum",
+    ): "name the stratum column when quotas cover several strata",
+    ("spillover.design.invalid", "relations"): (
+        "name the design tables and use distinct person, store and stratum columns; "
+        "the store column cannot also hold the policy or offer count"
+    ),
     ("spillover.design.invalid", "metric"): (
         "choose one fixed-window conversion for the experiment unit, without a margin or rollout cost"
     ),
@@ -123,6 +131,18 @@ def integer_scalar(value: object) -> TypeGuard[int | np.integer]:
 
 def is_label(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
+
+
+def validate_roster_columns(unit: str, cluster: str, stratum: str | None, n_strata: int) -> None:
+    columns = (unit, cluster) if stratum is None else (unit, cluster, stratum)
+    if (
+        not all(is_label(column) for column in columns)
+        or len(set(columns)) != len(columns)
+        or cluster in ("policy", "offers")
+    ):
+        refuse_input("spillover.design.invalid", "relations")
+    if stratum is None and n_strata != 1:
+        refuse_input("spillover.design.invalid", "stratum")
 
 
 def canonical_id(value: object) -> Identifier | None:

@@ -46,6 +46,7 @@ from increment._spillover_design import (
     SpilloverComparison,
     _comparison_values,
     refuse_input,
+    validate_roster_columns,
 )
 from increment._spillover_design import (
     _freeze_allocation as _freeze_group_counts,
@@ -2006,6 +2007,8 @@ class SpilloverDeclaration(_Base):
     roster: str
     offer_counts: str
     group_policy: str
+    cluster: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    stratum: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @field_validator("roster", "offer_counts", "group_policy", mode="before")
     @classmethod
@@ -2911,6 +2914,15 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     def _check_allocation(self):
         if isinstance(self.design, SpilloverDeclaration):
             self.design.parameters(self.control_group)
+            if self.design.cluster is not None:
+                validate_roster_columns(
+                    self.unit,
+                    self.design.cluster,
+                    self.design.stratum,
+                    len(self.design.groups_per_policy),
+                )
+            elif self.design.stratum is not None:
+                refuse_input("spillover.design.invalid", "relations")
         _validate_allocation_semantics(self.control_group, self.allocation)
         if isinstance(self.design, ObservationalDeclaration) and self.allocation_scheme is not None:
             from increment.errors import refuse

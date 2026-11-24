@@ -195,11 +195,13 @@ def write_study(path, design, names, *, dialect=None):
         table = sg.to_table(names[role], dialect=dialect)
         return sg.select(*columns).from_(table).sql(dialect=dialect, identify=True)
 
+    unit = design.get("unit", "person_id")
+
     catalog = {
         "experiments": [
             {
                 "name": "pilot",
-                "unit": "person_id",
+                "unit": unit,
                 "control_group": "no_offer",
                 "exposure": "coupon_assignment",
                 "start": "2025-01-01",
@@ -210,6 +212,7 @@ def write_study(path, design, names, *, dialect=None):
                     "offered_group": "offered",
                     "groups_per_policy": design["groups_per_policy"],
                     "comparisons": design["comparisons"],
+                    **{key: design[key] for key in ("cluster", "stratum") if key in design},
                     **{role: names[role] for role in ("roster", "offer_counts", "group_policy")},
                 },
                 "plan": {"primary": "bought", "alpha": design.get("alpha", 0.05)},
@@ -220,7 +223,7 @@ def write_study(path, design, names, *, dialect=None):
                 "name": "coupon_assignment",
                 "sql": select(
                     "assignments",
-                    "person_id AS unit_id",
+                    f"{unit} AS unit_id",
                     "assignment AS group_id",
                     "assigned_at AS ts",
                     "experiment_id",
@@ -232,7 +235,7 @@ def write_study(path, design, names, *, dialect=None):
                 "name": "purchases",
                 "sql": select("purchases", "*", "'coupon_purchase' AS event"),
                 "timestamp_column": "purchased_at",
-                "entities": ["person_id"],
+                "entities": [unit],
                 "facts": [{"name": "coupon_purchase"}],
                 "properties": [{"name": "channel", "column": "channel"}],
             }
@@ -240,7 +243,7 @@ def write_study(path, design, names, *, dialect=None):
         "metrics": [
             {
                 "name": "bought",
-                "entity": "person_id",
+                "entity": unit,
                 "type": "conversion",
                 "window_days": 7,
                 "fact": "coupon_purchase",

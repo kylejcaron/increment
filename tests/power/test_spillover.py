@@ -412,10 +412,20 @@ def test_three_policy_plans_assess_detection_with_simultaneous_bounds():
                 _check_bounds(row, 2)
             alternatives = [s for s in rows if s.true_effect != 0]
             assert len(alternatives) == 6
-            assert any(
-                binom.cdf(s.correct_detections, s.attempts, 0.8) < 0.05 / 48 for s in alternatives
-            )
-            assert plan.status == "underpowered"
+            for ordinary, status in ((True, plan.status), (False, plan.stress_status)):
+                subset = [
+                    (s.correct_detections, s.attempts)
+                    for s in alternatives
+                    if (s.baseline_profile == "spread") == ordinary
+                    and s.correct_detections is not None
+                ]
+                assert len(subset) == (2 if ordinary else 4)
+                if any(binom.cdf(k, n, 0.8) < 0.05 / 48 for k, n in subset):
+                    assert status == "underpowered"
+                elif all(binom.sf(k - 1, n, 0.8) <= 0.05 / 48 for k, n in subset):
+                    assert status == "supported"
+                else:
+                    assert status == "inconclusive"
 
 
 @pytest.mark.slow
@@ -433,14 +443,22 @@ def test_family_work_limit_is_monotone_through_2100_groups(family):
             offers=((0, *(1,) * family),) * groups,
         )[0].reason
 
-    # One family-wide ceiling of 2**25 group-attempts, even when history is
-    # missing for siblings. Rounding a tiny effect avoids running the simulation.
-    maximum = 2**25 // (4096 * family)
-    assert reason(maximum) == "effect_rounds_to_zero"
-    assert reason(maximum + 1) == "simulation_budget_exceeded"
-    assert reason(2100) == (
-        "effect_rounds_to_zero" if 2100 <= maximum else "simulation_budget_exceeded"
-    )
+    # Reduce simulation repetitions before declining a large design. An
+    # unassessable tiny effect isolates the budget decision from the simulator.
+    maximum = 2**25 // (256 * family)
+    assert reason(2100) == "effect_rounds_to_zero"
+    if family == 5:
+        assert reason(maximum) == "effect_rounds_to_zero"
+        assert reason(maximum + 1) == "simulation_budget_exceeded"
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_large_design_uses_its_actual_repetitions_for_probability_bounds():
+    (plan,) = _plan((4,) * 9000, comparisons=(_comparison(0.25, 0.10),))
+    assert {row.attempts for row in plan.scenarios} == {2**25 // 9000}
+    for row in plan.scenarios:
+        _check_bounds(row, 1)
 
 
 @pytest.mark.slow

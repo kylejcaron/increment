@@ -39,7 +39,7 @@ from increment._frame_spillover import summary_spillover_source
 from increment._metric_specs import coerce_metrics, synthesise_metric
 from increment._optional import require_warehouse
 from increment._spillover_binding import bind_spillover
-from increment._spillover_design import Spillover
+from increment._spillover_design import Spillover, refuse_input, validate_roster_columns
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.kernel.contracts import _refuse
 from increment.kernel.experiment import Experiment
@@ -899,9 +899,7 @@ def _from_spillover_summary(
 
     specs = coerce_metrics(metrics)
     if len(specs) != 1:
-        _refuse(
-            "kernel.request.invalid", field="spillover needs one fixed-window conversion metric"
-        )
+        refuse_input("spillover.design.invalid", "plan")
     spec = specs[0]
     if (
         spec.type != "conversion"
@@ -911,10 +909,8 @@ def _from_spillover_summary(
         or spec.sensitivity_methods
         or spec.prior is not None
     ):
-        _refuse(
-            "kernel.request.invalid",
-            field="spillover requires an unadjusted fixed-window conversion",
-        )
+        refuse_input("spillover.design.invalid", "metric")
+    validate_roster_columns(unit, cluster, stratum, len(design.groups_per_policy))
     effective_plan = AnalysisPlan(primary=spec.name) if plan is None else plan
     validate_spillover_plan(effective_plan, spec.name)
     metric = cast("ConversionMetric", synthesise_metric(spec)).model_copy(update={"entity": unit})
