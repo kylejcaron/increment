@@ -1209,11 +1209,11 @@ VERSION=1.0.0 SHA="$(git rev-parse origin/main)" scripts/release_gate.sh
 
 #### Website documentation sync
 
-After a stable release is on PyPI and GitHub, `release.yml` tells the
-[documentation website](https://incrementdocs.pages.dev/) the release tag and
-commit. The website then opens a draft PR with that release's docs for someone
-to review and merge. Prereleases never notify the website. If the notification
-fails, the package release is unaffected.
+After the exact version passes its PyPI smoke check and the GitHub release
+is published, `release.yml` sends the tag and commit to
+[`getincrement.io`](https://getincrement.io/). The website opens a draft
+docs PR for both stable releases and prereleases. Merging the website PR
+deploys the docs. If the notification fails, the package stays published.
 
 It is off by default. To turn it on, after the website side is set up (see its
 `CONTRIBUTING.md`):
